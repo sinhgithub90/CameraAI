@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>MultiCAMAI - Giám sát an ninh tập trung thông minh</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+<style>
+  :root{
+    --blue-600:#2563eb; --blue-700:#1d4ed8; --blue-500:#3b82f6; --blue-50:#eff6ff; --blue-100:#dbeafe;
+    --cyan-400:#22d3ee;
+    --slate-900:#0f172a; --slate-800:#1e293b; --slate-700:#334155; --slate-600:#475569; --slate-500:#64748b;
+    --slate-400:#94a3b8; --slate-300:#cbd5e1; --slate-200:#e2e8f0; --slate-100:#f1f5f9; --slate-50:#f8fafc;
+    --red-500:#ef4444; --red-50:#fef2f2; --red-600:#dc2626;
+    --green-500:#22c55e; --green-50:#f0fdf4; --green-600:#16a34a;
+    --amber-500:#f59e0b; --amber-50:#fffbeb; --amber-600:#d97706;
+    --purple-500:#8b5cf6;
+    --indigo-500:#6366f1;
+    --radius:10px;
+    --shadow:0 1px 3px rgba(15,23,42,.06), 0 1px 2px rgba(15,23,42,.04);
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:'Segoe UI',-apple-system,BlinkMacSystemFont,Roboto,Helvetica,Arial,sans-serif;background:var(--slate-50);color:var(--slate-800);}
+  ::-webkit-scrollbar{width:8px;height:8px;}
+  ::-webkit-scrollbar-thumb{background:var(--slate-300);border-radius:4px;}
+
+  /* ============ LOGIN ============ */
+  #login-screen{display:flex;min-height:100vh;}
+  .login-left{flex:1.2;background:linear-gradient(160deg,#dbeafe 0%,#eff6ff 50%,#f0f9ff 100%);padding:64px 64px;position:relative;overflow:hidden;}
+  .login-left::after{content:'';position:absolute;right:-120px;bottom:-80px;width:480px;height:480px;background:radial-gradient(circle,rgba(59,130,246,.15),transparent 70%);border-radius:50%;}
+  .brand{display:flex;align-items:center;gap:10px;margin-bottom:6px;}
+  .brand-icon{width:46px;height:46px;border-radius:12px;background:linear-gradient(135deg,var(--blue-600),var(--cyan-400));display:flex;align-items:center;justify-content:center;color:#fff;}
+  .brand-name{font-size:24px;font-weight:800;color:var(--slate-900);}
+  .brand-name span{color:var(--blue-600);}
+  .tagline{color:var(--slate-500);margin:0 0 48px 56px;font-size:14px;}
+  .login-left h1{font-size:36px;line-height:1.25;color:var(--slate-900);margin:0 0 18px;font-weight:800;max-width:480px;}
+  .login-left p.desc{color:var(--slate-600);max-width:440px;line-height:1.7;margin-bottom:40px;}
+  .feature{display:flex;gap:16px;margin-bottom:26px;align-items:flex-start;max-width:440px;}
+  .feature-icon{width:46px;height:46px;border-radius:12px;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+  .feature-icon.blue{background:var(--blue-50);color:var(--blue-600);}
+  .feature-icon.red{background:var(--red-50);color:var(--red-500);}
+  .feature-icon.purple{background:#f3e8ff;color:var(--purple-500);}
+  .feature h4{margin:0 0 4px;font-size:15px;color:var(--slate-900);}
+  .feature p{margin:0;font-size:13px;color:var(--slate-500);line-height:1.5;}
+
+  .login-right{flex:1;display:flex;align-items:center;justify-content:center;padding:40px;}
+  .login-card{width:100%;max-width:420px;background:#fff;border-radius:16px;box-shadow:0 10px 40px rgba(15,23,42,.08);padding:40px 36px;}
+  .login-card .brand{justify-content:center;margin-bottom:4px;}
+  .login-card .tagline{text-align:center;margin:0 0 28px;}
+  .field{margin-bottom:18px;}
+  .field label{display:block;font-size:13px;font-weight:600;color:var(--slate-700);margin-bottom:6px;}
+  .input-wrap{position:relative;display:flex;align-items:center;}
+  .input-wrap svg{position:absolute;left:13px;color:var(--slate-400);width:17px;height:17px;}
+  .input-wrap input{width:100%;padding:11px 14px 11px 38px;border:1px solid var(--slate-200);border-radius:9px;font-size:14px;color:var(--slate-800);outline:none;transition:.15s;}
+  .input-wrap input:focus{border-color:var(--blue-500);box-shadow:0 0 0 3px var(--blue-100);}
+  .input-wrap .toggle-eye{left:auto;right:13px;cursor:pointer;}
+  .row-between{display:flex;justify-content:space-between;align-items:center;font-size:13px;margin-bottom:22px;}
+  .row-between label{display:flex;align-items:center;gap:7px;color:var(--slate-600);cursor:pointer;}
+  .row-between a{color:var(--blue-600);text-decoration:none;}
+  .btn-primary{width:100%;background:linear-gradient(135deg,var(--blue-600),var(--blue-700));color:#fff;border:none;padding:13px;border-radius:9px;font-size:15px;font-weight:600;cursor:pointer;transition:.15s;}
+  .btn-primary:hover{opacity:.92;}
+  .divider{display:flex;align-items:center;gap:12px;margin:20px 0;color:var(--slate-400);font-size:12px;}
+  .divider::before,.divider::after{content:'';flex:1;height:1px;background:var(--slate-200);}
+  .btn-google{width:100%;display:flex;align-items:center;justify-content:center;gap:10px;border:1px solid var(--slate-200);background:#fff;padding:11px;border-radius:9px;font-size:14px;font-weight:500;cursor:pointer;color:var(--slate-700);}
+  .login-foot{text-align:center;margin-top:28px;font-size:12px;color:var(--slate-400);}
+  .login-foot a{color:var(--slate-500);text-decoration:none;margin:0 6px;}
+
+  /* ============ APP SHELL ============ */
+  #app{display:none;min-height:100vh;}
+  .layout{display:flex;min-height:100vh;}
+  .sidebar{width:240px;background:#fff;border-right:1px solid var(--slate-200);display:flex;flex-direction:column;flex-shrink:0;}
+  .sidebar .brand{padding:20px 22px;margin:0;}
+  .sidebar .brand-icon{width:36px;height:36px;border-radius:9px;}
+  .sidebar .brand-name{font-size:18px;}
+  nav.menu{flex:1;padding:8px 12px;}
+  .menu a{display:flex;align-items:center;gap:11px;padding:10px 12px;border-radius:9px;color:var(--slate-600);text-decoration:none;font-size:14px;margin-bottom:3px;position:relative;cursor:pointer;}
+  .menu a svg{width:18px;height:18px;flex-shrink:0;}
+  .menu a:hover{background:var(--slate-100);}
+  .menu a.active{background:var(--blue-600);color:#fff;}
+  .menu a .badge{margin-left:auto;background:var(--red-500);color:#fff;font-size:11px;font-weight:700;padding:1px 7px;border-radius:10px;}
+  .menu a.active .badge{background:#fff;color:var(--blue-600);}
+  .sidebar-foot{padding:14px 20px;border-top:1px solid var(--slate-100);font-size:12px;color:var(--slate-400);display:flex;align-items:center;gap:8px;}
+  .dot-green{width:7px;height:7px;border-radius:50%;background:var(--green-500);}
+
+  .main{flex:1;display:flex;flex-direction:column;min-width:0;}
+  .topbar{height:64px;background:#fff;border-bottom:1px solid var(--slate-200);display:flex;align-items:center;justify-content:space-between;padding:0 28px;flex-shrink:0;}
+  .topbar h2{font-size:17px;margin:0;color:var(--slate-900);font-weight:700;}
+  .topbar-right{display:flex;align-items:center;gap:18px;}
+  .icon-btn{position:relative;width:36px;height:36px;border-radius:9px;display:flex;align-items:center;justify-content:center;color:var(--slate-500);cursor:pointer;}
+  .icon-btn:hover{background:var(--slate-100);}
+  .icon-btn .badge{position:absolute;top:0;right:0;background:var(--red-500);color:#fff;font-size:10px;font-weight:700;border-radius:10px;padding:1px 5px;}
+  .user-chip{display:flex;align-items:center;gap:10px;cursor:pointer;}
+  .avatar{width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,var(--blue-500),var(--purple-500));display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:13px;}
+  .user-chip .uname{font-size:13px;font-weight:600;color:var(--slate-800);}
+  .user-chip .urole{font-size:11px;color:var(--slate-400);}
+
+  .content{padding:24px 28px;overflow-y:auto;flex:1;}
+  .page{display:none;}
+  .page.active{display:block;}
+  .page-title{font-size:22px;font-weight:800;color:var(--slate-900);margin:0 0 4px;}
+  .page-sub{color:var(--slate-500);font-size:13px;margin:0 0 22px;}
+
+  .card{background:#fff;border:1px solid var(--slate-200);border-radius:var(--radius);box-shadow:var(--shadow);}
+  .stats-row{display:grid;grid-template-columns:repeat(5,1fr);gap:16px;margin-bottom:20px;}
+  .stats-row.cols-4{grid-template-columns:repeat(4,1fr);}
+  .stat-card{padding:18px 20px;display:flex;flex-direction:column;gap:8px;}
+  .stat-top{display:flex;align-items:center;gap:12px;}
+  .stat-icon{width:42px;height:42px;border-radius:10px;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+  .stat-label{font-size:12.5px;color:var(--slate-500);}
+  .stat-value{font-size:24px;font-weight:800;color:var(--slate-900);}
+  .stat-sub{font-size:11.5px;color:var(--slate-400);}
+  .stat-sub.up{color:var(--red-600);}
+  .stat-sub.upgreen{color:var(--green-600);}
+
+  .grid-2{display:grid;grid-template-columns:2.2fr 1fr;gap:18px;margin-bottom:20px;}
+  .card-head{display:flex;justify-content:space-between;align-items:center;padding:16px 18px;border-bottom:1px solid var(--slate-100);}
+  .card-head h3{margin:0;font-size:15px;font-weight:700;color:var(--slate-900);}
+  .link{color:var(--blue-600);font-size:12.5px;text-decoration:none;font-weight:600;}
+
+  .cam-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;padding:16px;}
+  .cam-tile{position:relative;border-radius:9px;overflow:hidden;background:var(--slate-800);aspect-ratio:16/9;}
+  .cam-tile img{width:100%;height:100%;object-fit:cover;display:block;opacity:.92;}
+  .cam-label{position:absolute;top:8px;left:8px;background:rgba(0,0,0,.55);color:#fff;font-size:11.5px;padding:3px 8px;border-radius:5px;display:flex;align-items:center;gap:5px;}
+  .cam-time{position:absolute;bottom:8px;left:8px;background:rgba(0,0,0,.5);color:#fff;font-size:10.5px;padding:2px 6px;border-radius:4px;}
+  .cam-tag{position:absolute;top:8px;right:8px;background:var(--red-500);color:#fff;font-size:10px;font-weight:700;padding:2px 7px;border-radius:5px;}
+
+  .quick-alert-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:16px;}
+  .qa-item{text-align:center;padding:14px 8px;background:var(--slate-50);border-radius:9px;}
+  .qa-item .n{font-size:20px;font-weight:800;color:var(--slate-900);}
+  .qa-item .l{font-size:11px;color:var(--slate-500);margin-top:2px;}
+
+  .activity-item{display:flex;align-items:center;gap:12px;padding:12px 18px;border-bottom:1px solid var(--slate-100);}
+  .activity-item:last-child{border-bottom:none;}
+  .act-icon{width:34px;height:34px;border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+  .act-time{font-size:11px;color:var(--slate-400);width:48px;flex-shrink:0;}
+  .act-body{flex:1;}
+  .act-body .t{font-size:13px;font-weight:600;color:var(--slate-800);}
+  .act-body .s{font-size:11px;color:var(--slate-400);}
+  .act-loc{font-size:11.5px;color:var(--slate-500);}
+  .act-thumb{width:42px;height:32px;border-radius:5px;object-fit:cover;background:var(--slate-200);}
+
+  table{width:100%;border-collapse:collapse;font-size:13px;}
+  th{text-align:left;padding:10px 18px;color:var(--slate-500);font-weight:600;font-size:12px;border-bottom:1px solid var(--slate-100);background:var(--slate-50);}
+  td{padding:11px 18px;border-bottom:1px solid var(--slate-100);color:var(--slate-700);}
+  tr:hover td{background:var(--slate-50);}
+  .pill{display:inline-block;padding:2px 10px;border-radius:12px;font-size:11.5px;font-weight:600;}
+  .pill.cao{background:#fee2e2;color:#dc2626;}
+  .pill.trungbinh{background:#fef3c7;color:#b45309;}
+  .pill.thap{background:#dbeafe;color:#1d4ed8;}
+  .status{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;}
+  .status .d{width:7px;height:7px;border-radius:50%;}
+  .status.daxuly .d{background:var(--green-500);} .status.daxuly{color:var(--green-600);}
+  .status.dangxuly .d{background:var(--blue-500);} .status.dangxuly{color:var(--blue-600);}
+
+  .charts-row{display:grid;grid-template-columns:2fr 1fr;gap:18px;}
+  .donut-wrap{display:flex;align-items:center;gap:20px;padding:18px;}
+  .legend-item{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--slate-600);margin-bottom:8px;}
+  .legend-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0;}
+
+  /* Camera trực tiếp page */
+  .filters-row{display:flex;gap:12px;margin-bottom:16px;align-items:center;flex-wrap:wrap;}
+  .filters-row select,.filters-row .search-box{padding:9px 12px;border:1px solid var(--slate-200);border-radius:8px;font-size:13px;background:#fff;color:var(--slate-700);}
+  .search-box{display:flex;align-items:center;gap:8px;flex:1;min-width:200px;}
+  .search-box input{border:none;outline:none;flex:1;font-size:13px;}
+  .live-layout{display:grid;grid-template-columns:1fr 320px;gap:18px;}
+  .live-cam-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;}
+  .live-tile{position:relative;border-radius:9px;overflow:hidden;background:var(--slate-800);aspect-ratio:16/10;cursor:pointer;border:2px solid transparent;}
+  .live-tile.selected{border-color:var(--blue-500);}
+  .live-tile img{width:100%;height:100%;object-fit:cover;}
+  .side-panel{padding:0;}
+  .side-panel .cam-thumb{width:100%;aspect-ratio:16/9;object-fit:cover;}
+  .side-section{padding:14px 18px;border-bottom:1px solid var(--slate-100);}
+  .side-section h4{margin:0 0 10px;font-size:12.5px;color:var(--slate-400);font-weight:700;text-transform:uppercase;letter-spacing:.3px;}
+  .info-row{display:flex;justify-content:space-between;font-size:12.5px;padding:5px 0;color:var(--slate-600);}
+  .info-row span:last-child{color:var(--slate-900);font-weight:600;text-align:right;}
+  .rule-chip{display:flex;align-items:center;gap:10px;background:var(--slate-50);border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:12px;}
+  .rule-chip .rt{font-weight:600;color:var(--slate-800);flex:1;}
+  .rule-chip .badge-on{background:#dcfce7;color:#16a34a;font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:8px;}
+  .qact-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;}
+  .qact-grid div{display:flex;flex-direction:column;align-items:center;gap:5px;padding:10px 4px;background:var(--slate-50);border-radius:8px;font-size:10.5px;color:var(--slate-600);cursor:pointer;}
+
+  /* Alerts page */
+  .alert-layout{display:grid;grid-template-columns:1fr 420px;gap:18px;}
+  .alert-row{display:flex;align-items:center;gap:14px;padding:14px 18px;border-bottom:1px solid var(--slate-100);cursor:pointer;}
+  .alert-row.selected{background:var(--blue-50);}
+  .alert-row .time{width:80px;font-size:12px;color:var(--slate-400);flex-shrink:0;}
+  .alert-row .time b{display:block;color:var(--slate-800);font-size:13px;}
+  .alert-icon{width:36px;height:36px;border-radius:9px;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+  .alert-mid{flex:1;}
+  .alert-mid .t{font-size:13px;font-weight:600;color:var(--slate-800);}
+  .alert-mid .s{font-size:11.5px;color:var(--slate-400);}
+  .detail-evidence{position:relative;border-radius:9px;overflow:hidden;margin-bottom:10px;}
+  .detail-evidence img{width:100%;display:block;}
+  .evid-thumbs{display:flex;gap:8px;}
+  .evid-thumbs img{width:60px;height:44px;object-fit:cover;border-radius:6px;cursor:pointer;border:2px solid transparent;}
+  .evid-thumbs img.sel{border-color:var(--blue-500);}
+  .ai-summary{background:var(--slate-50);border-radius:9px;padding:12px 14px;font-size:12.5px;color:var(--slate-600);line-height:1.6;margin-bottom:10px;}
+  .reco-item{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--slate-600);padding:6px 0;}
+  .btn-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px;}
+  .btn-sm{padding:10px;border-radius:8px;font-size:13px;font-weight:600;border:1px solid var(--slate-200);background:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;}
+  .btn-sm.primary{background:var(--blue-600);color:#fff;border:none;}
+  .btn-sm.green{color:var(--green-600);}
+  .btn-sm.red{color:var(--red-600);}
+
+  /* reports */
+  .filters-grid{display:grid;grid-template-columns:repeat(5,1fr) auto;gap:12px;align-items:end;margin-bottom:20px;}
+  .filters-grid .fg label{display:block;font-size:11.5px;color:var(--slate-500);margin-bottom:5px;}
+  .filters-grid select,.filters-grid input{width:100%;padding:9px 10px;border:1px solid var(--slate-200);border-radius:8px;font-size:12.5px;}
+  .heatmap{padding:16px;overflow-x:auto;}
+  .heatmap table{font-size:11px;}
+  .heatmap td,.heatmap th{padding:4px 6px;text-align:center;}
+  .hm-cell{width:26px;height:22px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;font-size:10px;color:#1e3a8a;}
+
+  /* users */
+  .user-row-avatar{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font-size:12px;font-weight:700;flex-shrink:0;}
+  .role-pill{padding:2px 10px;border-radius:10px;font-size:11.5px;font-weight:600;}
+  .role-pill.admin{background:#fee2e2;color:#dc2626;}
+  .role-pill.giamsat{background:#dbeafe;color:#1d4ed8;}
+  .role-pill.nhanvien{background:#dcfce7;color:#16a34a;}
+  .pagination{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;font-size:12.5px;color:var(--slate-500);}
+  .pg-btns{display:flex;gap:4px;}
+  .pg-btns button{width:28px;height:28px;border-radius:7px;border:1px solid var(--slate-200);background:#fff;cursor:pointer;font-size:12px;}
+  .pg-btns button.active{background:var(--blue-600);color:#fff;border-color:var(--blue-600);}
+  .udetail-tabs{display:flex;border-bottom:1px solid var(--slate-100);padding:0 18px;}
+  .udetail-tabs span{padding:12px 4px;margin-right:20px;font-size:12.5px;color:var(--slate-400);cursor:pointer;border-bottom:2px solid transparent;}
+  .udetail-tabs span.active{color:var(--blue-600);border-color:var(--blue-600);font-weight:600;}
+  .perm-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;}
+  .perm-item{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--slate-600);}
+
+  .toolbar-flex{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;}
+</style>
+</head>
+<body>
+
+<!-- ============ LOGIN SCREEN ============ -->
+<div id="login-screen">
+  <div class="login-left">
+    <div class="brand"><div class="brand-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 4 5v6c0 5.5 3.8 9.7 8 11 4.2-1.3 8-5.5 8-11V5l-8-3z"/></svg></div><div class="brand-name">MultiCAM<span>AI</span></div></div>
+    <p class="tagline">Giám sát an ninh tập trung thông minh</p>
+    <h1>Giám sát toàn diện.<br>Vận hành thông minh.</h1>
+    <p class="desc">MultiCAMAI giúp doanh nghiệp giám sát tập trung nhiều địa điểm, phát hiện sự kiện thông minh và phản ứng kịp thời với cảnh báo AI thời gian thực.</p>
+    <div class="feature"><div class="feature-icon blue"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg></div><div><h4>Giám sát tập trung</h4><p>Quản lý toàn bộ camera và thiết bị trên một nền tảng duy nhất.</p></div></div>
+    <div class="feature"><div class="feature-icon red"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg></div><div><h4>Cảnh báo AI thời gian thực</h4><p>Phát hiện sự kiện bất thường và cảnh báo tức thì qua AI.</p></div></div>
+    <div class="feature"><div class="feature-icon purple"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18M5 21V7l8-4v18M19 21V11l-6-4"/></svg></div><div><h4>Quản lý đa điểm</h4><p>Giám sát nhiều chi nhánh, khu vực một cách dễ dàng và hiệu quả.</p></div></div>
+  </div>
+  <div class="login-right">
+    <div class="login-card">
+      <div class="brand"><div class="brand-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 4 5v6c0 5.5 3.8 9.7 8 11 4.2-1.3 8-5.5 8-11V5l-8-3z"/></svg></div><div class="brand-name">MultiCAM<span>AI</span></div></div>
+      <p class="tagline">Giám sát an ninh tập trung thông minh</p>
+      <div class="field"><label>Mã đơn vị / Tenant</label><div class="input-wrap"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="2" width="16" height="20" rx="1"/><path d="M9 6h1M14 6h1M9 10h1M14 10h1M9 14h1M14 14h1"/></svg><input placeholder="Nhập mã đơn vị"></div></div>
+      <div class="field"><label>Tên đăng nhập hoặc email</label><div class="input-wrap"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg><input placeholder="Nhập tên đăng nhập hoặc email"></div></div>
+      <div class="field"><label>Mật khẩu</label><div class="input-wrap"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="11" width="16" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg><input type="password" placeholder="Nhập mật khẩu"><svg class="toggle-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg></div></div>
+      <div class="row-between"><label><input type="checkbox" checked style="margin:0;"> Ghi nhớ đăng nhập</label><a href="#">Quên mật khẩu?</a></div>
+      <button class="btn-primary" onclick="doLogin()">Đăng nhập</button>
+      <div class="divider">hoặc</div>
+      <button class="btn-google"><svg width="17" height="17" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>Đăng nhập với Google</button>
+      <p class="login-foot">© 2025 MultiCAMAI. All rights reserved.<br><a href="#">Điều khoản sử dụng</a>|<a href="#">Chính sách bảo mật</a>|<a href="#">Hỗ trợ</a></p>
+    </div>
+  </div>
+</div>
+
+<!-- ============ APP ============ -->
+<div id="app">
+<div class="layout">
+  <div class="sidebar">
+    <div class="brand"><div class="brand-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 4 5v6c0 5.5 3.8 9.7 8 11 4.2-1.3 8-5.5 8-11V5l-8-3z"/></svg></div><div class="brand-name">MultiCAM<span style="color:var(--blue-600)">AI</span></div></div>
+    <nav class="menu">
+      <a class="active" data-page="overview" onclick="nav('overview',this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9.5 12 3l9 6.5V21a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9.5z"/></svg>Tổng quan</a>
+      <a data-page="live" onclick="nav('live',this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="14" rx="2"/><path d="M8 21h8M12 18v3"/></svg>Camera trực tiếp</a>
+      <a data-page="ai" onclick="nav('ai',this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Sự kiện AI</a>
+      <a data-page="alerts" onclick="nav('alerts',this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>Cảnh báo<span class="badge">12</span></a>
+      <a data-page="map" onclick="nav('map',this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 6v15l7-3 8 3 7-3V3l-7 3-8-3-7 3z"/><path d="M8 3v15M16 6v15"/></svg>Bản đồ camera</a>
+      <a data-page="reports" onclick="nav('reports',this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h6"/></svg>Báo cáo</a>
+      <a data-page="cammgmt" onclick="nav('cammgmt',this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>Quản lý camera</a>
+      <a data-page="users" onclick="nav('users',this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>Người dùng</a>
+      <a data-page="settings" onclick="nav('settings',this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>Cài đặt</a>
+    </nav>
+    <div class="sidebar-foot"><span class="dot-green"></span>Phiên bản v2.3.1</div>
+  </div>
+
+  <div class="main">
+    <div class="topbar">
+      <h2 id="page-heading">Giám sát an ninh tập trung thông minh</h2>
+      <div class="topbar-right">
+        <div class="icon-btn"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg><span class="badge">8</span></div>
+        <div class="icon-btn"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M3 16v3a2 2 0 0 0 2 2h3"/></svg></div>
+        <div class="user-chip"><div class="avatar">VM</div><div><div class="uname">Trần Văn Minh</div><div class="urole">Quản trị viên</div></div><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg></div>
+      </div>
+    </div>
+
+    <div class="content">
+
+      <!-- ============ OVERVIEW ============ -->
+      <div class="page active" id="page-overview">
+        <div class="stats-row">
+          <div class="card stat-card"><div class="stat-top"><div class="stat-icon" style="background:var(--blue-50);color:var(--blue-600)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="14" rx="2"/><path d="M8 21h8M12 18v3"/></svg></div><div><div class="stat-label">Tổng camera</div></div></div><div class="stat-value">128</div><div class="stat-sub">Tất cả: 128</div></div>
+          <div class="card stat-card"><div class="stat-top"><div class="stat-icon" style="background:var(--green-50);color:var(--green-600)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg></div><div><div class="stat-label">Camera online</div></div></div><div class="stat-value">96</div><div class="stat-sub upgreen">75%</div></div>
+          <div class="card stat-card"><div class="stat-top"><div class="stat-icon" style="background:var(--red-50);color:var(--red-500)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/></svg></div><div><div class="stat-label">Cảnh báo hôm nay</div></div></div><div class="stat-value">12</div><div class="stat-sub up">↑ 20% so với hôm qua</div></div>
+          <div class="card stat-card"><div class="stat-top"><div class="stat-icon" style="background:#f3e8ff;color:var(--purple-500)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/></svg></div><div><div class="stat-label">Sự kiện AI (hôm nay)</div></div></div><div class="stat-value">156</div><div class="stat-sub upgreen">↑ 18% so với hôm qua</div></div>
+          <div class="card stat-card"><div class="stat-top"><div class="stat-icon" style="background:var(--blue-50);color:var(--blue-600)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18M5 21V7l8-4v18M19 21V11l-6-4"/></svg></div><div><div class="stat-label">Khu vực giám sát</div></div></div><div class="stat-value">24</div><div class="stat-sub">Tòa nhà / Khu vực</div></div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-head"><h3>Xem trực tiếp nhanh</h3><a class="link" href="#">Xem tất cả ›</a></div>
+            <div class="cam-grid">
+              <div class="cam-tile"><img src="https://images.unsplash.com/photo-1558005530-a7958896ec60?w=500&q=70"><div class="cam-label">● 1. Cổng chính</div><div class="cam-time">09:24:15</div></div>
+              <div class="cam-tile"><img src="https://images.unsplash.com/photo-1506521781263-d8422e82f27a?w=500&q=70"><div class="cam-label">● 2. Bãi xe</div><div class="cam-time">09:24:15</div></div>
+              <div class="cam-tile"><img src="https://images.unsplash.com/photo-1497366811353-6870744d04b2?w=500&q=70"><div class="cam-label">● 3. Hành lang tầng 2</div><div class="cam-time">09:24:15</div></div>
+              <div class="cam-tile"><img src="https://images.unsplash.com/photo-1553413077-190083ec01ff?w=500&q=70"><div class="cam-label">● 4. Kho hàng</div><div class="cam-time">09:24:15</div></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>Cảnh báo nhanh</h3><a class="link" href="#">Xem tất cả ›</a></div>
+            <div class="quick-alert-grid">
+              <div class="qa-item"><div class="n" style="color:#dc2626">6</div><div class="l">Phát hiện xâm nhập</div></div>
+              <div class="qa-item"><div class="n" style="color:#2563eb">3</div><div class="l">Vật thể bị bỏ rơi</div></div>
+              <div class="qa-item"><div class="n" style="color:#d97706">2</div><div class="l">Vật thể khả nghi</div></div>
+              <div class="qa-item"><div class="n" style="color:#7c3aed">1</div><div class="l">Đi qua hàng rào ảo</div></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-head"><h3>Sự kiện AI gần đây</h3><a class="link" href="#">Xem tất cả ›</a></div>
+            <table>
+              <tr><th>Thời gian</th><th>Camera</th><th>Sự kiện</th><th>Mức độ</th><th>Trạng thái</th></tr>
+              <tr><td>09:23:48</td><td>Cổng chính</td><td>Phát hiện xâm nhập</td><td><span class="pill cao">Cao</span></td><td><span class="status daxuly"><span class="d"></span>Đã xử lý</span></td></tr>
+              <tr><td>09:21:17</td><td>Bãi xe</td><td>Đi qua hàng rào ảo</td><td><span class="pill trungbinh">Trung bình</span></td><td><span class="status dangxuly"><span class="d"></span>Đang xử lý</span></td></tr>
+              <tr><td>09:19:05</td><td>Hành lang tầng 2</td><td>Vật thể bị bỏ rơi</td><td><span class="pill trungbinh">Trung bình</span></td><td><span class="status daxuly"><span class="d"></span>Đã xử lý</span></td></tr>
+              <tr><td>09:15:32</td><td>Cổng chính</td><td>Nhận diện khuôn mặt</td><td><span class="pill thap">Thấp</span></td><td><span class="status daxuly"><span class="d"></span>Đã xử lý</span></td></tr>
+              <tr><td>09:12:09</td><td>Bãi xe</td><td>Xe đi vào</td><td><span class="pill thap">Thấp</span></td><td><span class="status daxuly"><span class="d"></span>Đã xử lý</span></td></tr>
+              <tr><td>09:07:56</td><td>Kho hàng</td><td>Phát hiện tụ tập</td><td><span class="pill trungbinh">Trung bình</span></td><td><span class="status dangxuly"><span class="d"></span>Đang xử lý</span></td></tr>
+            </table>
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>Hoạt động gần đây</h3><a class="link" href="#">Xem tất cả ›</a></div>
+            <div class="activity-item"><div class="act-time">09:23:48</div><div class="act-icon" style="background:var(--red-50);color:var(--red-500)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 4l-9 9h6l-1 7 9-9h-6l1-7z"/></svg></div><div class="act-body"><div class="t">Phát hiện xâm nhập</div><div class="s">Bởi AI Engine</div></div><div class="act-loc">Cổng chính</div></div>
+            <div class="activity-item"><div class="act-time">09:21:17</div><div class="act-icon" style="background:#dbeafe;color:#2563eb"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg></div><div class="act-body"><div class="t">Đi qua hàng rào ảo</div><div class="s">Bởi AI Engine</div></div><div class="act-loc">Bãi xe</div></div>
+            <div class="activity-item"><div class="act-time">09:19:05</div><div class="act-icon" style="background:#fef3c7;color:#d97706"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg></div><div class="act-body"><div class="t">Vật thể bị bỏ rơi</div><div class="s">Bởi AI Engine</div></div><div class="act-loc">Hành lang tầng 2</div></div>
+            <div class="activity-item"><div class="act-time">09:15:32</div><div class="act-icon" style="background:#dcfce7;color:#16a34a"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg></div><div class="act-body"><div class="t">Nhận diện khuôn mặt</div><div class="s">Khớp: Nhân viên</div></div><div class="act-loc">Cổng chính</div></div>
+            <div class="activity-item"><div class="act-time">09:12:09</div><div class="act-icon" style="background:#dbeafe;color:#2563eb"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg></div><div class="act-body"><div class="t">Xe đi vào</div><div class="s">Bởi AI Engine</div></div><div class="act-loc">Bãi xe</div></div>
+          </div>
+        </div>
+
+        <div class="charts-row">
+          <div class="card">
+            <div class="card-head"><h3>Số cảnh báo theo ngày</h3><select style="border:1px solid var(--slate-200);border-radius:6px;font-size:12px;padding:4px 8px;">7 ngày qua</select></div>
+            <svg viewBox="0 0 600 220" style="width:100%;height:220px;padding:10px 0;">
+              <polyline points="20,170 100,190 180,150 260,80 340,60 420,110 500,140" fill="none" stroke="#3b82f6" stroke-width="2.5"/>
+              <polygon points="20,170 100,190 180,150 260,80 340,60 420,110 500,140 500,210 20,210" fill="url(#g1)" opacity="0.25"/>
+              <defs><linearGradient id="g1" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#3b82f6"/><stop offset="100%" stop-color="#3b82f6" stop-opacity="0"/></linearGradient></defs>
+              <text x="10" y="20" font-size="11" fill="#94a3b8">14/05</text>
+              <text x="90" y="20" font-size="11" fill="#94a3b8">15/05</text>
+            </svg>
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>Sự kiện AI theo loại</h3><select style="border:1px solid var(--slate-200);border-radius:6px;font-size:12px;padding:4px 8px;">7 ngày qua</select></div>
+            <div class="donut-wrap">
+              <svg width="120" height="120" viewBox="0 0 36 36">
+                <circle cx="18" cy="18" r="15.9" fill="none" stroke="#ef4444" stroke-width="5" stroke-dasharray="24.4 75.6" stroke-dashoffset="25"/>
+                <circle cx="18" cy="18" r="15.9" fill="none" stroke="#3b82f6" stroke-width="5" stroke-dasharray="17.9 82.1" stroke-dashoffset="0.6"/>
+                <circle cx="18" cy="18" r="15.9" fill="none" stroke="#f59e0b" stroke-width="5" stroke-dasharray="15.4 84.6" stroke-dashoffset="-17.3"/>
+                <circle cx="18" cy="18" r="15.9" fill="none" stroke="#22c55e" stroke-width="5" stroke-dasharray="22.4 77.6" stroke-dashoffset="-32.7"/>
+                <circle cx="18" cy="18" r="15.9" fill="none" stroke="#8b5cf6" stroke-width="5" stroke-dasharray="19.9 80.1" stroke-dashoffset="-55.1"/>
+                <text x="18" y="17" text-anchor="middle" font-size="3.6" fill="#94a3b8">Tổng</text>
+                <text x="18" y="21.5" text-anchor="middle" font-size="4.5" fill="#0f172a" font-weight="700">156</text>
+              </svg>
+              <div>
+                <div class="legend-item"><span class="legend-dot" style="background:#ef4444"></span>Phát hiện xâm nhập 38 (24.4%)</div>
+                <div class="legend-item"><span class="legend-dot" style="background:#3b82f6"></span>Đi qua hàng rào ảo 28 (17.9%)</div>
+                <div class="legend-item"><span class="legend-dot" style="background:#f59e0b"></span>Vật thể bị bỏ rơi 24 (15.4%)</div>
+                <div class="legend-item"><span class="legend-dot" style="background:#22c55e"></span>Nhận diện khuôn mặt 35 (22.4%)</div>
+                <div class="legend-item"><span class="legend-dot" style="background:#8b5cf6"></span>Khác 31 (19.9%)</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ LIVE CAMERA ============ -->
+      <div class="page" id="page-live">
+        <div class="filters-row">
+          <select><option>Tất cả khu vực</option></select>
+          <select><option>Tất cả trạng thái</option></select>
+          <select><option>Tất cả loại</option></select>
+          <div class="search-box"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg><input placeholder="Tìm kiếm camera..."></div>
+        </div>
+        <div class="toolbar-flex">
+          <div style="font-size:13px;color:var(--slate-500);">Hiển thị 8/128 camera · <span style="color:var(--green-600);">● Tất cả camera đang hoạt động</span></div>
+        </div>
+        <div class="live-layout">
+          <div class="live-cam-grid" id="liveCamGrid">
+            <div class="live-tile" onclick="selectCam(this)"><img src="https://images.unsplash.com/photo-1558005530-a7958896ec60?w=500&q=70"><div class="cam-tag">LIVE</div><div class="cam-label">● 1. Cổng chính</div><div class="cam-time">10:24:15</div></div>
+            <div class="live-tile" onclick="selectCam(this)"><img src="https://images.unsplash.com/photo-1506521781263-d8422e82f27a?w=500&q=70"><div class="cam-tag">LIVE</div><div class="cam-label">● 2. Bãi xe A</div><div class="cam-time">10:24:15</div></div>
+            <div class="live-tile" onclick="selectCam(this)"><img src="https://images.unsplash.com/photo-1497366754035-f200968a6e72?w=500&q=70"><div class="cam-label">● 3. Sảnh lễ tân</div><div class="cam-time">10:24:15</div></div>
+            <div class="live-tile" onclick="selectCam(this)"><img src="https://images.unsplash.com/photo-1497366811353-6870744d04b2?w=500&q=70"><div class="cam-label">● 4. Hành lang tầng 1</div><div class="cam-time">10:24:15</div></div>
+            <div class="live-tile selected" onclick="selectCam(this)"><img src="https://images.unsplash.com/photo-1497366216548-37526070297c?w=500&q=70"><div class="cam-tag" style="background:#dc2626">Xâm nhập</div><div class="cam-label">● 5. Hành lang tầng 2</div><div class="cam-time">10:24:15</div></div>
+            <div class="live-tile" onclick="selectCam(this)"><img src="https://images.unsplash.com/photo-1553413077-190083ec01ff?w=500&q=70"><div class="cam-tag" style="background:#f59e0b">Hàng rào ảo</div><div class="cam-label">● 6. Kho hàng</div><div class="cam-time">10:24:15</div></div>
+            <div class="live-tile" onclick="selectCam(this)"><img src="https://images.unsplash.com/photo-1565008447742-97f6f38c985c?w=500&q=70"><div class="cam-label">● 7. Cửa sau</div><div class="cam-time">10:24:15</div></div>
+            <div class="live-tile" onclick="selectCam(this)"><img src="https://images.unsplash.com/photo-1591405351990-4726e331f141?w=500&q=70"><div class="cam-label">● 8. Khu vực kỹ thuật</div><div class="cam-time">10:24:15</div></div>
+          </div>
+          <div class="card side-panel">
+            <img class="cam-thumb" src="https://images.unsplash.com/photo-1497366216548-37526070297c?w=500&q=70">
+            <div class="side-section">
+              <div style="font-weight:700;font-size:14px;">5. Hành lang tầng 2</div>
+              <span style="background:#dcfce7;color:#16a34a;font-size:11px;font-weight:600;padding:2px 8px;border-radius:8px;">Online</span>
+            </div>
+            <div class="side-section">
+              <div class="info-row"><span>IP / RTSP</span><span>192.168.1.105</span></div>
+              <div class="info-row"><span>Hãng / Model</span><span>Hikvision / DS-2CD2143G2</span></div>
+              <div class="info-row"><span>Khu vực</span><span>Tòa nhà A / Tầng 2</span></div>
+              <div class="info-row"><span>Vị trí lắp đặt</span><span>Hành lang tầng 2</span></div>
+              <div class="info-row"><span>Độ phân giải</span><span>1920 x 1080 (Full HD)</span></div>
+              <div class="info-row"><span>FPS</span><span>25</span></div>
+              <div class="info-row"><span>Bitrate</span><span>4096 kbps</span></div>
+              <div class="info-row"><span>Trạng thái</span><span style="color:#16a34a">Hoạt động tốt</span></div>
+            </div>
+            <div class="side-section">
+              <h4>Quy tắc AI đang áp dụng (2)</h4>
+              <div class="rule-chip"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="2"><path d="M13 4l-9 9h6l-1 7 9-9h-6l1-7z"/></svg><span class="rt">Phát hiện xâm nhập<br><span style="font-weight:400;color:var(--slate-400)">Vùng: HL2 - Khu vực cấm</span></span><span class="badge-on">Kích hoạt</span></div>
+              <div class="rule-chip"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg><span class="rt">Nhận diện khuôn mặt<br><span style="font-weight:400;color:var(--slate-400)">Danh sách: Nhân viên</span></span><span class="badge-on">Kích hoạt</span></div>
+            </div>
+            <div class="side-section">
+              <h4>Thao tác nhanh</h4>
+              <div class="qact-grid">
+                <div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#475569" stroke-width="2"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>Xem trực tiếp</div>
+                <div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#475569" stroke-width="2"><circle cx="12" cy="12" r="10"/><polygon points="10,8 16,12 10,16"/></svg>Phát lại</div>
+                <div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#475569" stroke-width="2"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>Ghi hình</div>
+                <div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#475569" stroke-width="2"><path d="M23 19v-7a2 2 0 0 0-2-2H3a2 2 0 0 0-2 2v7"/><circle cx="12" cy="13" r="4"/></svg>Chụp ảnh</div>
+                <div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#475569" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg>Đàm thoại</div>
+                <div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#475569" stroke-width="2"><circle cx="12" cy="12" r="3"/></svg>Cấu hình</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ AI events (reuse simple) ============ -->
+      <div class="page" id="page-ai">
+        <h1 class="page-title">Sự kiện AI</h1>
+        <p class="page-sub">Danh sách toàn bộ sự kiện được phát hiện bởi AI Engine</p>
+        <div class="card">
+          <table>
+            <tr><th>Thời gian</th><th>Camera</th><th>Sự kiện</th><th>Mức độ</th><th>Trạng thái</th></tr>
+            <tr><td>09:23:48</td><td>Cổng chính</td><td>Phát hiện xâm nhập</td><td><span class="pill cao">Cao</span></td><td><span class="status daxuly"><span class="d"></span>Đã xử lý</span></td></tr>
+            <tr><td>09:21:17</td><td>Bãi xe</td><td>Đi qua hàng rào ảo</td><td><span class="pill trungbinh">Trung bình</span></td><td><span class="status dangxuly"><span class="d"></span>Đang xử lý</span></td></tr>
+            <tr><td>09:19:05</td><td>Hành lang tầng 2</td><td>Vật thể bị bỏ rơi</td><td><span class="pill trungbinh">Trung bình</span></td><td><span class="status daxuly"><span class="d"></span>Đã xử lý</span></td></tr>
+            <tr><td>09:15:32</td><td>Cổng chính</td><td>Nhận diện khuôn mặt</td><td><span class="pill thap">Thấp</span></td><td><span class="status daxuly"><span class="d"></span>Đã xử lý</span></td></tr>
+          </table>
+        </div>
+      </div>
+
+      <!-- ============ ALERTS ============ -->
+      <div class="page" id="page-alerts">
+        <h1 class="page-title">Cảnh báo</h1>
+        <p class="page-sub">Trung tâm xử lý cảnh báo và sự cố</p>
+        <div class="stats-row cols-4">
+          <div class="card stat-card"><div class="stat-top"><div class="stat-icon" style="background:var(--red-50);color:var(--red-500)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/></svg></div><div class="stat-label">Cảnh báo mới</div></div><div class="stat-value">12</div><div class="stat-sub up">↑ 20% so với hôm qua</div></div>
+          <div class="card stat-card"><div class="stat-top"><div class="stat-icon" style="background:var(--amber-50);color:var(--amber-600)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></div><div class="stat-label">Đang xử lý</div></div><div class="stat-value">18</div><div class="stat-sub up">↑ 12% so với hôm qua</div></div>
+          <div class="card stat-card"><div class="stat-top"><div class="stat-icon" style="background:#f3e8ff;color:var(--purple-500)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></div><div class="stat-label">Quá hạn</div></div><div class="stat-value">6</div><div class="stat-sub up">↑ 50% so với hôm qua</div></div>
+          <div class="card stat-card"><div class="stat-top"><div class="stat-icon" style="background:var(--green-50);color:var(--green-600)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></div><div class="stat-label">Đã đóng (hôm nay)</div></div><div class="stat-value">35</div><div class="stat-sub upgreen">↑ 16% so với hôm qua</div></div>
+        </div>
+
+        <div class="alert-layout">
+          <div class="card">
+            <div class="card-head"><h3>Danh sách cảnh báo (36)</h3>
+              <div style="display:flex;gap:8px;"><select style="font-size:12px;border:1px solid var(--slate-200);border-radius:6px;padding:4px 8px;">Tất cả mức độ</select><select style="font-size:12px;border:1px solid var(--slate-200);border-radius:6px;padding:4px 8px;">Tất cả trạng thái</select></div>
+            </div>
+            <div id="alertList">
+              <div class="alert-row selected" onclick="selectAlert(this)"><div class="time">09:23:48<br><span style="color:#ef4444">2 phút trước</span></div><div class="alert-icon" style="background:var(--red-50);color:var(--red-500)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 4l-9 9h6l-1 7 9-9h-6l1-7z"/></svg></div><div class="alert-mid"><div class="t">Phát hiện xâm nhập <span class="pill cao">Cao</span></div><div class="s">Cổng chính · CAM-01</div></div><div style="font-size:11.5px;color:#3b82f6;">● Mới</div></div>
+              <div class="alert-row" onclick="selectAlert(this)"><div class="time">09:21:17<br><span style="color:var(--slate-400)">4 phút trước</span></div><div class="alert-icon" style="background:#dbeafe;color:#2563eb"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg></div><div class="alert-mid"><div class="t">Đi qua hàng rào ảo <span class="pill trungbinh">Trung bình</span></div><div class="s">Bãi xe · CAM-02</div></div><div style="font-size:11.5px;color:#d97706;">● Đang xử lý</div></div>
+              <div class="alert-row" onclick="selectAlert(this)"><div class="time">09:19:05<br><span style="color:var(--slate-400)">6 phút trước</span></div><div class="alert-icon" style="background:#fef3c7;color:#d97706"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg></div><div class="alert-mid"><div class="t">Vật thể bị bỏ rơi <span class="pill trungbinh">Trung bình</span></div><div class="s">Hành lang tầng 2 · CAM-07</div></div><div style="font-size:11.5px;color:#d97706;">● Mới</div></div>
+              <div class="alert-row" onclick="selectAlert(this)"><div class="time">09:15:32<br><span style="color:var(--slate-400)">10 phút trước</span></div><div class="alert-icon" style="background:#dcfce7;color:#16a34a"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg></div><div class="alert-mid"><div class="t">Nhận diện khuôn mặt <span class="pill thap">Thấp</span></div><div class="s">Cổng chính · CAM-01</div></div><div style="font-size:11.5px;color:#d97706;">● Đang xử lý</div></div>
+              <div class="alert-row" onclick="selectAlert(this)"><div class="time">09:12:09<br><span style="color:var(--slate-400)">13 phút trước</span></div><div class="alert-icon" style="background:#dbeafe;color:#2563eb"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg></div><div class="alert-mid"><div class="t">Xe đi vào <span class="pill thap">Thấp</span></div><div class="s">Bãi xe · CAM-02</div></div><div style="font-size:11.5px;color:#d97706;">● Đang xử lý</div></div>
+            </div>
+            <div class="pagination"><span>Hiển thị 1 đến 8 trong tổng số 36 cảnh báo</span><div class="pg-btns"><button>‹</button><button class="active">1</button><button>2</button><button>3</button><button>›</button></div></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h3>Chi tiết cảnh báo</h3><span style="cursor:pointer;color:var(--slate-400);">✕</span></div>
+            <div style="padding:16px 18px;">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;"><span class="pill cao">Cao</span><b>Phát hiện xâm nhập</b><span style="margin-left:auto;font-size:11px;color:var(--slate-400);">ID: #AL-20250515-092348</span></div>
+              <div style="font-size:12px;color:var(--slate-500);margin-bottom:14px;">09:23:48 <span style="color:#ef4444">2 phút trước</span> · 15/05/2025<br>📷 Cổng chính (CAM-01) &nbsp; 📍 Khu vực: Cổng chính</div>
+              <h4 style="font-size:12px;color:var(--slate-400);margin-bottom:8px;">HÌNH ẢNH BẰNG CHỨNG</h4>
+              <div class="detail-evidence"><img src="https://images.unsplash.com/photo-1558005530-a7958896ec60?w=500&q=70"></div>
+              <div class="evid-thumbs">
+                <img class="sel" src="https://images.unsplash.com/photo-1558005530-a7958896ec60?w=200&q=60">
+                <img src="https://images.unsplash.com/photo-1497366811353-6870744d04b2?w=200&q=60">
+                <img src="https://images.unsplash.com/photo-1506521781263-d8422e82f27a?w=200&q=60">
+              </div>
+              <h4 style="font-size:12px;color:var(--slate-400);margin:14px 0 8px;">TÓM TẮT BỞI AI</h4>
+              <div class="ai-summary">Hệ thống phát hiện một người vượt qua vùng cấm tại khu vực cổng chính vào thời điểm 09:23:48. Đối tượng di chuyển từ ngoài vào trong khu vực không đúng lối cho phép.
+                <div class="info-row"><span>Đối tượng</span><span>Người</span></div>
+                <div class="info-row"><span>Hướng di chuyển</span><span>Ngoài vào trong</span></div>
+                <div class="info-row"><span>Thời gian bắt đầu</span><span>09:23:45</span></div>
+                <div class="info-row"><span>Thời gian kết thúc</span><span>09:23:48</span></div>
+                <div class="info-row"><span>Độ tin cậy</span><span style="color:#16a34a">96%</span></div>
+              </div>
+              <h4 style="font-size:12px;color:var(--slate-400);margin:14px 0 8px;">XỬ LÝ KHUYẾN NGHỊ</h4>
+              <div class="reco-item">✅ Xác minh hình ảnh và thông tin sự việc</div>
+              <div class="reco-item">⬜ Liên hệ bảo vệ tại hiện trường</div>
+              <div class="reco-item">⬜ Kiểm tra và ghi nhận tình trạng</div>
+              <div class="reco-item">⬜ Báo cáo quản lý (nếu cần)</div>
+              <div class="btn-row">
+                <button class="btn-sm primary">↗ Tiếp nhận</button>
+                <button class="btn-sm green">✓ Đóng cảnh báo</button>
+                <button class="btn-sm">↪ Chuyển ca</button>
+                <button class="btn-sm">✉ Gửi SMS/Email</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ MAP ============ -->
+      <div class="page" id="page-map">
+        <h1 class="page-title">Bản đồ camera</h1>
+        <p class="page-sub">Vị trí camera theo khu vực giám sát</p>
+        <div class="card" style="padding:60px;text-align:center;color:var(--slate-400);">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#cbd5e1" stroke-width="1.5" style="margin-bottom:10px;"><path d="M1 6v15l7-3 8 3 7-3V3l-7 3-8-3-7 3z"/></svg>
+          <p>Bản đồ tương tác hiển thị vị trí 128 camera trên các tòa nhà và khu vực</p>
+        </div>
+      </div>
+
+      <!-- ============ REPORTS ============ -->
+      <div class="page" id="page-reports">
+        <h1 class="page-title">Báo cáo & phân tích</h1>
+        <p class="page-sub">Theo dõi, phân tích và xuất báo cáo hệ thống</p>
+        <div class="filters-grid">
+          <div class="fg"><label>Thời gian</label><input value="15/05/2025 - 21/05/2025"></div>
+          <div class="fg"><label>Khu vực</label><select><option>Tất cả khu vực</option></select></div>
+          <div class="fg"><label>Loại sự kiện</label><select><option>Tất cả sự kiện</option></select></div>
+          <div class="fg"><label>Camera</label><select><option>Tất cả camera</option></select></div>
+          <div class="fg"><label>Ca trực</label><select><option>Tất cả ca trực</option></select></div>
+          <button class="btn-primary" style="width:auto;padding:10px 18px;">⏷ Lọc dữ liệu</button>
+        </div>
+
+        <div class="stats-row">
+          <div class="card stat-card"><div class="stat-label">Tổng cảnh báo</div><div class="stat-value">1.256</div><div class="stat-sub upgreen">↑ 18% so với kỳ trước</div></div>
+          <div class="card stat-card"><div class="stat-label">Tỷ lệ xử lý đúng hạn</div><div class="stat-value">92,4%</div><div class="stat-sub upgreen">↑ 6,3% so với kỳ trước</div></div>
+          <div class="card stat-card"><div class="stat-label">Camera hoạt động ổn định</div><div class="stat-value">96,7%</div><div class="stat-sub upgreen">↑ 2,1% so với kỳ trước</div></div>
+          <div class="card stat-card"><div class="stat-label">Sự cố kết nối</div><div class="stat-value">18</div><div class="stat-sub up">↓ 22% so với kỳ trước</div></div>
+          <div class="card stat-card"><div class="stat-label">Thời gian phản hồi TB</div><div class="stat-value">02:18</div><div class="stat-sub upgreen">↓ 15s so với kỳ trước</div></div>
+        </div>
+
+        <div class="charts-row" style="grid-template-columns:1.4fr 1fr 1fr;margin-bottom:20px;">
+          <div class="card">
+            <div class="card-head"><h3>Xu hướng cảnh báo theo thời gian</h3></div>
+            <svg viewBox="0 0 400 180" style="width:100%;height:180px;padding:8px;">
+              <polyline points="20,140 90,120 160,150 230,40 300,20 370,55" fill="none" stroke="#3b82f6" stroke-width="2.5"/>
+            </svg>
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>Sự kiện theo khu vực</h3></div>
+            <svg viewBox="0 0 260 180" style="width:100%;height:180px;padding:8px;">
+              <rect x="20" y="20" width="24" height="140" fill="#3b82f6"/><rect x="60" y="50" width="24" height="110" fill="#3b82f6"/><rect x="100" y="80" width="24" height="80" fill="#3b82f6"/><rect x="140" y="100" width="24" height="60" fill="#3b82f6"/><rect x="180" y="108" width="24" height="52" fill="#3b82f6"/><rect x="220" y="118" width="24" height="42" fill="#3b82f6"/>
+            </svg>
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>Cơ cấu sự kiện AI</h3></div>
+            <div class="donut-wrap" style="flex-direction:column;align-items:center;padding:8px;">
+              <svg width="100" height="100" viewBox="0 0 36 36">
+                <circle cx="18" cy="18" r="15.9" fill="none" stroke="#ef4444" stroke-width="5" stroke-dasharray="40.8 59.2"/>
+                <circle cx="18" cy="18" r="15.9" fill="none" stroke="#3b82f6" stroke-width="5" stroke-dasharray="24 76" stroke-dashoffset="-40.8"/>
+                <circle cx="18" cy="18" r="15.9" fill="none" stroke="#f59e0b" stroke-width="5" stroke-dasharray="16 84" stroke-dashoffset="-64.8"/>
+                <circle cx="18" cy="18" r="15.9" fill="none" stroke="#22c55e" stroke-width="5" stroke-dasharray="12.2 87.8" stroke-dashoffset="-80.8"/>
+                <text x="18" y="17" text-anchor="middle" font-size="3.2" fill="#94a3b8">Tổng</text>
+                <text x="18" y="21.5" text-anchor="middle" font-size="4" fill="#0f172a" font-weight="700">1.256</text>
+              </svg>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid-2" style="grid-template-columns:1.6fr 1fr;">
+          <div class="card heatmap">
+            <h3 style="margin:0 0 10px;font-size:14px;">Mức độ cảnh báo theo giờ (Heatmap)</h3>
+            <table>
+              <tr><th></th><th>00</th><th>01</th><th>02</th><th>...</th><th>20</th><th>21</th><th>22</th><th>23</th></tr>
+              <tr><td>T2 15/05</td><td>5</td><td>2</td><td>1</td><td>...</td><td>9</td><td>6</td><td>2</td><td>1</td></tr>
+              <tr><td>T3 16/05</td><td>6</td><td>3</td><td>2</td><td>...</td><td>5</td><td>5</td><td>2</td><td>2</td></tr>
+              <tr><td>T4 17/05</td><td>4</td><td>2</td><td>1</td><td>...</td><td>5</td><td>2</td><td>1</td><td>1</td></tr>
+            </table>
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>Top 5 camera có nhiều cảnh báo</h3></div>
+            <table>
+              <tr><th>#</th><th>Camera</th><th>Số cảnh báo</th></tr>
+              <tr><td>1</td><td>Camera 12 - Cổng chính</td><td>245</td></tr>
+              <tr><td>2</td><td>Camera 08 - Kho hàng</td><td>198</td></tr>
+              <tr><td>3</td><td>Camera 03 - Bãi xe</td><td>176</td></tr>
+              <tr><td>4</td><td>Camera 15 - Hành lang T2</td><td>132</td></tr>
+              <tr><td>5</td><td>Camera 21 - Tòa nhà A</td><td>118</td></tr>
+            </table>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:20px;">
+          <div class="card-head"><h3>Báo cáo tổng hợp</h3><div><button class="btn-sm" style="display:inline-flex;color:#dc2626;">📄 Xuất PDF</button> <button class="btn-sm" style="display:inline-flex;color:#16a34a;">📊 Xuất Excel</button></div></div>
+          <table>
+            <tr><th>Kỳ báo cáo</th><th>Số cảnh báo</th><th>Đã xử lý</th><th>Tồn đọng</th><th>Tỷ lệ đúng hạn</th><th>Xuất file</th></tr>
+            <tr><td>15/05/2025 - 21/05/2025</td><td>1.256</td><td>1.160</td><td>96</td><td>92,4%</td><td>📄 📊</td></tr>
+            <tr><td>08/05/2025 - 14/05/2025</td><td>1.064</td><td>976</td><td>88</td><td>90,1%</td><td>📄 📊</td></tr>
+            <tr><td>01/05/2025 - 07/05/2025</td><td>982</td><td>904</td><td>78</td><td>91,2%</td><td>📄 📊</td></tr>
+          </table>
+        </div>
+      </div>
+
+      <!-- ============ CAMERA MANAGEMENT ============ -->
+      <div class="page" id="page-cammgmt">
+        <h1 class="page-title">Quản lý camera</h1>
+        <p class="page-sub">Thêm, sửa, cấu hình camera và quy tắc AI</p>
+        <div class="card" style="padding:60px;text-align:center;color:var(--slate-400);">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#cbd5e1" stroke-width="1.5" style="margin-bottom:10px;"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
+          <p>Danh sách 128 camera, cấu hình, quy tắc AI và phân vùng giám sát</p>
+        </div>
+      </div>
+
+      <!-- ============ USERS ============ -->
+      <div class="page" id="page-users">
+        <h1 class="page-title">Người dùng</h1>
+        <p class="page-sub">Quản lý tài khoản người dùng và phân quyền hệ thống</p>
+        <div class="stats-row cols-4">
+          <div class="card stat-card"><div class="stat-label">Tổng người dùng</div><div class="stat-value">128</div><div class="stat-sub">Tất cả tài khoản</div></div>
+          <div class="card stat-card"><div class="stat-label">Đang hoạt động</div><div class="stat-value">96</div><div class="stat-sub upgreen">75%</div></div>
+          <div class="card stat-card"><div class="stat-label">Quản trị viên</div><div class="stat-value">18</div><div class="stat-sub">14%</div></div>
+          <div class="card stat-card"><div class="stat-label">Tài khoản khóa</div><div class="stat-value">6</div><div class="stat-sub">5%</div></div>
+        </div>
+
+        <div class="alert-layout" style="grid-template-columns:1fr 420px;">
+          <div class="card">
+            <div class="card-head">
+              <div class="search-box" style="border:1px solid var(--slate-200);border-radius:8px;padding:7px 10px;width:240px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg><input placeholder="Tìm kiếm người dùng..." style="border:none;outline:none;font-size:12.5px;"></div>
+              <button class="btn-sm primary" style="width:auto;padding:9px 16px;">+ Thêm người dùng</button>
+            </div>
+            <table>
+              <tr><th></th><th>Người dùng</th><th>Vai trò</th><th>Đơn vị</th><th>Email</th><th>Trạng thái</th></tr>
+              <tr style="background:var(--blue-50);"><td><input type="checkbox" checked></td><td style="display:flex;align-items:center;gap:8px;"><div class="user-row-avatar" style="background:#3b82f6;">TM</div>Trần Văn Minh<br><span style="color:var(--slate-400);font-size:11px;">admin</span></td><td><span class="role-pill admin">Quản trị viên</span></td><td>Phòng CNTT</td><td>minh.tran@demo.com</td><td><span class="status daxuly"><span class="d"></span>Hoạt động</span></td></tr>
+              <tr><td><input type="checkbox"></td><td style="display:flex;align-items:center;gap:8px;"><div class="user-row-avatar" style="background:#8b5cf6;">NH</div>Nguyễn Thị Hương<br><span style="color:var(--slate-400);font-size:11px;">huong.nguyen</span></td><td><span class="role-pill giamsat">Giám sát</span></td><td>Phòng An ninh</td><td>huong.nguyen@demo.com</td><td><span class="status daxuly"><span class="d"></span>Hoạt động</span></td></tr>
+              <tr><td><input type="checkbox"></td><td style="display:flex;align-items:center;gap:8px;"><div class="user-row-avatar" style="background:#22c55e;">LN</div>Lê Hoàng Nam<br><span style="color:var(--slate-400);font-size:11px;">nam.le</span></td><td><span class="role-pill nhanvien">Nhân viên</span></td><td>Nhà máy A</td><td>nam.le@demo.com</td><td><span class="status daxuly"><span class="d"></span>Hoạt động</span></td></tr>
+              <tr><td><input type="checkbox"></td><td style="display:flex;align-items:center;gap:8px;"><div class="user-row-avatar" style="background:#f59e0b;">PL</div>Phạm Thị Lan<br><span style="color:var(--slate-400);font-size:11px;">lan.pham</span></td><td><span class="role-pill giamsat">Giám sát</span></td><td>Nhà máy B</td><td>lan.pham@demo.com</td><td><span class="status daxuly"><span class="d"></span>Hoạt động</span></td></tr>
+              <tr><td><input type="checkbox"></td><td style="display:flex;align-items:center;gap:8px;"><div class="user-row-avatar" style="background:#06b6d4;">ĐV</div>Đỗ Văn Dũng<br><span style="color:var(--slate-400);font-size:11px;">dung.do</span></td><td><span class="role-pill nhanvien">Nhân viên</span></td><td>Kho vận</td><td>dung.do@demo.com</td><td><span class="status daxuly"><span class="d"></span>Hoạt động</span></td></tr>
+            </table>
+            <div class="pagination"><span>Hiển thị 1 đến 10 trong tổng số 128 người dùng</span><div class="pg-btns"><button>‹</button><button class="active">1</button><button>2</button><button>3</button><button>›</button></div></div>
+          </div>
+
+          <div class="card">
+            <div style="padding:18px;display:flex;gap:12px;align-items:center;border-bottom:1px solid var(--slate-100);">
+              <div class="user-row-avatar" style="width:54px;height:54px;font-size:18px;background:linear-gradient(135deg,#3b82f6,#8b5cf6);">TM</div>
+              <div><div style="font-weight:700;">Trần Văn Minh <span style="background:#dcfce7;color:#16a34a;font-size:10.5px;font-weight:600;padding:2px 7px;border-radius:8px;">Hoạt động</span></div><div style="font-size:12px;color:var(--slate-400);">admin · Quản trị viên · Phòng CNTT</div><div style="font-size:11px;color:var(--slate-400);">ID người dùng: USR-0001</div></div>
+            </div>
+            <div class="udetail-tabs"><span class="active">Thông tin</span><span>Phân quyền</span><span>Lịch sử hoạt động</span></div>
+            <div class="side-section">
+              <h4>Thông tin cá nhân</h4>
+              <div class="info-row"><span>Họ và tên</span><span>Trần Văn Minh</span></div>
+              <div class="info-row"><span>Email</span><span>minh.tran@demo.com</span></div>
+              <div class="info-row"><span>Số điện thoại</span><span>0909 123 456</span></div>
+              <div class="info-row"><span>Đơn vị</span><span>Phòng CNTT</span></div>
+              <div class="info-row"><span>Trạng thái</span><span style="color:#16a34a">Hoạt động</span></div>
+            </div>
+            <div class="side-section">
+              <h4>Quyền hệ thống</h4>
+              <div class="perm-grid">
+                <div class="perm-item">✅ Xem trực tiếp</div><div class="perm-item">✅ Xem lại</div>
+                <div class="perm-item">✅ Quản lý camera</div><div class="perm-item">✅ Quản lý người dùng</div>
+                <div class="perm-item">✅ Quản lý cảnh báo</div><div class="perm-item">✅ Xem báo cáo</div>
+                <div class="perm-item">✅ Cấu hình hệ thống</div><div class="perm-item">⬜ Xuất dữ liệu</div>
+              </div>
+            </div>
+            <div style="padding:16px 18px;display:flex;gap:10px;">
+              <button class="btn-sm primary" style="flex:1;">💾 Lưu</button>
+              <button class="btn-sm" style="flex:1;">🔑 Đặt lại mật khẩu</button>
+              <button class="btn-sm red" style="flex:1;">🔒 Khóa tài khoản</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ SETTINGS ============ -->
+      <div class="page" id="page-settings">
+        <h1 class="page-title">Cài đặt</h1>
+        <p class="page-sub">Cấu hình hệ thống và tùy chọn chung</p>
+        <div class="card" style="padding:60px;text-align:center;color:var(--slate-400);">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#cbd5e1" stroke-width="1.5" style="margin-bottom:10px;"><circle cx="12" cy="12" r="3"/></svg>
+          <p>Cấu hình thông báo, tích hợp, sao lưu và bảo mật hệ thống</p>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+</div>
+
+<script>
+function doLogin(){
+  document.getElementById('login-screen').style.display='none';
+  document.getElementById('app').style.display='block';
+}
+const titles = {
+  overview:'Giám sát an ninh tập trung thông minh',
+  live:'Camera trực tiếp',
+  ai:'Sự kiện AI',
+  alerts:'Giám sát an ninh tập trung thông minh',
+  map:'Bản đồ camera',
+  reports:'Báo cáo & phân tích',
+  cammgmt:'Quản lý camera',
+  users:'Giám sát an ninh tập trung thông minh',
+  settings:'Cài đặt'
+};
+function nav(page, el){
+  document.querySelectorAll('.menu a').forEach(a=>a.classList.remove('active'));
+  el.classList.add('active');
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.getElementById('page-'+page).classList.add('active');
+  document.getElementById('page-heading').textContent = titles[page] || '';
+}
+function selectCam(el){
+  document.querySelectorAll('.live-tile').forEach(t=>t.classList.remove('selected'));
+  el.classList.add('selected');
+}
+function selectAlert(el){
+  document.querySelectorAll('.alert-row').forEach(t=>t.classList.remove('selected'));
+  el.classList.add('selected');
+}
+</script>
+</body>
+</html>
