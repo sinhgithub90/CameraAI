@@ -166,9 +166,9 @@
   .live-cam-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;}
   .live-tile{position:relative;border-radius:9px;overflow:hidden;background:var(--slate-800);aspect-ratio:16/10;cursor:pointer;border:2px solid transparent;}
   .live-tile.selected{border-color:var(--blue-500);}
-  .live-tile img{width:100%;height:100%;object-fit:cover;}
+  .live-tile img{width:100%;height:100%;object-fit:!important;}
   .side-panel{padding:0;}
-  .side-panel .cam-thumb{width:100%;aspect-ratio:16/9;object-fit:cover;}
+  .side-panel .cam-thumb{width:100%;aspect-ratio:16/9;object-fit:!important;}
   .side-section{padding:14px 18px;border-bottom:1px solid var(--slate-100);}
   .side-section h4{margin:0 0 10px;font-size:12.5px;color:var(--slate-400);font-weight:700;text-transform:uppercase;letter-spacing:.3px;}
   .info-row{display:flex;justify-content:space-between;font-size:12.5px;padding:5px 0;color:var(--slate-600);}
@@ -384,39 +384,70 @@
         <div class="filters-row">
           <select><option>Tất cả khu vực</option></select>
           <select><option>Tất cả trạng thái</option></select>
-          <select><option>Tất cả loại</option></select>
-          <div class="search-box"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg><input placeholder="Tìm kiếm camera..."></div>
+          
+          <!-- CHÈN THÊM Ô CHỌN NÀY VÀO GIỮA -->
+          <select id="gridLimitSelect" onchange="changeGridLimit(this.value)">
+            <option value="2">Hiển thị: Lưới 2 Camera</option>
+            <option value="4">Hiển thị: Lưới 4 Camera</option>
+            <option value="6" selected>Hiển thị: Lưới 6 Camera</option>
+            <option value="9">Hiển thị: Lưới 9 Camera</option>
+          </select>
+          
+          <div class="search-box">...</div>
         </div>
+      
         <div class="toolbar-flex">
-          <div style="font-size:13px;color:var(--slate-500);">Hiển thị 8/128 camera · <span style="color:var(--green-600);">● Tất cả camera đang hoạt động</span></div>
+          <div id="counterToolbar" style="font-size:13px;color:var(--slate-500);">Đang tải thông tin camera...</div>
         </div>
         <div class="live-layout">
-          <div class="live-cam-grid" id="liveCamGrid">
-            <div class="live-tile" onclick="selectCam(this)"><img src="https://images.unsplash.com/photo-1558005530-a7958896ec60?w=500&q=70"><div class="cam-tag">LIVE</div><div class="cam-label">● 1. Cổng chính</div><div class="cam-time">10:24:15</div></div>
-            <div class="live-tile" onclick="selectCam(this)"><img src="https://images.unsplash.com/photo-1506521781263-d8422e82f27a?w=500&q=70"><div class="cam-tag">LIVE</div><div class="cam-label">● 2. Bãi xe A</div><div class="cam-time">10:24:15</div></div>
-            <div class="live-tile" onclick="selectCam(this)"><img src="https://images.unsplash.com/photo-1497366754035-f200968a6e72?w=500&q=70"><div class="cam-label">● 3. Sảnh lễ tân</div><div class="cam-time">10:24:15</div></div>
-            <div class="live-tile" onclick="selectCam(this)"><img src="https://images.unsplash.com/photo-1497366811353-6870744d04b2?w=500&q=70"><div class="cam-label">● 4. Hành lang tầng 1</div><div class="cam-time">10:24:15</div></div>
-            <div class="live-tile selected" onclick="selectCam(this)"><img src="https://images.unsplash.com/photo-1497366216548-37526070297c?w=500&q=70"><div class="cam-tag" style="background:#dc2626">Xâm nhập</div><div class="cam-label">● 5. Hành lang tầng 2</div><div class="cam-time">10:24:15</div></div>
-            <div class="live-tile" onclick="selectCam(this)"><img src="https://images.unsplash.com/photo-1553413077-190083ec01ff?w=500&q=70"><div class="cam-tag" style="background:#f59e0b">Hàng rào ảo</div><div class="cam-label">● 6. Kho hàng</div><div class="cam-time">10:24:15</div></div>
-            <div class="live-tile" onclick="selectCam(this)"><img src="https://images.unsplash.com/photo-1565008447742-97f6f38c985c?w=500&q=70"><div class="cam-label">● 7. Cửa sau</div><div class="cam-time">10:24:15</div></div>
-            <div class="live-tile" onclick="selectCam(this)"><img src="https://images.unsplash.com/photo-1591405351990-4726e331f141?w=500&q=70"><div class="cam-label">● 8. Khu vực kỹ thuật</div><div class="cam-time">10:24:15</div></div>
-          </div>
+          <div class="live-cam-grid" id="liveCamGrid" style="grid-template-columns: repeat(3, 1fr);"> </div>
           <div class="card side-panel">
-            <img class="cam-thumb" src="https://images.unsplash.com/photo-1497366216548-37526070297c?w=500&q=70">
+            
+
+        <!-- <div class="live-layout">
+          <div class="live-cam-grid" id="liveCamGrid">
+    
+            <div class="live-tile selected" onclick="selectCam(this)">
+              <video src="http://127.0.0.1:1984/api/stream.mp4?src=cam_huyen_01" autoplay muted playsinline loop style="width: 100%; height: 100%; object-fit: cover;"></video>
+              <div class="cam-tag" style="background:#dc2626">Live</div>
+              <div class="cam-label">● 1. Hành lang tầng 2</div>
+              <div class="cam-time">11:15:00</div>
+            </div>
+
+            <div class="live-tile" onclick="selectCam(this)">
+              <video src="http://127.0.0.1:1984/api/stream.mp4?src=cam_huyen_02" autoplay muted playsinline loop style="width: 100%; height: 100%; object-fit: cover;"></video>
+              <div class="cam-tag">LIVE</div>
+              <div class="cam-label">● 2. Cổng chính</div>
+              <div class="cam-time">11:15:00</div>
+            </div> -->
+
+            <!-- <div class="live-tile" onclick="selectCam(this)"><img src="https://images.unsplash.com/photo-1497366754035-f200968a6e72?w=500&q=70"><div class="cam-label">● 3. Sảnh lễ tân</div><div class="cam-time">10:24:15</div></div>
+            <div class="live-tile" onclick="selectCam(this)"><img src="https://images.unsplash.com/photo-1497366811353-6870744d04b2?w=500&q=70"><div class="cam-label">● 4. Hành lang tầng 1</div><div class="cam-time">10:24:15</div></div>
+           -->
+          <!-- </div>
+          <div class="card side-panel">
+            <img id="mainDetailThumb" class="cam-thumb" src="https://images.unsplash.com/photo-1497366216548-37526070297c?w=500&q=70">
             <div class="side-section">
               <div style="font-weight:700;font-size:14px;">5. Hành lang tầng 2</div>
               <span style="background:#dcfce7;color:#16a34a;font-size:11px;font-weight:600;padding:2px 8px;border-radius:8px;">Online</span>
+            </div> -->
+
+          
+            <div class="side-section">
+              <div id="sideCamName" style="font-weight:700;font-size:14px;">Chọn một camera</div>
+              <span id="sideCamStatus" style="background:#e2e8f0;color:#64748b;font-size:11px;font-weight:600;padding:2px 8px;border-radius:8px;">Offline</span>
             </div>
             <div class="side-section">
-              <div class="info-row"><span>IP / RTSP</span><span>192.168.1.105</span></div>
-              <div class="info-row"><span>Hãng / Model</span><span>Hikvision / DS-2CD2143G2</span></div>
-              <div class="info-row"><span>Khu vực</span><span>Tòa nhà A / Tầng 2</span></div>
-              <div class="info-row"><span>Vị trí lắp đặt</span><span>Hành lang tầng 2</span></div>
+              <div class="info-row"><span>IP / RTSP</span><span id="sideCamIP">-</span></div>
+              <div class="info-row"><span>Hãng / Model</span><span id="sideCamModel">-</span></div>
+              <div class="info-row"><span>Khu vực</span><span id="sideCamZone">-</span></div>
+              <div class="info-row"><span>Vị trí lắp đặt</span><span id="sideCamLoc">-</span></div>
               <div class="info-row"><span>Độ phân giải</span><span>1920 x 1080 (Full HD)</span></div>
               <div class="info-row"><span>FPS</span><span>25</span></div>
               <div class="info-row"><span>Bitrate</span><span>4096 kbps</span></div>
-              <div class="info-row"><span>Trạng thái</span><span style="color:#16a34a">Hoạt động tốt</span></div>
+              <div class="info-row"><span>Trạng thái</span><span id="sideCamHealth">-</span></div>
             </div>
+            
             <div class="side-section">
               <h4>Quy tắc AI đang áp dụng (2)</h4>
               <div class="rule-chip"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="2"><path d="M13 4l-9 9h6l-1 7 9-9h-6l1-7z"/></svg><span class="rt">Phát hiện xâm nhập<br><span style="font-weight:400;color:var(--slate-400)">Vùng: HL2 - Khu vực cấm</span></span><span class="badge-on">Kích hoạt</span></div>
@@ -693,10 +724,24 @@
 </div>
 
 <script>
+// 1. Khai báo mảng cấu hình dữ liệu Camera quy hoạch động
+const ALL_CAMERAS = [
+  { id: "cam_huyen_01", index: 1, name: "Hành lang tầng 2", ip: "10.10.10.12", model: "Hikvision DS-2CD2143G2", zone: "Tòa nhà A / Huyện 1", loc: "Hành lang T2", type: "video", src: "http://127.0.0.1:1984/api/stream.mp4?src=cam_huyen_01", tag: "Live", status: "online" },
+  { id: "cam_huyen_02", index: 2, name: "Cổng chính cơ quan", ip: "10.10.10.11", model: "Hikvision DS-2CD1123G0", zone: "Khu ngoại vi / Huyện 2", loc: "Cổng kiểm soát", type: "video", src: "http://127.0.0.1:1984/api/stream.mp4?src=cam_huyen_02", tag: "Live", status: "online" },
+  { id: "cam_demo_03", index: 3, name: "Sảnh tiếp đón lễ tân", ip: "192.168.1.53", model: "Dahua IPC-HFW1230S", zone: "Tòa nhà B / TP Trung tâm", loc: "Sảnh chính T1", type: "image", src: "https://images.unsplash.com/photo-1497366754035-f200968a6e72?w=500&q=70", tag: "DEMO", status: "online" },
+  { id: "cam_demo_04", index: 4, name: "Hành lang kỹ thuật T1", ip: "192.168.1.54", model: "Dahua IPC-HDBW1230E", zone: "Tòa nhà B / TP Trung tâm", loc: "Hành lang cánh tây", type: "image", src: "https://images.unsplash.com/photo-1497366811353-6870744d04b2?w=500&q=70", tag: "DEMO", status: "online" },
+  { id: "cam_demo_05", index: 5, name: "Bãi đỗ xe thông minh", ip: "192.168.2.11", model: "Kbvision KX-A2111N2", zone: "Bãi xe ngoài trời", loc: "Khu vực ô tô", type: "image", src: "https://images.unsplash.com/photo-1506521781263-d8422e82f27a?w=500&q=70", tag: "DEMO", status: "online" },
+  { id: "cam_demo_06", index: 6, name: "Tổng kho Logistics", ip: "192.168.3.45", model: "Bosch NTI-50022-V3", zone: "Phân khu sản xuất", loc: "Cửa xuất hàng số 2", type: "image", src: "https://images.unsplash.com/photo-1553413077-190083ec01ff?w=500&q=70", tag: "DEMO", status: "online" }
+];
+
+let currentGridLimit = 6; // Mặc định hiển thị lưới 6 màn hình ban đầu
+
 function doLogin(){
   document.getElementById('login-screen').style.display='none';
   document.getElementById('app').style.display='block';
+  renderLiveGrid(); // Tự động dựng lưới khi đăng nhập thành công
 }
+
 const titles = {
   overview:'Giám sát an ninh tập trung thông minh',
   live:'Camera trực tiếp',
@@ -708,21 +753,124 @@ const titles = {
   users:'Giám sát an ninh tập trung thông minh',
   settings:'Cài đặt'
 };
+
 function nav(page, el){
   document.querySelectorAll('.menu a').forEach(a=>a.classList.remove('active'));
   el.classList.add('active');
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.getElementById('page-'+page).classList.add('active');
   document.getElementById('page-heading').textContent = titles[page] || '';
+  if(page === 'live') renderLiveGrid();
 }
+
+// Hàm render lưới camera động và cập nhật bộ đếm thông số tự động
+// THAY THẾ HOÀN TOÀN HÀM renderLiveGrid() CŨ BẰNG HÀM NÀY:
+function renderLiveGrid() {
+  const liveGrid = document.getElementById('liveCamGrid');
+  if (!liveGrid) return;
+  liveGrid.innerHTML = '';
+  
+  const listToRender = ALL_CAMERAS.slice(0, currentGridLimit);
+  
+  listToRender.forEach((cam, i) => {
+    const isSelected = i === 0 ? 'selected' : '';
+    
+    // ĐÃ SỬA: Dùng Iframe nhúng trực tiếp trình phát WebRTC gốc của Go2RTC
+    const mediaHTML = cam.type === 'video' 
+      ? `<iframe src="http://127.0.0.1:1984/stream.html?src=${cam.id}&mode=webrtc" frameborder="0" scrolling="no" style="width:100%; height:100%; pointer-events:none; display:block;"></iframe>` 
+      : `<img src="${cam.src}" style="width:100%; height:100%; object-fit:fill; pointer-events:none; display:block;">`;
+      
+    const tileHTML = `
+      <div class="live-tile ${isSelected}" data-id="${cam.id}" onclick="selectCam(this)" ondblclick="maximizeCam(this)" style="position:relative; cursor:pointer;">
+        <div style="width:100%; height:100%; pointer-events:none;">
+          ${mediaHTML}
+        </div>
+        <div class="cam-tag" style="${cam.tag === 'Live' ? 'background:#dc2626' : ''}; z-index:10; pointer-events:none;">${cam.tag}</div>
+        <div class="cam-label" style="z-index:10; pointer-events:none;">● ${cam.index}. ${cam.name}</div>
+        <div class="cam-time" style="z-index:10; pointer-events:none;">${new Date().toLocaleTimeString()}</div>
+      </div>
+    `;
+    liveGrid.insertAdjacentHTML('beforeend', tileHTML);
+  });
+  
+  // Cập nhật bộ đếm toolbar
+  const onlineCount = ALL_CAMERAS.filter(c => c.status === 'online').length;
+  document.getElementById('counterToolbar').innerHTML = `
+    Hiển thị ${listToRender.length}/${ALL_CAMERAS.length} camera · <span style="color:var(--green-600);">● ${onlineCount} camera đang hoạt động</span>
+  `;
+  
+  // Tự động kích hoạt tiêu điểm vào ô đầu tiên
+  const firstTile = liveGrid.querySelector('.live-tile');
+  if (firstTile) selectCam(firstTile);
+}
+// Thay đổi số lượng ô lưới (2, 4, 6, 9)
+function changeGridLimit(val) {
+  currentGridLimit = parseInt(val);
+  const liveGrid = document.getElementById('liveCamGrid');
+  liveGrid.style.gridTemplateColumns = (currentGridLimit === 2 || currentGridLimit === 4) ? 'repeat(2, 1fr)' : 'repeat(3, 1fr)';
+  renderLiveGrid();
+}
+
+// 1. THAY THẾ HÀM selectCam(el) ĐỂ CHỈ TẬP TRUNG CẬP NHẬT THÔNG TIN CHỮ:
 function selectCam(el){
-  document.querySelectorAll('.live-tile').forEach(t=>t.classList.remove('selected'));
+  document.querySelectorAll('.live-tile').forEach(t => t.classList.remove('selected'));
   el.classList.add('selected');
+  
+  const camId = el.getAttribute('data-id');
+  const camData = ALL_CAMERAS.find(c => c.id === camId);
+  if (!camData) return;
+  
+  if(document.getElementById('sideCamName')) document.getElementById('sideCamName').textContent = `${camData.index}. ${camData.name}`;
+  if(document.getElementById('sideCamIP')) document.getElementById('sideCamIP').textContent = camData.ip;
+  if(document.getElementById('sideCamModel')) document.getElementById('sideCamModel').textContent = camData.model;
+  if(document.getElementById('sideCamZone')) document.getElementById('sideCamZone').textContent = camData.zone;
+  if(document.getElementById('sideCamLoc')) document.getElementById('sideCamLoc').textContent = camData.loc;
+  
+  const statusLabel = document.getElementById('sideCamStatus');
+  const healthLabel = document.getElementById('sideCamHealth');
+  if (statusLabel && healthLabel) {
+    if (camData.status === 'online') {
+      statusLabel.textContent = "Online"; statusLabel.style.background = "#dcfce7"; statusLabel.style.color = "#16a34a";
+      healthLabel.textContent = "Hoạt động tốt"; healthLabel.style.color = "#16a34a";
+    } else {
+      statusLabel.textContent = "Offline"; statusLabel.style.background = "#fee2e2"; statusLabel.style.color = "#dc2626";
+      healthLabel.textContent = "Mất kết nối"; healthLabel.style.color = "#dc2626";
+    }
+  }
+  // ĐOẠN CẬP NHẬT Ở CUỐI HÀM selectCam(el):
+  const detailContainer = document.getElementById('mainDetailContainer');
+  if (detailContainer) {
+    if (camData.type === 'video') {
+      // Bắn luồng sang Iframe góc trên bên phải
+      detailContainer.innerHTML = `<iframe src="http://127.0.0.1:1984/stream.html?src=${camData.id}&mode=webrtc" frameborder="0" scrolling="no" style="width:100%; aspect-ratio:16/9; pointer-events:none; display:block;"></iframe>`;
+    } else {
+      detailContainer.innerHTML = `<img id="mainDetailThumb" class="cam-thumb" src="${camData.src}" style="width:100%; aspect-ratio:16/9; object-fit:fill;">`;
+    }
+  }
+} // Kết thúc hàm selectCam
+
+
+// 2. CHÈN THÊM HÀM MỚI NÀY NGAY PHÍA DƯỚI HÀM SELECTCAM:
+function maximizeCam(el) {
+  // ĐÃ SỬA: Tìm thẻ iframe thay vì thẻ video
+  const mediaElement = el.querySelector('iframe') || el.querySelector('img');
+  if (!mediaElement) return;
+
+  // Kích hoạt chế độ phóng to toàn màn hình
+  if (mediaElement.requestFullscreen) {
+    mediaElement.requestFullscreen();
+  } else if (mediaElement.webkitRequestFullscreen) { 
+    mediaElement.webkitRequestFullscreen();
+  } else if (mediaElement.msRequestFullscreen) { 
+    mediaElement.msRequestFullscreen();
+  }
 }
+
 function selectAlert(el){
   document.querySelectorAll('.alert-row').forEach(t=>t.classList.remove('selected'));
   el.classList.add('selected');
 }
+
 </script>
 </body>
 </html>
