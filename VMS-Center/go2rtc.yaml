@@ -1,8 +1,7 @@
+api:
+  listen: 127.0.0.1:1984
 streams:
   cam_huyen_01: rtsp://admin:Abc123456@10.10.10.11:2004/Streaming/Channels/102
   cam_huyen_02: rtsp://admin:Abc123456@10.10.10.12:2004/Streaming/Channels/102
-api:
-  listen: "127.0.0.1:1984" # Chỉ cho phép FastAPI gọi nội bộ lấy luồng, chặn bên ngoài quét port
-
 webrtc:
-  listen: "0.0.0.0:8555" # Cổng phát WebRTC bảo mật cho Client và AI
+  listen: 0.0.0.0:8555

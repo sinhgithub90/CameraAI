@@ -37,13 +37,85 @@
     </div>
 
     <div class="content">
-      <h1 class="page-title">Quản lý camera</h1>
-      <p class="page-sub">Thêm, sửa, cấu hình camera và quy tắc AI</p>
-      <div class="card" style="padding:60px;text-align:center;color:var(--slate-400);">
-        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#cbd5e1" stroke-width="1.5" style="margin-bottom:10px;"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
-        <p>Danh sách 128 camera, cấu hình, quy tắc AI và phân vùng giám sát</p>
-      </div>
-    </div>
+        <h1 class="page-title">Quản lý camera</h1>
+        <p class="page-sub">Thêm, sửa, cấu hình camera và quy tắc AI hệ thống</p>
+        
+        <div class="card">
+            <div class="card-head">
+            <div class="search-box" style="border:1px solid var(--slate-200); border-radius:8px; padding:7px 10px; width:260px; display:flex; align-items:center; gap:8px;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+                <input placeholder="Tìm kiếm camera quy hoạch..." style="border:none; outline:none; font-size:12.5px; width:100%;">
+            </div>
+            <button class="btn-sm primary" onclick="openAddCamModal()" style="width:auto; padding:9px 18px; cursor:pointer;">+ Thêm camera</button>
+            </div>
+            
+            <table style="width:100%;">
+            <thead>
+                <tr>
+                <th>STT</th>
+                <th>Tên Camera</th>
+                <th>Địa chỉ IP</th>
+                <th>Hãng / Model</th>
+                <th>Phân vùng (Zone)</th>
+                <th>Vị trí lắp đặt</th>
+                <th>Trạng thái</th>
+                <th>Thao tác</th>
+                </tr>
+            </thead>
+            <tbody id="camManagementTableBody">
+                </tbody>
+            </table>
+        </div>
+        </div>
+
+        <div id="addCamModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(15,23,42,0.6); z-index:9999; align-items:center; justify-content:center; backdrop-filter: blur(2px);">
+            <div class="card" style="width:480px; padding:24px; background:#fff; border-radius:12px; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1);">
+                <h3 style="margin-top:0; margin-bottom:18px; font-size:16px; font-weight:700; color:var(--slate-900);">Quy hoạch Thiết Bị Camera Động</h3>
+                
+                <form id="addCamForm" onsubmit="handleAddCamera(event)">
+                <div class="field" style="margin-bottom:12px;">
+                    <label>Tên gọi camera</label>
+                    <div class="input-wrap"><input id="modalCamName" required placeholder="Ví dụ: Cổng kiểm soát số 1"></div>
+                </div>
+                
+                <div style="display:grid; grid-template-columns: 1.5fr 1fr; gap:10px; margin-bottom:12px;">
+                    <div class="field" style="margin-bottom:0;">
+                        <label>Địa chỉ IP Thiết bị</label>
+                        <div class="input-wrap"><input id="modalCamIP" required placeholder="Ví dụ: 10.10.10.15"></div>
+                    </div>
+                    <div class="field" style="margin-bottom:0;">
+                        <label>Mã dòng (Model)</label>
+                        <div class="input-wrap"><input id="modalCamModel" required placeholder="Hikvision DS-..."></div>
+                    </div>
+                </div>
+
+                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-bottom:12px;">
+                    <div class="field" style="margin-bottom:0;">
+                        <label>Tài khoản truy cập (User)</label>
+                        <div class="input-wrap"><input id="modalCamUser" required value="admin" placeholder="admin"></div>
+                    </div>
+                    <div class="field" style="margin-bottom:0;">
+                        <label>Mật khẩu đầu ghi (Password)</label>
+                        <div class="input-wrap"><input type="password" id="modalCamPass" required placeholder="Nhập mật khẩu camera"></div>
+                    </div>
+                </div>
+
+                <div class="field" style="margin-bottom:12px;">
+                    <label>Khu vực quản lý (Zone)</label>
+                    <div class="input-wrap"><input id="modalCamZone" required placeholder="Ví dụ: Tòa nhà A / Phân khu 2"></div>
+                </div>
+                <div class="field" style="margin-bottom:20px;">
+                    <label>Vị trí lắp đặt chi tiết</label>
+                    <div class="input-wrap"><input id="modalCamLoc" required placeholder="Ví dụ: Trụ đèn hướng Đông Nam"></div>
+                </div>
+                
+                <div style="display:flex; gap:10px; justify-content:flex-end;">
+                    <button type="button" class="btn-sm" onclick="closeAddCamModal()" style="width:auto; padding:10px 20px; cursor:pointer;">Hủy bỏ</button>
+                    <button type="submit" class="btn-primary" style="width:auto; padding:10px 24px; cursor:pointer;">Kích hoạt kết nối</button>
+                </div>
+                </form>
+            </div>
+            </div>
   </div>
 </div>
 <script src="script.js"></script>
