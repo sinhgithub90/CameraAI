@@ -24,18 +24,5 @@
     "src": "http://127.0.0.1:1984/stream.html?src=cam_huyen_02&mode=webrtc",
     "tag": "Live",
     "status": "online"
-  },
-  {
-    "id": "cam_huyen_03",
-    "index": 3,
-    "name": "Tầng 2",
-    "ip": "10.10.10.12",
-    "model": "HikVision",
-    "zone": "Thế giới xanh",
-    "loc": "Tầng 2 hướng xuống công viên",
-    "type": "video",
-    "src": "http://127.0.0.1:1984/stream.html?src=cam_huyen_03&mode=webrtc",
-    "tag": "Live",
-    "status": "online"
   }
 ]

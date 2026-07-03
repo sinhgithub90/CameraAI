@@ -1,0 +1,35 @@
+[
+  {
+    "username": "admin",
+    "password": "admin1",
+    "name": "Lê Xuân Tuyên",
+    "role": "Quản trị viên",
+    "unit": "Phòng CNTT",
+    "email": "utvanle113@gmail.com",
+    "status": "Hoạt động",
+    "phone": "0909 123 456",
+    "permissions": [
+      "live",
+      "playback",
+      "cammgmt",
+      "usermgmt",
+      "alertmgmt",
+      "reports",
+      "sysconfig",
+      "export"
+    ]
+  },
+  {
+    "username": "Trình lỏ1",
+    "password": "123456abc",
+    "name": "Nguyễn Lâm Trình",
+    "role": "Nhân viên",
+    "unit": "dev",
+    "email": "nltrinh123@gmail.com",
+    "status": "Hoạt động",
+    "phone": "0999999991",
+    "permissions": [
+      "live"
+    ]
+  }
+]

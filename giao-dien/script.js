@@ -1,5 +1,7 @@
 // script.js
 let ALL_CAMERAS = [];
+let ALL_USERS = [];
+let selectedUsername = null;
 let currentGridLimit = 6;
 
 // 1. Hàm gọi API lấy danh sách camera tập trung từ Backend FastAPI
@@ -17,9 +19,114 @@ async function fetchCamerasFromBackend() {
   }
 }
 
-// 2. Điều hướng Đăng nhập
-function doLogin(){
-  window.location.href = 'live.html';
+// 2. Hàm gọi API lấy danh sách người dùng từ Backend FastAPI
+async function fetchUsersFromBackend() {
+  try {
+    const response = await fetch('http://127.0.0.1:8000/api/vms/users');
+    if (response.ok) {
+      ALL_USERS = await response.json();
+      console.log("👉 Đã tải danh sách tài khoản từ Backend thành công:", ALL_USERS);
+    } else {
+      console.error("Lỗi lấy danh sách tài khoản từ Backend:", response.status);
+    }
+  } catch (e) {
+    console.error("❌ Không thể kết nối API người dùng tới FastAPI:", e);
+  }
+}
+
+// Hàm đăng nhập form truyền thống
+async function doLogin() {
+  const userInp = document.getElementById('loginUser').value.trim();
+  const passInp = document.getElementById('loginPass').value.trim();
+
+  if(!userInp || !passInp) {
+    alert("Vui lòng điền đầy đủ tài khoản và mật khẩu!");
+    return;
+  }
+
+  try {
+    const response = await fetch(`http://127.0.0.1:8000/api/auth/token?user=${encodeURIComponent(userInp)}&text_pass=${encodeURIComponent(passInp)}`, {
+      method: 'POST'
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      localStorage.setItem('currentUser', JSON.stringify(data.user));
+      window.location.href = 'index.html';
+    } else {
+      const err = await response.json();
+      alert(err.detail || "Đăng nhập thất bại!");
+    }
+  } catch (error) {
+    alert("Không thể kết nối đến hệ thống Backend FastAPI!");
+  }
+}
+
+// 👁️ Chức năng ẩn/hiện mật khẩu khi click biểu tượng con mắt
+function togglePasswordVisibility() {
+  const passInput = document.getElementById('loginPass');
+  const eyeIcon = document.querySelector('.toggle-eye');
+  if (passInput.type === 'password') {
+    passInput.type = 'text';
+    eyeIcon.style.color = 'var(--blue-600)';
+  } else {
+    passInput.type = 'password';
+    eyeIcon.style.color = 'var(--slate-400)';
+  }
+}
+
+// 🌐 Đăng nhập bằng tài khoản Google mô phỏng
+function loginWithGoogleDemo() {
+  const emailInput = prompt("MÔ PHỎNG ĐĂNG NHẬP GOOGLE:\nVui lòng nhập địa chỉ Email Google của bạn để xác thực:");
+  if (!emailInput) return;
+
+  fetch('http://127.0.0.1:8000/api/vms/users')
+    .then(res => res.json())
+    .then(users => {
+      const foundUser = users.find(u => u.email.toLowerCase() === emailInput.trim().toLowerCase());
+      if (foundUser) {
+        if (foundUser.status !== "Hoạt động") {
+          alert("Tài khoản liên kết với Email này hiện đang bị tạm khóa!");
+          return;
+        }
+        localStorage.setItem('currentUser', JSON.stringify({
+          username: foundUser.username,
+          name: foundUser.name,
+          role: foundUser.role,
+          unit: foundUser.unit,
+          permissions: foundUser.permissions
+        }));
+        alert(`Xác thực Google thành công! Xin chào ${foundUser.name}.`);
+        window.location.href = 'index.html';
+      } else {
+        alert("🔒 Đăng nhập thất bại: Email Google này chưa được quy hoạch đăng ký trong hệ thống!");
+      }
+    })
+    .catch(() => alert("Không thể kết nối đến Backend!"));
+}
+
+// Hàm bảo vệ định tuyến an ninh hệ thống đa trang
+function checkAuthSecurity() {
+  const currentUser = JSON.parse(localStorage.getItem('currentUser'));
+  
+  if (!currentUser) {
+    if (!window.location.href.includes('login.html')) {
+      window.location.href = 'login.html';
+    }
+    return false;
+  }
+
+  const userMenuLink = document.querySelector('a[href="users.html"]');
+  if (userMenuLink && currentUser.role !== 'Quản trị viên') {
+    userMenuLink.style.display = 'none'; 
+  }
+
+  if (window.location.href.includes('users.html') && currentUser.role !== 'Quản trị viên') {
+    alert("TỪ CHỐI TRUY CẬP: Chỉ có Quản trị viên tối cao mới có quyền phân quyền!");
+    window.location.href = 'live.html';
+    return false;
+  }
+  return true;
 }
 
 // 3. Render lưới camera trực tiếp (live.html)
@@ -138,7 +245,6 @@ async function handleAddCamera(event) {
       closeAddCamModal();
       document.getElementById('addCamForm').reset();
       
-      // Delay 1 giây để Go2RTC tái khởi động mượt mà, sau đó nạp lại bảng dữ liệu mới
       setTimeout(async () => {
          await fetchCamerasFromBackend();
          renderCamManagementTable();
@@ -179,11 +285,200 @@ function selectCam(el){ document.querySelectorAll('.live-tile').forEach(t => t.c
 function maximizeCam(el) { const mediaElement = el.querySelector('iframe') || el.querySelector('img'); if (mediaElement && mediaElement.requestFullscreen) mediaElement.requestFullscreen(); }
 function selectAlert(el){ document.querySelectorAll('.alert-row').forEach(t=>t.classList.remove('selected')); el.classList.add('selected'); }
 
-// Khởi phát sự kiện nạp tài nguyên đa trang đồng bộ toàn diện
+// 8. Hàm nạp danh sách người dùng đổ lên bảng dữ liệu trái
+function renderUserTable() {
+  const userBody = document.getElementById('userTableBody');
+  if (!userBody) return;
+  userBody.innerHTML = '';
+
+  ALL_USERS.forEach((user) => {
+    const initials = user.name.split(' ').map(n => n[0]).join('').slice(-2).toUpperCase();
+    const roleClass = user.role === 'Quản trị viên' ? 'admin' : (user.role === 'Giám sát' ? 'giamsat' : 'nhanvien');
+    const statusClass = user.status === 'Hoạt động' ? 'daxuly' : 'dangxuly';
+    const isRowSelected = user.username === selectedUsername ? 'style="background:var(--blue-50);"' : '';
+
+    const rowHTML = `
+      <tr ${isRowSelected} onclick="selectUserAccount('${user.username}')" style="cursor:pointer;">
+        <td style="display:flex;align-items:center;gap:8px;">
+          <div class="user-row-avatar" style="background:linear-gradient(135deg,#3b82f6,#8b5cf6);color:#fff;font-weight:700;display:flex;align-items:center;justify-content:center;width:34px;height:34px;border-radius:50%;">${initials}</div>
+          <div><strong>${user.name}</strong><br><span style="color:var(--slate-400);font-size:11px;">${user.username}</span></div>
+        </td>
+        <td><span class="role-pill ${roleClass}">${user.role}</span></td>
+        <td>${user.unit}</td>
+        <td>${user.email}</td>
+        <td><span class="status ${statusClass}"><span class="d"></span>${user.status}</span></td>
+      </tr>
+    `;
+    userBody.insertAdjacentHTML('beforeend', rowHTML);
+  });
+}
+
+// 9. Click chọn xem thông tin & phân quyền chi tiết của 1 tài khoản
+function selectUserAccount(username) {
+  selectedUsername = username;
+  const user = ALL_USERS.find(u => u.username === username);
+  if (!user) return;
+
+  renderUserTable(); 
+
+  document.getElementById('userDetailPanel').style.display = 'block';
+  document.getElementById('txtDetailName').textContent = user.name;
+  document.getElementById('txtDetailUsername').textContent = `@${user.username}`;
+  document.getElementById('txtDetailRole').textContent = user.role;
+  document.getElementById('txtDetailUnit').textContent = user.unit;
+  document.getElementById('detailAvatar').textContent = user.name.split(' ').map(n => n[0]).join('').slice(-2).toUpperCase();
+
+  const statusLbl = document.getElementById('lblDetailStatus');
+  statusLbl.textContent = user.status;
+  if(user.status === 'Hoạt động') {
+    statusLbl.style.background = '#dcfce7'; statusLbl.style.color = '#16a34a';
+    document.getElementById('btnLockAccount').textContent = "🔒 Khóa tài khoản";
+  } else {
+    statusLbl.style.background = '#fee2e2'; statusLbl.style.color = '#dc2626';
+    document.getElementById('btnLockAccount').textContent = "🔓 Mở khóa tài khoản";
+  }
+
+  document.getElementById('inpDetailName').value = user.name;
+  document.getElementById('inpDetailEmail').value = user.email;
+  document.getElementById('inpDetailPhone').value = user.phone;
+  document.getElementById('inpDetailUnit').value = user.unit;
+  document.getElementById('selDetailRole').value = user.role;
+
+  const permissionsList = ['live', 'playback', 'cammgmt', 'usermgmt', 'alertmgmt', 'reports', 'sysconfig', 'export'];
+  permissionsList.forEach(p => {
+      const chk = document.getElementById(`chk_${p}`);
+      if(chk) chk.checked = user.permissions.includes(p);
+  });
+}
+
+function openAddUserModal() { document.getElementById('addUserModal').style.display = 'flex'; }
+function closeAddUserModal() { document.getElementById('addUserModal').style.display = 'none'; }
+
+// 10. Submit tạo tài khoản mới gửi về FastAPI
+async function submitNewUser(event) {
+  event.preventDefault();
+  const payload = {
+    username: document.getElementById('modalUserUsername').value.trim(),
+    password: document.getElementById('modalUserPassword').value.trim(),
+    name: document.getElementById('modalUserName').value.trim(),
+    role: document.getElementById('modalUserRole').value,
+    unit: document.getElementById('modalUserUnit').value.trim(),
+    email: document.getElementById('modalUserEmail').value.trim(),
+    phone: document.getElementById('modalUserPhone').value.trim()
+  };
+
+  try {
+    const response = await fetch('http://127.0.0.1:8000/api/vms/user/add', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (response.ok) {
+      closeAddUserModal();
+      document.getElementById('addUserForm').reset();
+      await fetchUsersFromBackend();
+      renderUserTable();
+      alert("Đã quy hoạch cấp tài khoản thành công!");
+    } else {
+      const err = await response.json();
+      alert(err.detail || "Lỗi tạo tài khoản mới!");
+    }
+  } catch (e) { alert("Không thể liên kết tới máy chủ Backend!"); }
+}
+
+// 11. Nút LƯU THAY ĐỔI: Cập nhật lý lịch hồ sơ và cấu hình phân quyền
+async function saveUserProfileChanges() {
+  if (!selectedUsername) return;
+
+  const permissionsList = ['live', 'playback', 'cammgmt', 'usermgmt', 'alertmgmt', 'reports', 'sysconfig', 'export'];
+  const activePermissions = permissionsList.filter(p => {
+    const chk = document.getElementById(`chk_${p}`);
+    return chk ? chk.checked : false;
+  });
+
+  const payload = {
+    name: document.getElementById('inpDetailName').value.trim(),
+    email: document.getElementById('inpDetailEmail').value.trim(),
+    phone: document.getElementById('inpDetailPhone').value.trim(),
+    unit: document.getElementById('inpDetailUnit').value.trim(),
+    role: document.getElementById('selDetailRole').value,
+    permissions: activePermissions
+  };
+
+  try {
+    const response = await fetch(`http://127.0.0.1:8000/api/vms/user/${selectedUsername}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (response.ok) {
+      alert("Đã lưu thông tin hồ sơ và cập nhật phân quyền hệ thống!");
+      await fetchUsersFromBackend();
+      selectUserAccount(selectedUsername);
+    }
+  } catch (e) { alert("Lỗi kết nối máy chủ không thể lưu thay đổi!"); }
+}
+
+// 12. Nút ĐẶT LẠI MẬT KHẨU
+async function resetUserPassword() {
+  if (!selectedUsername) return;
+  try {
+    const response = await fetch(`http://127.0.0.1:8000/api/vms/user/${selectedUsername}/reset-password`, { method: 'POST' });
+    if (response.ok) {
+      const result = await response.json();
+      alert(`Đã đặt lại mật khẩu thành công!\nMật khẩu mới của tài khoản @${selectedUsername} là: ${result.new_password}`);
+    }
+  } catch (e) { alert("Lỗi xử lý yêu cầu đặt lại mật khẩu!"); }
+}
+
+// 13. Nút KHÓA / MỞ KHÓA TÀI KHOẢN
+async function toggleLockAccount() {
+  if (!selectedUsername) return;
+  try {
+    const response = await fetch(`http://127.0.0.1:8000/api/vms/user/${selectedUsername}/toggle-lock`, { method: 'POST' });
+    if (response.ok) {
+      const result = await response.json();
+      alert(`Trạng thái tài khoản đổi thành: [${result.new_status}]`);
+      await fetchUsersFromBackend();
+      selectUserAccount(selectedUsername);
+    } else {
+      const err = await response.json();
+      alert(err.detail || "Không thể thao tác trên tài khoản này!");
+    }
+  } catch (e) { alert("Lỗi khi kết nối thay đổi trạng thái khóa!"); }
+}
+
+// 14. Nút XÓA BỎ TÀI KHỎI HỆ THỐNG
+async function deleteUserAccount() {
+  if (!selectedUsername) return;
+  if (!confirm(`Cảnh báo hệ thống: Bạn chắc chắn có muốn xóa vĩnh viễn tài khoản @${selectedUsername} không?`)) return;
+
+  try {
+    const response = await fetch(`http://127.0.0.1:8000/api/vms/user/${selectedUsername}`, { method: 'DELETE' });
+    if (response.ok) {
+      alert("Đã loại bỏ tài khoản người dùng khỏi hệ thống thành công.");
+      document.getElementById('userDetailPanel').style.display = 'none';
+      selectedUsername = null;
+      await fetchUsersFromBackend();
+      renderUserTable();
+    } else {
+      const err = await response.json();
+      alert(err.detail || "Không được phép xóa tài khoản này!");
+    }
+  } catch (e) { alert("Gặp lỗi trong quá trình thực hiện lệnh xóa!"); }
+}
+
+// Kích hoạt nạp tài nguyên đa trang đồng bộ toàn diện khi tải trang
 document.addEventListener("DOMContentLoaded", async () => {
-   // BẮT BUỘC: Đồng bộ dữ liệu thô từ FastAPI trước khi vẽ bất kỳ trang nào
+   // Kiểm tra bảo mật đầu tiên
+   if (!checkAuthSecurity()) return;
+
    await fetchCamerasFromBackend();
    
+   if (document.getElementById('userTableBody')) {
+       await fetchUsersFromBackend();
+       renderUserTable();
+   }
    if(document.getElementById('liveCamGrid')) renderLiveGrid();
    if(document.getElementById('overviewCamGrid')) renderOverviewGrid();
    if(document.getElementById('camManagementTableBody')) renderCamManagementTable();

@@ -37,62 +37,106 @@
     </div>
 
     <div class="content">
-        <h1 class="page-title">Người dùng</h1>
-        <p class="page-sub">Quản lý tài khoản người dùng và phân quyền hệ thống</p>
-        <div class="stats-row cols-4">
-          <div class="card stat-card"><div class="stat-label">Tổng người dùng</div><div class="stat-value">128</div><div class="stat-sub">Tất cả tài khoản</div></div>
-          <div class="card stat-card"><div class="stat-label">Đang hoạt động</div><div class="stat-value">96</div><div class="stat-sub upgreen">75%</div></div>
-          <div class="card stat-card"><div class="stat-label">Quản trị viên</div><div class="stat-value">18</div><div class="stat-sub">14%</div></div>
-          <div class="card stat-card"><div class="stat-label">Tài khoản khóa</div><div class="stat-value">6</div><div class="stat-sub">5%</div></div>
+      <h1 class="page-title">Người dùng</h1>
+      <p class="page-sub">Quản lý tài khoản người dùng và phân quyền hệ thống</p>
+
+      <div class="alert-layout" style="grid-template-columns:1fr 420px;">
+        <div class="card">
+          <div class="card-head">
+            <div class="search-box" style="border:1px solid var(--slate-200);border-radius:8px;padding:7px 10px;width:240px;display:flex;align-items:center;gap:8px;">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+              <input placeholder="Tìm kiếm người dùng..." style="border:none;outline:none;font-size:12.5px;width:100%;">
+            </div>
+            <button class="btn-sm primary" style="width:auto;padding:9px 16px;cursor:pointer;" onclick="openAddUserModal()">+ Thêm người dùng</button>
+          </div>
+          <table style="width:100%;">
+            <thead>
+              <tr>
+                <th>Người dùng</th>
+                <th>Vai trò</th>
+                <th>Đơn vị</th>
+                <th>Email</th>
+                <th>Trạng thái</th>
+              </tr>
+            </thead>
+            <tbody id="userTableBody">
+              </tbody>
+          </table>
         </div>
 
-        <div class="alert-layout" style="grid-template-columns:1fr 420px;">
-          <div class="card">
-            <div class="card-head">
-              <div class="search-box" style="border:1px solid var(--slate-200);border-radius:8px;padding:7px 10px;width:240px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg><input placeholder="Tìm kiếm người dùng..." style="border:none;outline:none;font-size:12.5px;"></div>
-              <button class="btn-sm primary" style="width:auto;padding:9px 16px;">+ Thêm người dùng</button>
+        <div class="card" id="userDetailPanel" style="display:none;">
+          <div style="padding:18px;display:flex;gap:12px;align-items:center;border-bottom:1px solid var(--slate-100);">
+            <div class="user-row-avatar" id="detailAvatar" style="width:54px;height:54px;font-size:18px;background:linear-gradient(135deg,#3b82f6,#8b5cf6);color:#fff;font-weight:700;display:flex;align-items:center;justify-content:center;border-radius:50%;">TM</div>
+            <div>
+              <div style="font-weight:700;"><span id="txtDetailName">-</span> <span id="lblDetailStatus" style="font-size:10.5px;font-weight:600;padding:2px 7px;border-radius:8px;">Hoạt động</span></div>
+              <div style="font-size:12px;color:var(--slate-400);"><span id="txtDetailUsername">admin</span> · <span id="txtDetailRole">Quản trị viên</span> · <span id="txtDetailUnit">Phòng CNTT</span></div>
             </div>
-            <table>
-              <tr><th></th><th>Người dùng</th><th>Vai trò</th><th>Đơn vị</th><th>Email</th><th>Trạng thái</th></tr>
-              <tr style="background:var(--blue-50);"><td><input type="checkbox" checked></td><td style="display:flex;align-items:center;gap:8px;"><div class="user-row-avatar" style="background:#3b82f6;">TM</div>Trần Văn Minh<br><span style="color:var(--slate-400);font-size:11px;">admin</span></td><td><span class="role-pill admin">Quản trị viên</span></td><td>Phòng CNTT</td><td>minh.tran@demo.com</td><td><span class="status daxuly"><span class="d"></span>Hoạt động</span></td></tr>
-              <tr><td><input type="checkbox"></td><td style="display:flex;align-items:center;gap:8px;"><div class="user-row-avatar" style="background:#8b5cf6;">NH</div>Nguyễn Thị Hương<br><span style="color:var(--slate-400);font-size:11px;">huong.nguyen</span></td><td><span class="role-pill giamsat">Giám sát</span></td><td>Phòng An ninh</td><td>huong.nguyen@demo.com</td><td><span class="status daxuly"><span class="d"></span>Hoạt động</span></td></tr>
-              <tr><td><input type="checkbox"></td><td style="display:flex;align-items:center;gap:8px;"><div class="user-row-avatar" style="background:#22c55e;">LN</div>Lê Hoàng Nam<br><span style="color:var(--slate-400);font-size:11px;">nam.le</span></td><td><span class="role-pill nhanvien">Nhân viên</span></td><td>Nhà máy A</td><td>nam.le@demo.com</td><td><span class="status daxuly"><span class="d"></span>Hoạt động</span></td></tr>
-              <tr><td><input type="checkbox"></td><td style="display:flex;align-items:center;gap:8px;"><div class="user-row-avatar" style="background:#f59e0b;">PL</div>Phạm Thị Lan<br><span style="color:var(--slate-400);font-size:11px;">lan.pham</span></td><td><span class="role-pill giamsat">Giám sát</span></td><td>Nhà máy B</td><td>lan.pham@demo.com</td><td><span class="status daxuly"><span class="d"></span>Hoạt động</span></td></tr>
-              <tr><td><input type="checkbox"></td><td style="display:flex;align-items:center;gap:8px;"><div class="user-row-avatar" style="background:#06b6d4;">ĐV</div>Đỗ Văn Dũng<br><span style="color:var(--slate-400);font-size:11px;">dung.do</span></td><td><span class="role-pill nhanvien">Nhân viên</span></td><td>Kho vận</td><td>dung.do@demo.com</td><td><span class="status daxuly"><span class="d"></span>Hoạt động</span></td></tr>
-            </table>
-            <div class="pagination"><span>Hiển thị 1 đến 10 trong tổng số 128 người dùng</span><div class="pg-btns"><button>‹</button><button class="active">1</button><button>2</button><button>3</button><button>›</button></div></div>
+          </div>
+          
+          <div class="udetail-tabs"><span class="active">Thông tin chi tiết</span></div>
+          
+          <div class="side-section">
+            <div class="field" style="margin-bottom:10px;"><label>Họ và tên</label><div class="input-wrap"><input id="inpDetailName"></div></div>
+            <div class="field" style="margin-bottom:10px;"><label>Email</label><div class="input-wrap"><input id="inpDetailEmail"></div></div>
+            <div class="field" style="margin-bottom:10px;"><label>Số điện thoại</label><div class="input-wrap"><input id="inpDetailPhone"></div></div>
+            <div class="field" style="margin-bottom:10px;"><label>Đơn vị công tác</label><div class="input-wrap"><input id="inpDetailUnit"></div></div>
+            <div class="field" style="margin-bottom:10px;">
+              <label>Vai trò chức vụ</label>
+              <select id="selDetailRole" style="width:100%;padding:9px;border:1px solid var(--slate-200);border-radius:8px;font-size:13px;outline:none;">
+                <option value="Quản trị viên">Quản trị viên</option>
+                <option value="Giám sát">Giám sát</option>
+                <option value="Nhân viên">Nhân viên</option>
+              </select>
+            </div>
           </div>
 
-          <div class="card">
-            <div style="padding:18px;display:flex;gap:12px;align-items:center;border-bottom:1px solid var(--slate-100);">
-              <div class="user-row-avatar" style="width:54px;height:54px;font-size:18px;background:linear-gradient(135deg,#3b82f6,#8b5cf6);">TM</div>
-              <div><div style="font-weight:700;">Trần Văn Minh <span style="background:#dcfce7;color:#16a34a;font-size:10.5px;font-weight:600;padding:2px 7px;border-radius:8px;">Hoạt động</span></div><div style="font-size:12px;color:var(--slate-400);">admin · Quản trị viên · Phòng CNTT</div><div style="font-size:11px;color:var(--slate-400);">ID người dùng: USR-0001</div></div>
-            </div>
-            <div class="udetail-tabs"><span class="active">Thông tin</span><span>Phân quyền</span><span>Lịch sử hoạt động</span></div>
-            <div class="side-section">
-              <h4>Thông tin cá nhân</h4>
-              <div class="info-row"><span>Họ và tên</span><span>Trần Văn Minh</span></div>
-              <div class="info-row"><span>Email</span><span>minh.tran@demo.com</span></div>
-              <div class="info-row"><span>Số điện thoại</span><span>0909 123 456</span></div>
-              <div class="info-row"><span>Đơn vị</span><span>Phòng CNTT</span></div>
-              <div class="info-row"><span>Trạng thái</span><span style="color:#16a34a">Hoạt động</span></div>
-            </div>
-            <div class="side-section">
-              <h4>Quyền hệ thống</h4>
-              <div class="perm-grid">
-                <div class="perm-item">✅ Xem trực tiếp</div><div class="perm-item">✅ Xem lại</div>
-                <div class="perm-item">✅ Quản lý camera</div><div class="perm-item">✅ Quản lý người dùng</div>
-                <div class="perm-item">✅ Quản lý cảnh báo</div><div class="perm-item">✅ Xem báo cáo</div>
-                <div class="perm-item">✅ Cấu hình hệ thống</div><div class="perm-item">⬜ Xuất dữ liệu</div>
-              </div>
-            </div>
-            <div style="padding:16px 18px;display:flex;gap:10px;">
-              <button class="btn-sm primary" style="flex:1;">💾 Lưu</button>
-              <button class="btn-sm" style="flex:1;">🔑 Đặt lại mật khẩu</button>
-              <button class="btn-sm red" style="flex:1;">🔒 Khóa tài khoản</button>
+          <div class="side-section">
+            <h4>Quyền hệ thống</h4>
+            <div class="perm-grid">
+              <div class="perm-item"><input type="checkbox" id="chk_live"> Xem trực tiếp</div>
+              <div class="perm-item"><input type="checkbox" id="chk_playback"> Xem lại</div>
+              <div class="perm-item"><input type="checkbox" id="chk_cammgmt"> Quản lý camera</div>
+              <div class="perm-item"><input type="checkbox" id="chk_usermgmt"> Quản lý người dùng</div>
+              <div class="perm-item"><input type="checkbox" id="chk_alertmgmt"> Quản lý cảnh báo</div>
+              <div class="perm-item"><input type="checkbox" id="chk_reports"> Xem báo cáo</div>
+              <div class="perm-item"><input type="checkbox" id="chk_sysconfig"> Cấu hình hệ thống</div>
+              <div class="perm-item"><input type="checkbox" id="chk_export"> Xuất dữ liệu</div>
             </div>
           </div>
+
+          <div style="padding:16px 18px;display:flex;flex-direction:column;gap:10px;">
+            <button class="btn-sm primary" style="width:100%;" onclick="saveUserProfileChanges()">💾 Lưu thay đổi</button>
+            <div style="display:flex;gap:8px;">
+              <button class="btn-sm" style="flex:1;" onclick="resetUserPassword()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> Đặt lại mật khẩu</button>
+              <button class="btn-sm red" id="btnLockAccount" style="flex:1;" onclick="toggleLockAccount()">🔒 Khóa tài khoản</button>
+            </div>
+            <button class="btn-sm red" style="width:100%;border-style:dashed;background:#fff5f5;" onclick="deleteUserAccount()">✕ Xóa bỏ tài khoản này</button>
+          </div>
         </div>
+      </div>
+    </div>
+
+    <div id="addUserModal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(15,23,42,0.6);z-index:9999;align-items:center;justify-content:center;backdrop-filter:blur(1px);">
+      <div class="card" style="width:450px;background:#fff;padding:24px;border-radius:12px;">
+        <h3 style="margin-top:0;margin-bottom:16px;font-size:16px;font-weight:700;">Tạo tài khoản thành viên mới</h3>
+        <form id="addUserForm" onsubmit="submitNewUser(event)">
+          <div class="field" style="margin-bottom:12px;"><label>Tên đăng nhập (username)</label><div class="input-wrap"><input id="modalUserUsername" required placeholder="Ví dụ: hoang.le"></div></div>
+          <div class="field" style="margin-bottom:12px;"><label>Mật khẩu khởi tạo</label><div class="input-wrap"><input type="password" id="modalUserPassword" required placeholder="Nhập mật khẩu ban đầu"></div></div>
+          <div class="field" style="margin-bottom:12px;"><label>Họ và tên</label><div class="input-wrap"><input id="modalUserName" required placeholder="Ví dụ: Lê Hoàng Nam"></div></div>
+          <div class="field" style="margin-bottom:12px;">
+            <label>Vai trò</label>
+            <select id="modalUserRole" style="width:100%;padding:9px;border:1px solid var(--slate-200);border-radius:8px;"><option value="Nhân viên">Nhân viên</option><option value="Giám sát">Giám sát</option><option value="Quản trị viên">Quản trị viên</option></select>
+          </div>
+          <div class="field" style="margin-bottom:12px;"><label>Đơn vị / Bộ phận công tác</label><div class="input-wrap"><input id="modalUserUnit" required placeholder="Ví dụ: Nhà máy A"></div></div>
+          <div class="field" style="margin-bottom:12px;"><label>Địa chỉ Email</label><div class="input-wrap"><input type="email" id="modalUserEmail" required placeholder="Ví dụ: nam.le@demo.com"></div></div>
+          <div class="field" style="margin-bottom:18px;"><label>Số điện thoại liên hệ</label><div class="input-wrap"><input id="modalUserPhone" required placeholder="Ví dụ: 0912..."></div></div>
+          <div style="display:flex;gap:10px;justify-content:flex-end;">
+            <button type="button" class="btn-sm" style="width:100px;" onclick="closeAddUserModal()">Hủy bỏ</button>
+            <button type="submit" class="btn-sm primary" style="width:140px;">Tạo tài khoản</button>
+          </div>
+        </form>
+      </div>
+    </div>
     </div>
   </div>
 </div>
