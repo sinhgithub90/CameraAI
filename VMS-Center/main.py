@@ -89,6 +89,16 @@ def restart_go2rtc_process():
     except Exception as e:
         print(f"Lỗi khởi động tiến trình Media server: {e}")
 
+def verify_admin_role(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    token = credentials.credentials
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        if payload.get("role") != "Quản trị viên":
+            raise HTTPException(status_code=403, detail="TỪ CHỐI TRUY CẬP: Thao tác cấu hình quyền chỉ dành riêng cho Quản trị viên!")
+        return payload.get("sub")
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Phiên đăng nhập hết hạn hoặc Token xác thực không hợp lệ!")
+
 @app.post("/api/auth/token")
 def login(user: str, text_pass: str):
     if user == "ai_system" and text_pass == "secure_pass_2026":
@@ -115,18 +125,32 @@ def login(user: str, text_pass: str):
         }
     raise HTTPException(status_code=401, detail="Sai tài khoản hoặc mật khẩu đăng nhập!")
 
+# API MỚI: Hỗ trợ xác thực Google Mock cấp mã Token thực cho giao diện điều phối quyền
+@app.post("/api/auth/google-mock")
+def google_mock_login(email: str):
+    users = load_users()
+    current_user = next((u for u in users if u["email"].lower() == email.strip().lower()), None)
+    if current_user:
+        if current_user["status"] != "Hoạt động":
+            raise HTTPException(status_code=403, detail="Tài khoản liên kết với Email này hiện đang bị tạm khóa!")
+        payload = {"sub": current_user["username"], "exp": datetime.utcnow() + timedelta(hours=8), "role": current_user["role"]}
+        token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+        return {
+            "access_token": token,
+            "token_type": "bearer",
+            "user": {
+                "username": current_user["username"], "name": current_user["name"],
+                "role": current_user["role"], "unit": current_user["unit"], "permissions": current_user["permissions"]
+            }
+        }
+    raise HTTPException(status_code=404, detail="Email Google này chưa được quy hoạch đăng ký trong hệ thống!")
+
 @app.get("/api/vms/cameras")
 def get_all_cameras():
     return load_ui_cameras()
 
 class CameraAddInput(BaseModel):
-    name: str
-    ip: str
-    user: str
-    password: str
-    model: str
-    zone: str
-    loc: str
+    name: str; ip: str; user: str; password: str; model: str; zone: str; loc: str
 
 @app.post("/api/vms/camera/add")
 def add_camera_and_sync_media(cam: CameraAddInput):
@@ -175,22 +199,15 @@ def delete_camera(cam_id: str):
     restart_go2rtc_process()
     return {"status": "success"}
 
-# 🌟 BỔ SUNG: API LẤY DANH SÁCH USER (ĐÃ SỬA LỖI 404)
 @app.get("/api/vms/users")
 def get_all_users():
     return load_users()
 
 class UserAddInput(BaseModel):
-    username: str
-    name: str
-    role: str
-    unit: str
-    email: str
-    phone: str
-    password: str
+    username: str; name: str; role: str; unit: str; email: str; phone: str; password: str
 
 @app.post("/api/vms/user/add")
-def add_new_user(user: UserAddInput):
+def add_new_user(user: UserAddInput, admin_user: str = Depends(verify_admin_role)):
     users = load_users()
     if any(u["username"] == user.username for u in users):
         raise HTTPException(status_code=400, detail="Tên đăng nhập đã tồn tại!")
@@ -205,30 +222,21 @@ def add_new_user(user: UserAddInput):
     return {"status": "success"}
 
 class UserUpdateInput(BaseModel):
-    name: str
-    role: str
-    unit: str
-    email: str
-    phone: str
-    permissions: list
+    name: str; role: str; unit: str; email: str; phone: str; permissions: list
 
 @app.put("/api/vms/user/{username}")
-def update_user_profile(username: str, data: UserUpdateInput):
+def update_user_profile(username: str, data: UserUpdateInput, admin_user: str = Depends(verify_admin_role)):
     users = load_users()
     for u in users:
         if u["username"] == username:
-            u["name"] = data.name
-            u["role"] = data.role
-            u["unit"] = data.unit
-            u["email"] = data.email
-            u["phone"] = data.phone
-            u["permissions"] = data.permissions
+            u["name"] = data.name; u["role"] = data.role; u["unit"] = data.unit
+            u["email"] = data.email; u["phone"] = data.phone; u["permissions"] = data.permissions
             save_users(users)
             return {"status": "success"}
     raise HTTPException(status_code=404, detail="Không tìm thấy người dùng")
 
 @app.post("/api/vms/user/{username}/reset-password")
-def reset_password(username: str):
+def reset_password(username: str, admin_user: str = Depends(verify_admin_role)):
     users = load_users()
     for u in users:
         if u["username"] == username:
@@ -238,7 +246,7 @@ def reset_password(username: str):
     raise HTTPException(status_code=404, detail="Không tìm thấy người dùng")
 
 @app.post("/api/vms/user/{username}/toggle-lock")
-def toggle_lock_user(username: str):
+def toggle_lock_user(username: str, admin_user: str = Depends(verify_admin_role)):
     if username == "admin":
         raise HTTPException(status_code=400, detail="Không được phép khóa tài khoản Admin tối cao!")
     users = load_users()
@@ -249,7 +257,7 @@ def toggle_lock_user(username: str):
             return {"status": "success", "new_status": u["status"]}
     raise HTTPException(status_code=404, detail="Không tìm thấy người dùng")
 
-@app.delete("/api/vms/user/{username}")
+@app.delete("/api/vms/user/{username}", dependencies=[Depends(verify_admin_role)])
 def delete_user(username: str):
     if username == "admin":
         raise HTTPException(status_code=400, detail="Không được phép xóa tài khoản Admin tối cao!")

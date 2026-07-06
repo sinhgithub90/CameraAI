@@ -31,5 +31,20 @@
     "permissions": [
       "live"
     ]
+  },
+  {
+    "username": "tanle",
+    "password": "123123",
+    "name": "Lê Văn Tân",
+    "role": "Giám sát",
+    "unit": "dev",
+    "email": "tanle@gmail.com",
+    "status": "Hoạt động",
+    "phone": "0999999992",
+    "permissions": [
+      "live",
+      "playback",
+      "cammgmt"
+    ]
   }
 ]
