@@ -29,7 +29,8 @@
     "status": "Hoạt động",
     "phone": "0999999991",
     "permissions": [
-      "live"
+      "live",
+      "playback"
     ]
   },
   {
@@ -44,7 +45,11 @@
     "permissions": [
       "live",
       "playback",
-      "cammgmt"
+      "cammgmt",
+      "alertmgmt",
+      "reports",
+      "sysconfig",
+      "export"
     ]
   }
 ]

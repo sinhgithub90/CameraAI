@@ -9,6 +9,8 @@ import subprocess
 import os
 import json  
 import platform
+import threading
+import time
 from datetime import datetime, timedelta
 
 app = FastAPI(title="VMS Central API Gateway", version="1.0")
@@ -125,7 +127,6 @@ def login(user: str, text_pass: str):
         }
     raise HTTPException(status_code=401, detail="Sai tài khoản hoặc mật khẩu đăng nhập!")
 
-# API MỚI: Hỗ trợ xác thực Google Mock cấp mã Token thực cho giao diện điều phối quyền
 @app.post("/api/auth/google-mock")
 def google_mock_login(email: str):
     users = load_users()
@@ -174,7 +175,7 @@ def add_camera_and_sync_media(cam: CameraAddInput):
     new_cam_obj = {
         "id": cam_id, "index": next_idx, "name": cam.name, "ip": cam.ip, "model": cam.model,
         "zone": cam.zone, "loc": cam.loc, "type": "video",
-        "src": f"http://127.0.0.1:1984/stream.html?src=${cam_id}&mode=webrtc", "tag": "Live", "status": "online"
+        "src": f"http://127.0.0.1:1984/stream.html?src={cam_id}&mode=webrtc", "tag": "Live", "status": "online"
     }
     cameras.append(new_cam_obj)
     save_ui_cameras(cameras)
@@ -211,11 +212,9 @@ def add_new_user(user: UserAddInput, admin_user: str = Depends(verify_admin_role
     users = load_users()
     if any(u["username"] == user.username for u in users):
         raise HTTPException(status_code=400, detail="Tên đăng nhập đã tồn tại!")
-    
     new_user_obj = {
         "username": user.username, "password": user.password, "name": user.name, "role": user.role,
-        "unit": user.unit, "email": user.email, "status": "Hoạt động", "phone": user.phone,
-        "permissions": ["live"]
+        "unit": user.unit, "email": user.email, "status": "Hoạt động", "phone": user.phone, "permissions": ["live"]
     }
     users.append(new_user_obj)
     save_users(users)
@@ -266,6 +265,54 @@ def delete_user(username: str):
     save_users(filtered_users)
     return {"status": "success"}
 
+# 🌟 LUỒNG QUYÉT NGẦM TRUNG GIAN (PROXY HEALTH CHECK)
+# THAY THẾ HÀM start_go2rtc_proxy_sync TRONG main.py
+def start_go2rtc_proxy_sync():
+    def background_sync():
+        time.sleep(5)
+        # Bộ đếm để chống chớp tắt (xác nhận offline sau 3 lần quét)
+        fail_counter = {} 
+        
+        while True:
+            try:
+                res = requests.get("http://127.0.0.1:1984/api/streams", timeout=2)
+                if res.status_code == 200:
+                    go2rtc_data = res.json()
+                    cameras = load_ui_cameras()
+                    is_changed = False
+                    
+                    for cam in cameras:
+                        if cam.get("type") == "video":
+                            cam_id = cam.get("id")
+                            stream_info = go2rtc_data.get(cam_id)
+                            
+                            # Điều kiện Online nới lỏng: Có producer là được (không cần check recv > 0 quá khắt khe)
+                            is_online = False
+                            if stream_info and stream_info.get("producers") and len(stream_info["producers"]) > 0:
+                                is_online = True
+                            
+                            if is_online:
+                                fail_counter[cam_id] = 0 # Reset bộ đếm nếu online
+                                if cam.get("status") != "online":
+                                    cam["status"] = "online"
+                                    is_changed = True
+                            else:
+                                fail_counter[cam_id] = fail_counter.get(cam_id, 0) + 1
+                               
+                                if fail_counter[cam_id] >= 3:
+                                    if cam.get("status") != "offline":
+                                        cam["status"] = "offline"
+                                        is_changed = True
+                    
+                    if is_changed:
+                        save_ui_cameras(cameras)
+            except Exception as e:
+                pass
+            time.sleep(3)
+    t = threading.Thread(target=background_sync, daemon=True)
+    t.start()
+
+start_go2rtc_proxy_sync()
 load_users()
 
 if __name__ == "__main__":
