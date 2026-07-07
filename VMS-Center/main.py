@@ -200,6 +200,30 @@ def delete_camera(cam_id: str):
     restart_go2rtc_process()
     return {"status": "success"}
 
+# THÊM ĐOẠN NÀY VÀO TRONG FILE main.py
+class CameraLocationInput(BaseModel):
+    lat: float
+    lng: float
+
+
+@app.put("/api/vms/camera/{cam_id}/location")
+def update_camera_location(cam_id: str, data: CameraLocationInput, admin_user: str = Depends(verify_admin_role)):
+    cameras = load_ui_cameras()
+    is_changed = False
+    for c in cameras:
+        if c["id"] == cam_id:
+            c["lat"] = data.lat
+            c["lng"] = data.lng
+            is_changed = True
+            break
+            
+    if is_changed:
+        save_ui_cameras(cameras)
+        print(f"🗺️ GIS: Đã gán tọa độ ({data.lat}, {data.lng}) cho camera {cam_id}")
+        return {"status": "success"}
+        
+    raise HTTPException(status_code=404, detail="Không tìm thấy camera")
+
 @app.get("/api/vms/users")
 def get_all_users():
     return load_users()

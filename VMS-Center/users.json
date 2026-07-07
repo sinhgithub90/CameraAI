@@ -30,7 +30,8 @@
     "phone": "0999999991",
     "permissions": [
       "live",
-      "playback"
+      "playback",
+      "usermgmt"
     ]
   },
   {
