@@ -124,7 +124,8 @@ function renderLiveGrid() {
     if (cam.status !== 'online') {
       statusOverlayHTML = `<div class="cam-status-overlay" style="position:absolute; top:0; left:0; width:100%; height:100%; background:rgba(15,23,42,0.94); display:flex; flex-direction:column; align-items:center; justify-content:center; color:#f87171; z-index:4; gap:8px; text-align:center; padding:12px; backdrop-filter: blur(1px);"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-bottom:2px;"><path d="m1 1 22 22M16.74 11.24a6 6 0 0 1 0 8.49M14 14a3 3 0 0 1 0 4.24M8.18 8.18a6 6 0 0 0 0 8.49M10.24 10.24a3 3 0 0 0 0 4.24"/></svg><div style="font-weight:700; font-size:12.5px; letter-spacing:0.5px;">MẤT TÍN HIỆU STREAM</div><div style="font-size:11px; color:#94a3b8; font-weight:400;">Thiết bị ngoại tuyến hoặc sai thông số IP: ${cam.ip}</div></div>`;
     }
-    const tileHTML = `<div class="live-tile ${isSelected}" data-id="${cam.id}" onclick="selectCam(this)" ondblclick="maximizeCam(this)" style="position:relative; cursor:pointer;"><div class="cam-media-container" style="width:100%; height:100%; pointer-events:none;">${mediaHTML}</div>${statusOverlayHTML}<div class="cam-tag" style="${cam.tag === 'Live' ? 'background:#dc2626' : ''}; z-index:10; pointer-events:none;">${cam.tag}</div><div class="cam-label" style="z-index:10; pointer-events:none;">● ${cam.index}. ${cam.name}</div><div class="cam-time" style="z-index:10; pointer-events:none;">${new Date().toLocaleTimeString()}</div></div>`;
+    const tileHTML = `<div class="live-tile ${isSelected}" data-id="${cam.id}" onclick="selectCam(this)" ondblclick="maximizeCam(this)" style="position:relative; cursor:pointer;"><div class="cam-media-container" style="width:100%; height:100%; pointer-events:none;">${mediaHTML}</div>${statusOverlayHTML}<div class="cam-tag" style="${cam.tag === 'Live' ? 'background:#dc2626' : ''}; z-index:10; pointer-events:none;">${cam.tag}</div><div class="cam-label" style="z-index:10; pointer-events:none;">● ${cam.index}. ${cam.name}</div></div>`;
+    // <div class="cam-time" style="z-index:10; pointer-events:none;">${new Date().toLocaleTimeString()}</div>
     liveGrid.insertAdjacentHTML('beforeend', tileHTML);
   });
   const onlineCount = ALL_CAMERAS.filter(c => c.status === 'online').length;
@@ -146,7 +147,8 @@ function renderOverviewGrid() {
     if (cam.status !== 'online') {
       statusOverlayHTML = `<div class="cam-status-overlay" style="position:absolute; top:0; left:0; width:100%; height:100%; background:rgba(15,23,42,0.94); display:flex; flex-direction:column; align-items:center; justify-content:center; color:#f87171; z-index:4; gap:6px; text-align:center; padding:10px; backdrop-filter: blur(1px);"><svg width="20" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m1 1 22 22M16.74 11.24a6 6 0 0 1 0 8.49M14 14a3 3 0 0 1 0 4.24M8.18 8.18a6 6 0 0 0 0 8.49M10.24 10.24a3 3 0 0 0 0 4.24"/></svg><div style="font-weight:700; font-size:11.5px;">MẤT KẾT NỐI</div></div>`;
     }
-    const tileHTML = `<div class="cam-tile" data-id="${cam.id}" ondblclick="maximizeCam(this)" style="position:relative; cursor:pointer;"><div class="cam-media-container" style="width:100%; height:100%; pointer-events:none;">${mediaHTML}</div>${statusOverlayHTML}<div class="cam-label" style="z-index:10; pointer-events:none;">● ${cam.index}. ${cam.name}</div><div class="cam-time" style="z-index:10; pointer-events:none;">${new Date().toLocaleTimeString()}</div></div>`;
+    const tileHTML = `<div class="cam-tile" data-id="${cam.id}" ondblclick="maximizeCam(this)" style="position:relative; cursor:pointer;"><div class="cam-media-container" style="width:100%; height:100%; pointer-events:none;">${mediaHTML}</div>${statusOverlayHTML}<div class="cam-label" style="z-index:10; pointer-events:none;">● ${cam.index}. ${cam.name}</div></div>`; 
+    // <div class="cam-time" style="z-index:10; pointer-events:none;">${new Date().toLocaleTimeString()}</div>
     overviewGrid.insertAdjacentHTML('beforeend', tileHTML);
   });
 }
@@ -290,6 +292,33 @@ async function deleteUserAccount() {
   } catch (e) {}
 }
 
+// HÀM MỚI: Đồng bộ tên và vai trò người dùng lên thanh Top Header
+function syncSessionUserDisplayName() {
+    const userStr = localStorage.getItem('currentUser');
+    if (userStr) {
+        const user = JSON.parse(userStr);
+        
+        // Tìm thẻ hiển thị tên
+        const nameEl = document.getElementById('display-user-name');
+        if (nameEl) {
+            nameEl.textContent = user.name;
+        }
+
+        // Tìm thẻ hiển thị vai trò (nếu có)
+        const roleEl = document.getElementById('display-user-role');
+        if (roleEl) {
+            roleEl.textContent = user.role;
+        }
+
+        // Cập nhật Avatar (Lấy 2 chữ cái đầu của tên)
+        const avatarEl = document.getElementById('display-user-avatar');
+        if (avatarEl) {
+            const initials = user.name.split(' ').map(n => n[0]).join('').slice(-2).toUpperCase();
+            avatarEl.textContent = initials;
+        }
+    }
+}
+
 // 🌟 15. LUỒNG QUÉT PROXY: Gọi API Backend 8000 thay vì gọi Go2RTC 1984
 async function startCameraHealthMonitor() {
   setInterval(async () => {
@@ -319,8 +348,6 @@ async function startCameraHealthMonitor() {
   }, 3000);
 }
 
-// Triệt tiêu mã HTML iframe lỗi tận gốc khi offline
-// SỬA HÀM updateSingleCameraUI TRONG script.js
 function updateSingleCameraUI(cam) {
   const tile = document.querySelector(`.live-tile[data-id="${cam.id}"]`) || 
                document.querySelector(`.cam-tile[data-id="${cam.id}"]`);
@@ -353,8 +380,13 @@ function updateSingleCameraUI(cam) {
   }
 }
 
+
 document.addEventListener("DOMContentLoaded", async () => {
    if (!checkAuthSecurity()) return;
+   
+   // Gọi hàm đồng bộ giao diện người dùng
+   syncSessionUserDisplayName(); 
+
    await fetchCamerasFromBackend();
    if (document.getElementById('userTableBody')) { await fetchUsersFromBackend(); renderUserTable(); }
    if(document.getElementById('liveCamGrid')) renderLiveGrid();

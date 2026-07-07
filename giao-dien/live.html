@@ -32,7 +32,7 @@
       <div class="topbar-right">
         <div class="icon-btn"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg><span class="badge">8</span></div>
         <div class="icon-btn"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M3 16v3a2 2 0 0 0 2 2h3"/></svg></div>
-        <div class="user-chip"><div class="avatar">VM</div><div><div class="uname">Trần Văn Minh</div><div class="urole">Quản trị viên</div></div><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg></div>
+        <div class="user-chip"><div class="avatar" id="display-user-avatar">..</div><div><div class="uname" id="display-user-name">Đang tải...</div><div class="urole" id="display-user-role">...</div></div><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg></div>
       </div>
     </div>
 
@@ -41,7 +41,6 @@
         <select><option>Tất cả khu vực</option></select>
         <select><option>Tất cả trạng thái</option></select>
         <select id="gridLimitSelect" onchange="changeGridLimit(this.value)">
-          
           <option value="4">Hiển thị: Lưới 4 Camera</option>
           <option value="6" selected>Hiển thị: Lưới 6 Camera</option>
           <option value="9">Hiển thị: Lưới 9 Camera</option>
