@@ -319,6 +319,38 @@ function syncSessionUserDisplayName() {
     }
 }
 
+// 1. Hàm Bật/Tắt Menu Dropdown
+function toggleUserDropdown() {
+    const menu = document.getElementById('user-dropdown-menu');
+    if (menu) {
+        // Nếu đang ẩn thì hiện, đang hiện thì ẩn
+        menu.style.display = (menu.style.display === 'none' || menu.style.display === '') ? 'block' : 'none';
+    }
+}
+
+// 2. Lắng nghe sự kiện click chuột ra ngoài vùng Menu để tự động đóng Menu lại cho mượt mà
+document.addEventListener('click', function(event) {
+    const userChip = document.querySelector('.user-chip');
+    const dropdownMenu = document.getElementById('user-dropdown-menu');
+    
+    // Nếu click không trúng vào khu vực Avatar/Tên và cũng không trúng vào Menu thì đóng menu lại
+    if (dropdownMenu && userChip && !userChip.contains(event.target) && !dropdownMenu.contains(event.target)) {
+        dropdownMenu.style.display = 'none';
+    }
+});
+
+// 3. Hàm Xử lý Đăng xuất
+function processLogout() {
+    if (confirm("Bạn có chắc chắn muốn đăng xuất khỏi hệ thống?")) {
+        // Xóa sạch Token và Thông tin phiên lưu trong trình duyệt
+        localStorage.removeItem('currentUser');
+        localStorage.removeItem('token');
+        
+        // Điều hướng thẳng về trang đăng nhập
+        window.location.href = 'login.html';
+    }
+}
+
 // 🌟 15. LUỒNG QUÉT PROXY: Gọi API Backend 8000 thay vì gọi Go2RTC 1984
 async function startCameraHealthMonitor() {
   setInterval(async () => {
