@@ -34,7 +34,6 @@
       "cammgmt",
       "usermgmt",
       "alertmgmt",
-      "reports",
       "sysconfig"
     ]
   },
@@ -45,7 +44,7 @@
     "role": "Giám sát",
     "unit": "dev",
     "email": "tanle@gmail.com",
-    "status": "Hoạt động",
+    "status": "Tạm khóa",
     "phone": "0999999992",
     "permissions": [
       "live",
