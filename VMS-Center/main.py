@@ -292,47 +292,85 @@ def delete_user(username: str):
 # 🌟 LUỒNG QUYÉT NGẦM TRUNG GIAN (PROXY HEALTH CHECK)
 # THAY THẾ HÀM start_go2rtc_proxy_sync TRONG main.py
 def start_go2rtc_proxy_sync():
+    import socket
+    from urllib.parse import urlparse
+    from concurrent.futures import ThreadPoolExecutor
+
+    # Có thể chỉnh các tham số này để cân bằng giữa "phát hiện nhanh"
+    # và "chống chớp tắt do rớt gói mạng tạm thời"
+    PROBE_TIMEOUT = 1.0      # giây - thời gian chờ tối đa mỗi lần dò cổng RTSP
+    POLL_INTERVAL = 1.0      # giây - khoảng cách giữa các vòng quét
+    FAIL_THRESHOLD = 2       # số lần thất bại liên tiếp mới xác nhận offline
+    DEFAULT_RTSP_PORT = 554  # fallback nếu không tìm thấy trong go2rtc.yaml
+
+    def get_rtsp_targets():
+        """Đọc go2rtc.yaml để lấy đúng host:port RTSP thật của từng camera.
+        Không dùng port cố định vì mỗi camera có thể khai báo port RTSP khác nhau
+        (VD: cam_huyen_01 dùng 2004, cam_huyen_02 dùng 2005)."""
+        targets = {}
+        try:
+            if os.path.exists(GO2RTC_YAML_PATH):
+                with open(GO2RTC_YAML_PATH, 'r', encoding='utf-8') as f:
+                    config_data = yaml.safe_load(f) or {}
+                for cam_id, url in (config_data.get('streams') or {}).items():
+                    parsed = urlparse(url)
+                    if parsed.hostname:
+                        targets[cam_id] = (parsed.hostname, parsed.port or DEFAULT_RTSP_PORT)
+        except Exception as e:
+            print(f"Lỗi đọc go2rtc.yaml: {e}")
+        return targets
+
+    def check_camera_reachable(host, port, timeout=PROBE_TIMEOUT):
+        """Kiểm tra camera có mở cổng RTSP không - độc lập với go2rtc"""
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return True
+        except (socket.timeout, ConnectionRefusedError, OSError):
+            return False
+
     def background_sync():
         time.sleep(5)
-        # Bộ đếm để chống chớp tắt (xác nhận offline sau 3 lần quét)
-        fail_counter = {} 
-        
+        fail_counter = {}
+
         while True:
             try:
-                res = requests.get("http://127.0.0.1:1984/api/streams", timeout=2)
-                if res.status_code == 200:
-                    go2rtc_data = res.json()
-                    cameras = load_ui_cameras()
-                    is_changed = False
-                    
-                    for cam in cameras:
-                        if cam.get("type") == "video":
-                            cam_id = cam.get("id")
-                            stream_info = go2rtc_data.get(cam_id)
-                            
-                            # Điều kiện Online nới lỏng: Có producer là được (không cần check recv > 0 quá khắt khe)
-                            is_online = False
-                            if stream_info and stream_info.get("producers") and len(stream_info["producers"]) > 0:
-                                is_online = True
-                            
-                            if is_online:
-                                fail_counter[cam_id] = 0 # Reset bộ đếm nếu online
-                                if cam.get("status") != "online":
-                                    cam["status"] = "online"
-                                    is_changed = True
-                            else:
-                                fail_counter[cam_id] = fail_counter.get(cam_id, 0) + 1
-                               
-                                if fail_counter[cam_id] >= 3:
-                                    if cam.get("status") != "offline":
-                                        cam["status"] = "offline"
-                                        is_changed = True
-                    
-                    if is_changed:
-                        save_ui_cameras(cameras)
+                cameras = load_ui_cameras()
+                video_cams = [c for c in cameras if c.get("type") == "video"]
+                rtsp_targets = get_rtsp_targets()  # đọc lại mỗi vòng để nhận camera mới thêm
+
+                def probe(cam):
+                    cam_id = cam["id"]
+                    host, port = rtsp_targets.get(cam_id, (cam["ip"], DEFAULT_RTSP_PORT))
+                    return cam_id, check_camera_reachable(host, port)
+
+                # Quét song song tất cả camera trong cùng 1 vòng, thay vì tuần tự,
+                # để tổng thời gian 1 vòng quét không phụ thuộc số lượng camera
+                with ThreadPoolExecutor(max_workers=max(len(video_cams), 1)) as pool:
+                    results = list(pool.map(probe, video_cams))
+                online_map = dict(results)
+
+                is_changed = False
+                for cam in video_cams:
+                    cam_id = cam["id"]
+                    is_online = online_map.get(cam_id, False)
+
+                    if is_online:
+                        fail_counter[cam_id] = 0
+                        if cam.get("status") != "online":
+                            cam["status"] = "online"
+                            is_changed = True
+                    else:
+                        fail_counter[cam_id] = fail_counter.get(cam_id, 0) + 1
+                        if fail_counter[cam_id] >= FAIL_THRESHOLD and cam.get("status") != "offline":
+                            cam["status"] = "offline"
+                            is_changed = True
+
+                if is_changed:
+                    save_ui_cameras(cameras)
             except Exception as e:
-                pass
-            time.sleep(3)
+                print(f"Lỗi health check: {e}")
+            time.sleep(POLL_INTERVAL)
+
     t = threading.Thread(target=background_sync, daemon=True)
     t.start()
 

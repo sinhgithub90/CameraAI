@@ -28,5 +28,18 @@
     "status": "online",
     "lat": 13.761461415577786,
     "lng": 109.20768095885197
+  },
+  {
+    "id": "cam_huyen_03",
+    "index": 3,
+    "name": "Tầng 3",
+    "ip": "10.10.10.15",
+    "model": "HikVision",
+    "zone": "Thế giới xanh",
+    "loc": "Tầng 3 hướng xuống công viên",
+    "type": "video",
+    "src": "http://127.0.0.1:1984/stream.html?src=cam_huyen_03&mode=webrtc",
+    "tag": "Live",
+    "status": "offline"
   }
 ]
