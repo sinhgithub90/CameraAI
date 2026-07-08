@@ -31,7 +31,11 @@
     "permissions": [
       "live",
       "playback",
-      "usermgmt"
+      "cammgmt",
+      "usermgmt",
+      "alertmgmt",
+      "reports",
+      "sysconfig"
     ]
   },
   {

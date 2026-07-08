@@ -273,34 +273,92 @@ async function submitNewUser(event) {
 async function saveUserPermissionsInstant() {
   if (!selectedUsername) return;
   const token = localStorage.getItem('token');
+  if (!token) return alert("🔒 Phiên làm việc hết hạn, vui lòng đăng nhập lại!");
+
   const permissionsList = ['live', 'playback', 'cammgmt', 'usermgmt', 'alertmgmt', 'reports', 'sysconfig', 'export'];
-  const activePermissions = permissionsList.filter(p => { const chk = document.getElementById(`chk_${p}`); return chk ? chk.checked : false; });
-  const payload = { name: document.getElementById('inpDetailName').value.trim(), email: document.getElementById('inpDetailEmail').value.trim(), phone: document.getElementById('inpDetailPhone').value.trim(), unit: document.getElementById('inpDetailUnit').value.trim(), role: document.getElementById('selDetailRole').value, permissions: activePermissions };
+  const activePermissions = permissionsList.filter(p => {
+    const chk = document.getElementById(`chk_${p}`);
+    return chk ? chk.checked : false;
+  });
+
+  const payload = {
+    name: document.getElementById('inpDetailName').value.trim(),
+    email: document.getElementById('inpDetailEmail').value.trim(),
+    phone: document.getElementById('inpDetailPhone').value.trim(),
+    unit: document.getElementById('inpDetailUnit').value.trim(),
+    role: document.getElementById('selDetailRole').value,
+    permissions: activePermissions
+  };
+
   try {
-    const response = await fetch(`http://127.0.0.1:8000/api/vms/user/${selectedUsername}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }, body: JSON.stringify(payload) });
-    if (response.ok) await fetchUsersFromBackend(); 
-  } catch (e) { console.error("Lỗi kết nối lưu quyền tự động:", e); }
+    const response = await fetch(`http://127.0.0.1:8000/api/vms/user/${selectedUsername}`, {
+      method: 'PUT',
+      headers: { 
+         'Content-Type': 'application/json',
+         'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify(payload)
+    });
+    if (response.ok) {
+      console.log(`Đã tự động cập nhật phân quyền cho @${selectedUsername}:`, activePermissions);
+      await fetchUsersFromBackend(); 
+    } else {
+      const err = await response.json();
+      alert("❌ Lỗi cấu hình quyền: " + (err.detail || "Không có thẩm quyền!"));
+    }
+  } catch (e) { console.error("Lỗi kết nối lưu quyền:", e); }
 }
 
-function openAddUserModal() { document.getElementById('addUserModal').style.display = 'flex'; }
-function closeAddUserModal() { document.getElementById('addUserModal').style.display = 'none'; }
-
+// 12. Nút ĐẶT LẠI MẬT KHẨU (ĐÃ SỬA LỖI THIẾU HEADERS)
 async function resetUserPassword() {
   if (!selectedUsername) return;
+  if (!confirm(`Bạn có chắc chắn muốn đặt lại mật khẩu cho tài khoản @${selectedUsername} về mặc định không?`)) return;
+  
   const token = localStorage.getItem('token');
+  if (!token) return alert("🔒 Vui lòng đăng nhập tài khoản Quản trị viên!");
+
   try {
-    const response = await fetch(`http://127.0.0.1:8000/api/vms/user/${selectedUsername}/reset-password`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } });
-    if (response.ok) { const result = await response.json(); alert(`Đã đặt lại mật khẩu thành công!\\nMật khẩu mới: ${result.new_password}`); }
-  } catch (e) {}
+    const response = await fetch(`http://127.0.0.1:8000/api/vms/user/${selectedUsername}/reset-password`, { 
+       method: 'POST',
+       headers: { 
+         'Content-Type': 'application/json',
+         'Authorization': `Bearer ${token}` 
+       }
+    });
+    if (response.ok) {
+      const result = await response.json();
+      alert(`🎉 Đặt lại thành công!\nMật khẩu mới của @${selectedUsername} là: ${result.new_password}`);
+    } else {
+      const err = await response.json(); 
+      alert("❌ Từ chối thao tác: " + (err.detail || "Lỗi phân quyền"));
+    }
+  } catch (e) { alert("Lỗi xử lý yêu cầu đặt lại mật khẩu!"); }
 }
 
+// 13. Nút KHÓA / MỞ KHÓA TÀI KHOẢN (ĐÃ FIX KHỚP BACKEND)
 async function toggleLockAccount() {
   if (!selectedUsername) return;
   const token = localStorage.getItem('token');
+  if (!token) return alert("🔒 Phiên làm việc hết hạn!");
+
   try {
-    const response = await fetch(`http://127.0.0.1:8000/api/vms/user/${selectedUsername}/toggle-lock`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } });
-    if (response.ok) { await fetchUsersFromBackend(); selectUserAccount(selectedUsername); }
-  } catch (e) {}
+    const response = await fetch(`http://127.0.0.1:8000/api/vms/user/${selectedUsername}/toggle-lock`, { 
+       method: 'POST',
+       headers: { 
+         'Content-Type': 'application/json',
+         'Authorization': `Bearer ${token}` 
+       }
+    });
+    if (response.ok) {
+      const result = await response.json();
+      alert(`Trạng thái tài khoản đổi thành: [${result.new_status}]`);
+      await fetchUsersFromBackend();
+      selectUserAccount(selectedUsername); // Vẽ lại giao diện panel phải
+    } else {
+      const err = await response.json();
+      alert("❌ Lỗi: " + (err.detail || "Không thể thao tác trên tài khoản này!"));
+    }
+  } catch (e) { alert("Lỗi khi kết nối thay đổi trạng thái khóa!"); }
 }
 
 async function deleteUserAccount() {
@@ -312,7 +370,6 @@ async function deleteUserAccount() {
     if (response.ok) { document.getElementById('userDetailPanel').style.display = 'none'; selectedUsername = null; await fetchUsersFromBackend(); renderUserTable(); }
   } catch (e) {}
 }
-
 // HÀM MỚI: Đồng bộ tên và vai trò người dùng lên thanh Top Header
 function syncSessionUserDisplayName() {
     const userStr = localStorage.getItem('currentUser');
@@ -445,8 +502,6 @@ function updateSingleCameraUI(cam) {
 
 document.addEventListener("DOMContentLoaded", async () => {
    if (!checkAuthSecurity()) return;
-   
-   // Gọi hàm đồng bộ giao diện người dùng
    syncSessionUserDisplayName(); 
 
    await fetchCamerasFromBackend();
