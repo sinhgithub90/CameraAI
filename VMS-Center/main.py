@@ -1,4 +1,5 @@
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, Query, Request, status
+from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -8,6 +9,8 @@ import yaml
 import subprocess
 import os
 import json  
+import shutil
+import sqlite3
 import platform
 import threading
 import time
@@ -32,6 +35,19 @@ GO2RTC_EXE_PATH = os.path.join(BASE_DIR, "go2rtc.exe")
 
 CAMERAS_JSON_PATH = os.path.join(BASE_DIR, "cameras.json")
 USERS_JSON_PATH = os.path.join(BASE_DIR, "users.json")
+RECORDINGS_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "recordings"))
+RECORDINGS_DB_PATH = os.path.join(BASE_DIR, "recordings.db")
+RECORDING_SEGMENT_SECONDS = int(os.getenv("RECORDING_SEGMENT_SECONDS", "60"))
+FFMPEG_EXE = os.getenv("FFMPEG_PATH") or shutil.which("ffmpeg")
+if not FFMPEG_EXE:
+    winget_packages_dir = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "WinGet", "Packages")
+    if os.path.exists(winget_packages_dir):
+        for root, _dirs, files in os.walk(winget_packages_dir):
+            if "ffmpeg.exe" in files:
+                FFMPEG_EXE = os.path.join(root, "ffmpeg.exe")
+                break
+recording_processes = {}
+recording_lock = threading.Lock()
 
 CAMERA_DB = {
     "cam_huyen_01": {"name": "Camera Ngã tư Huyện 1", "vlan": "VLAN_10", "status": "active"},
@@ -79,6 +95,175 @@ def load_users():
 def save_users(users):
     with open(USERS_JSON_PATH, "w", encoding="utf-8") as f:
         json.dump(users, f, ensure_ascii=False, indent=2)
+
+def get_recording_conn():
+    conn = sqlite3.connect(RECORDINGS_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_recording_db():
+    os.makedirs(RECORDINGS_DIR, exist_ok=True)
+    with get_recording_conn() as conn:
+        conn.execute(
+            """
+            create table if not exists recording_segments (
+              id integer primary key autoincrement,
+              camera_id text not null,
+              camera_name text,
+              zone text,
+              loc text,
+              file_path text not null unique,
+              start_time text not null,
+              end_time text not null,
+              duration_seconds integer,
+              file_size integer default 0,
+              status text default 'ready',
+              created_at text default current_timestamp
+            )
+            """
+        )
+        conn.execute("create index if not exists idx_recording_camera_time on recording_segments(camera_id, start_time, end_time)")
+        conn.execute("create index if not exists idx_recording_zone_time on recording_segments(zone, start_time)")
+
+def load_go2rtc_streams():
+    if not os.path.exists(GO2RTC_YAML_PATH):
+        return {}
+    with open(GO2RTC_YAML_PATH, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    return data.get("streams") or {}
+
+def get_camera_lookup():
+    return {cam["id"]: cam for cam in load_ui_cameras()}
+
+def parse_segment_start(file_path):
+    stem = os.path.splitext(os.path.basename(file_path))[0]
+    try:
+        return datetime.strptime(stem, "%Y%m%d_%H%M%S")
+    except ValueError:
+        return None
+
+def index_recording_file(file_path, camera):
+    start_dt = parse_segment_start(file_path)
+    if not start_dt:
+        return
+    try:
+        size = os.path.getsize(file_path)
+        modified_age = time.time() - os.path.getmtime(file_path)
+    except OSError:
+        return
+    if size <= 0 or modified_age < 3:
+        return
+    end_dt = start_dt + timedelta(seconds=RECORDING_SEGMENT_SECONDS)
+    with get_recording_conn() as conn:
+        conn.execute(
+            """
+            insert or ignore into recording_segments (
+              camera_id, camera_name, zone, loc, file_path,
+              start_time, end_time, duration_seconds, file_size, status
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready')
+            """,
+            (
+                camera.get("id"),
+                camera.get("name"),
+                camera.get("zone"),
+                camera.get("loc"),
+                os.path.abspath(file_path),
+                start_dt.isoformat(),
+                end_dt.isoformat(),
+                RECORDING_SEGMENT_SECONDS,
+                size,
+            ),
+        )
+
+def scan_recording_index():
+    init_recording_db()
+    cameras = get_camera_lookup()
+    for camera_id, camera in cameras.items():
+        camera_dir = os.path.join(RECORDINGS_DIR, camera_id)
+        if not os.path.exists(camera_dir):
+            continue
+        for root, _dirs, files in os.walk(camera_dir):
+            for name in files:
+                if name.lower().endswith((".mp4", ".mkv")):
+                    index_recording_file(os.path.join(root, name), camera)
+
+def build_recording_output_pattern(camera_id):
+    return os.path.join(RECORDINGS_DIR, camera_id, "%Y%m%d_%H%M%S.mp4")
+
+def start_camera_recorder(camera_id, rtsp_url):
+    if not FFMPEG_EXE:
+        return {"ok": False, "error": "ffmpeg_not_found"}
+    os.makedirs(os.path.join(RECORDINGS_DIR, camera_id), exist_ok=True)
+    log_path = os.path.join(RECORDINGS_DIR, camera_id, "ffmpeg.log")
+    output_pattern = build_recording_output_pattern(camera_id)
+    cmd = [
+        FFMPEG_EXE,
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-rtsp_transport",
+        "tcp",
+        "-i",
+        rtsp_url,
+        "-c",
+        "copy",
+        "-f",
+        "segment",
+        "-segment_time",
+        str(RECORDING_SEGMENT_SECONDS),
+        "-reset_timestamps",
+        "1",
+        "-strftime",
+        "1",
+        "-strftime_mkdir",
+        "1",
+        output_pattern,
+    ]
+    try:
+        log_file = open(log_path, "ab")
+        process = subprocess.Popen(cmd, stdout=log_file, stderr=log_file, cwd=BASE_DIR)
+        with recording_lock:
+            recording_processes[camera_id] = {
+                "process": process,
+                "started_at": datetime.now().isoformat(),
+                "rtsp_url": rtsp_url,
+                "log_path": log_path,
+            }
+        return {"ok": True, "pid": process.pid}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+def stop_camera_recorder(camera_id):
+    with recording_lock:
+        info = recording_processes.pop(camera_id, None)
+    if not info:
+        return
+    process = info["process"]
+    if process.poll() is None:
+        process.terminate()
+
+def recording_supervisor_loop():
+    init_recording_db()
+    while True:
+        try:
+            streams = load_go2rtc_streams()
+            cameras = get_camera_lookup()
+            for camera_id, rtsp_url in streams.items():
+                if camera_id not in cameras:
+                    continue
+                with recording_lock:
+                    info = recording_processes.get(camera_id)
+                    running = bool(info and info["process"].poll() is None)
+                if not running:
+                    start_camera_recorder(camera_id, rtsp_url)
+            scan_recording_index()
+        except Exception as exc:
+            print(f"Recording supervisor error: {exc}")
+        time.sleep(10)
+
+def start_recording_supervisor():
+    thread = threading.Thread(target=recording_supervisor_loop, daemon=True)
+    thread.start()
 
 def restart_go2rtc_process():
     try:
@@ -291,6 +476,129 @@ def delete_user(username: str):
 
 # 🌟 LUỒNG QUYÉT NGẦM TRUNG GIAN (PROXY HEALTH CHECK)
 # THAY THẾ HÀM start_go2rtc_proxy_sync TRONG main.py
+@app.get("/api/recording/status")
+def get_recording_status():
+    scan_recording_index()
+    cameras = get_camera_lookup()
+    with recording_lock:
+        process_snapshot = dict(recording_processes)
+    camera_status = []
+    for camera in cameras.values():
+        info = process_snapshot.get(camera["id"])
+        running = bool(info and info["process"].poll() is None)
+        camera_status.append(
+            {
+                "camera_id": camera["id"],
+                "camera_name": camera.get("name"),
+                "running": running,
+                "pid": info["process"].pid if info else None,
+                "started_at": info.get("started_at") if info else None,
+                "log_path": info.get("log_path") if info else None,
+            }
+        )
+    return {
+        "ffmpeg_available": bool(FFMPEG_EXE),
+        "ffmpeg_path": FFMPEG_EXE,
+        "recordings_dir": RECORDINGS_DIR,
+        "segment_seconds": RECORDING_SEGMENT_SECONDS,
+        "cameras": camera_status,
+    }
+
+@app.post("/api/recording/restart")
+def restart_recording():
+    with recording_lock:
+        camera_ids = list(recording_processes)
+    for camera_id in camera_ids:
+        stop_camera_recorder(camera_id)
+    return {"status": "restarting"}
+
+@app.get("/api/playback/search")
+def search_playback(
+    camera_id: str | None = None,
+    zone: str | None = None,
+    loc: str | None = None,
+    from_time: str | None = Query(default=None),
+    to_time: str | None = Query(default=None),
+):
+    scan_recording_index()
+    where = ["1 = 1"]
+    params = []
+    if camera_id:
+        where.append("camera_id = ?")
+        params.append(camera_id)
+    if zone:
+        where.append("zone = ?")
+        params.append(zone)
+    if loc:
+        where.append("loc = ?")
+        params.append(loc)
+    if from_time:
+        where.append("end_time >= ?")
+        params.append(from_time)
+    if to_time:
+        where.append("start_time <= ?")
+        params.append(to_time)
+    sql = f"""
+        select id, camera_id, camera_name, zone, loc, file_path,
+               start_time, end_time, duration_seconds, file_size, status
+        from recording_segments
+        where {' and '.join(where)}
+        order by start_time desc
+        limit 200
+    """
+    with get_recording_conn() as conn:
+        rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
+    for row in rows:
+        row["stream_url"] = f"http://127.0.0.1:8000/api/playback/file/{row['id']}"
+        row["download_url"] = row["stream_url"]
+    return rows
+
+def iter_file_bytes(file_path, start=0, end=None, chunk_size=1024 * 1024):
+    with open(file_path, "rb") as f:
+        f.seek(start)
+        remaining = None if end is None else end - start + 1
+        while True:
+            read_size = chunk_size if remaining is None else min(chunk_size, remaining)
+            if read_size <= 0:
+                break
+            data = f.read(read_size)
+            if not data:
+                break
+            yield data
+            if remaining is not None:
+                remaining -= len(data)
+
+@app.get("/api/playback/file/{segment_id}")
+def get_playback_file(segment_id: int, request: Request):
+    with get_recording_conn() as conn:
+        row = conn.execute("select file_path from recording_segments where id = ?", (segment_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Khong tim thay doan video")
+    file_path = row["file_path"]
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File video khong con ton tai tren may")
+    file_size = os.path.getsize(file_path)
+    range_header = request.headers.get("range")
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Disposition": f'inline; filename="{os.path.basename(file_path)}"',
+    }
+    if range_header and range_header.startswith("bytes="):
+        start_text, _, end_text = range_header.replace("bytes=", "", 1).partition("-")
+        start = int(start_text) if start_text else 0
+        end = int(end_text) if end_text else file_size - 1
+        end = min(end, file_size - 1)
+        headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+        headers["Content-Length"] = str(end - start + 1)
+        return StreamingResponse(
+            iter_file_bytes(file_path, start, end),
+            status_code=206,
+            media_type="video/mp4",
+            headers=headers,
+        )
+    headers["Content-Length"] = str(file_size)
+    return StreamingResponse(iter_file_bytes(file_path), media_type="video/mp4", headers=headers)
+
 def start_go2rtc_proxy_sync():
     import socket
     from urllib.parse import urlparse
@@ -375,6 +683,7 @@ def start_go2rtc_proxy_sync():
     t.start()
 
 start_go2rtc_proxy_sync()
+start_recording_supervisor()
 load_users()
 
 if __name__ == "__main__":

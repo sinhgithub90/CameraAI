@@ -3,6 +3,8 @@ let ALL_CAMERAS = [];
 let ALL_USERS = [];
 let selectedUsername = null;
 let currentGridLimit = 6;
+let selectedCameraId = null;
+let playbackSegments = [];
 
 // 1. Hàm gọi API lấy danh sách camera tập trung từ Backend FastAPI
 async function fetchCamerasFromBackend() {
@@ -215,7 +217,23 @@ async function deleteCamera(id) {
 function openAddCamModal() { const modal = document.getElementById('addCamModal'); if (modal) modal.style.display = 'flex'; }
 function closeAddCamModal() { const modal = document.getElementById('addCamModal'); if (modal) modal.style.display = 'none'; }
 function changeGridLimit(val) { currentGridLimit = parseInt(val); const liveGrid = document.getElementById('liveCamGrid'); if(liveGrid) { liveGrid.style.gridTemplateColumns = (currentGridLimit === 2 || currentGridLimit === 4) ? 'repeat(2, 1fr)' : 'repeat(3, 1fr)'; renderLiveGrid(); } }
-function selectCam(el){ document.querySelectorAll('.live-tile').forEach(t => t.classList.remove('selected')); el.classList.add('selected'); const camId = el.getAttribute('data-id'); const camData = ALL_CAMERAS.find(c => c.id === camId); if (!camData) return; if(document.getElementById('sideCamName')) document.getElementById('sideCamName').textContent = `${camData.index}. ${camData.name}`; if(document.getElementById('sideCamIP')) document.getElementById('sideCamIP').textContent = camData.ip; if(document.getElementById('sideCamModel')) document.getElementById('sideCamModel').textContent = camData.model; if(document.getElementById('sideCamZone')) document.getElementById('sideCamZone').textContent = camData.zone; if(document.getElementById('sideCamLoc')) document.getElementById('sideCamLoc').textContent = camData.loc; const detailContainer = document.getElementById('mainDetailContainer'); if (detailContainer) { detailContainer.innerHTML = `<iframe src="http://127.0.0.1:1984/stream.html?src=${camData.id}&mode=webrtc" frameborder="0" scrolling="no" style="width:100%; aspect-ratio:16/9; pointer-events:none; display:block;"></iframe>`; } }
+function selectCam(el){
+  document.querySelectorAll('.live-tile').forEach(t => t.classList.remove('selected'));
+  el.classList.add('selected');
+  const camId = el.getAttribute('data-id');
+  const camData = ALL_CAMERAS.find(c => c.id === camId);
+  if (!camData) return;
+  selectedCameraId = camData.id;
+  if(document.getElementById('sideCamName')) document.getElementById('sideCamName').textContent = `${camData.index}. ${camData.name}`;
+  if(document.getElementById('sideCamIP')) document.getElementById('sideCamIP').textContent = camData.ip;
+  if(document.getElementById('sideCamModel')) document.getElementById('sideCamModel').textContent = camData.model;
+  if(document.getElementById('sideCamZone')) document.getElementById('sideCamZone').textContent = camData.zone;
+  if(document.getElementById('sideCamLoc')) document.getElementById('sideCamLoc').textContent = camData.loc;
+  const detailContainer = document.getElementById('mainDetailContainer');
+  if (detailContainer) {
+    detailContainer.innerHTML = `<iframe src="http://127.0.0.1:1984/stream.html?src=${camData.id}&mode=webrtc" frameborder="0" scrolling="no" style="width:100%; aspect-ratio:16/9; pointer-events:none; display:block;"></iframe>`;
+  }
+}
 function maximizeCam(el) { const mediaElement = el.querySelector('iframe') || el.querySelector('img'); if (mediaElement && mediaElement.requestFullscreen) mediaElement.requestFullscreen(); }
 
 function renderUserTable() {
@@ -440,6 +458,161 @@ function updateSingleCameraUI(cam) {
     const overlayHTML = `<div class="cam-status-overlay" style="position:absolute; top:0; left:0; width:100%; height:100%; background:rgba(15,23,42,0.94); display:flex; flex-direction:column; align-items:center; justify-content:center; color:#f87171; z-index:4; gap:8px; text-align:center; padding:12px; backdrop-filter: blur(1px);"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-bottom:2px;"><path d="m1 1 22 22M16.74 11.24a6 6 0 0 1 0 8.49M14 14a3 3 0 0 1 0 4.24M8.18 8.18a6 6 0 0 0 0 8.49M10.24 10.24a3 3 0 0 0 0 4.24"/></svg><div style="font-weight:700; font-size:12.5px; letter-spacing:0.5px;">MẤT TÍN HIỆU STREAM</div><div style="font-size:11px; color:#94a3b8; font-weight:400;">Thiết bị ngoại tuyến hoặc sai thông số IP: ${cam.ip}</div></div>`;
     tile.insertAdjacentHTML('beforeend', overlayHTML);
   }
+}
+
+function toDatetimeLocalValue(date) {
+  const pad = n => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function formatPlaybackTime(value) {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString('vi-VN', { hour12: false });
+}
+
+function formatBytes(size) {
+  if (!size) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = size;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value = value / 1024;
+    unit += 1;
+  }
+  return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unit]}`;
+}
+
+function fillPlaybackSelect(selectId, values, allLabel) {
+  const select = document.getElementById(selectId);
+  if (!select) return;
+  select.innerHTML = `<option value="">${allLabel}</option>`;
+  values.forEach(value => {
+    if (!value) return;
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = value;
+    select.appendChild(option);
+  });
+}
+
+async function openPlaybackModal() {
+  const modal = document.getElementById('playbackModal');
+  if (!modal) return;
+  const cameraSelect = document.getElementById('playbackCamera');
+  cameraSelect.innerHTML = '<option value="">Tất cả camera</option>';
+  ALL_CAMERAS.forEach(cam => {
+    const option = document.createElement('option');
+    option.value = cam.id;
+    option.textContent = `${cam.index}. ${cam.name}`;
+    cameraSelect.appendChild(option);
+  });
+  fillPlaybackSelect('playbackZone', [...new Set(ALL_CAMERAS.map(c => c.zone).filter(Boolean))], 'Tất cả khu vực');
+  fillPlaybackSelect('playbackLoc', [...new Set(ALL_CAMERAS.map(c => c.loc).filter(Boolean))], 'Tất cả vị trí');
+
+  const currentCam = ALL_CAMERAS.find(c => c.id === selectedCameraId) || ALL_CAMERAS[0];
+  if (currentCam) {
+    document.getElementById('playbackCamera').value = currentCam.id;
+    document.getElementById('playbackZone').value = currentCam.zone || '';
+    document.getElementById('playbackLoc').value = currentCam.loc || '';
+  }
+
+  const now = new Date();
+  const from = new Date(now.getTime() - 60 * 60 * 1000);
+  document.getElementById('playbackFrom').value = toDatetimeLocalValue(from);
+  document.getElementById('playbackTo').value = toDatetimeLocalValue(now);
+  document.getElementById('playbackResults').innerHTML = '<div class="playback-result"><div class="s">Chọn khoảng thời gian rồi bấm Tìm kiếm.</div></div>';
+  document.getElementById('playbackVideo').removeAttribute('src');
+  document.getElementById('playbackVideo').load();
+  document.getElementById('playbackEmpty').style.display = 'block';
+  modal.style.display = 'flex';
+  await loadRecordingStatusHint();
+}
+
+function closePlaybackModal() {
+  const modal = document.getElementById('playbackModal');
+  const video = document.getElementById('playbackVideo');
+  if (video) {
+    video.pause();
+    video.removeAttribute('src');
+    video.load();
+  }
+  if (modal) modal.style.display = 'none';
+}
+
+async function loadRecordingStatusHint() {
+  const hint = document.getElementById('recordingStatusHint');
+  if (!hint) return;
+  try {
+    const response = await fetch('http://127.0.0.1:8000/api/recording/status');
+    if (!response.ok) throw new Error('status failed');
+    const status = await response.json();
+    const running = (status.cameras || []).filter(c => c.running).length;
+    hint.textContent = status.ffmpeg_available
+      ? `Đang ghi ${running}/${(status.cameras || []).length} camera. Lưu tại: ${status.recordings_dir}`
+      : `Chưa tìm thấy ffmpeg. Cài FFmpeg hoặc đặt FFMPEG_PATH rồi khởi động lại backend để bắt đầu ghi. Thư mục lưu: ${status.recordings_dir}`;
+  } catch (error) {
+    hint.textContent = 'Chưa đọc được trạng thái ghi hình từ backend.';
+  }
+}
+
+async function searchPlaybackSegments() {
+  const params = new URLSearchParams();
+  const cameraId = document.getElementById('playbackCamera').value;
+  const zone = document.getElementById('playbackZone').value;
+  const loc = document.getElementById('playbackLoc').value;
+  const from = document.getElementById('playbackFrom').value;
+  const to = document.getElementById('playbackTo').value;
+  if (cameraId) params.set('camera_id', cameraId);
+  if (zone) params.set('zone', zone);
+  if (loc) params.set('loc', loc);
+  if (from) params.set('from_time', `${from}:00`);
+  if (to) params.set('to_time', `${to}:00`);
+
+  const results = document.getElementById('playbackResults');
+  results.innerHTML = '<div class="playback-result"><div class="s">Đang tìm video...</div></div>';
+  try {
+    const response = await fetch(`http://127.0.0.1:8000/api/playback/search?${params.toString()}`);
+    if (!response.ok) throw new Error('search failed');
+    playbackSegments = await response.json();
+    renderPlaybackResults();
+  } catch (error) {
+    results.innerHTML = '<div class="playback-result"><div class="s">Không thể tìm video. Kiểm tra backend đang chạy ở port 8000.</div></div>';
+  }
+}
+
+function renderPlaybackResults() {
+  const results = document.getElementById('playbackResults');
+  if (!playbackSegments.length) {
+    results.innerHTML = '<div class="playback-result"><div class="s">Chưa có video trong khoảng thời gian đã chọn.</div></div>';
+    return;
+  }
+  results.innerHTML = '';
+  playbackSegments.forEach(segment => {
+    const item = document.createElement('div');
+    item.className = 'playback-result';
+    item.onclick = () => playPlaybackSegment(segment.id);
+    item.innerHTML = `
+      <div class="t">${segment.camera_name || segment.camera_id}</div>
+      <div class="s">${formatPlaybackTime(segment.start_time)} → ${formatPlaybackTime(segment.end_time)}</div>
+      <div class="s">${segment.zone || '-'} / ${segment.loc || '-'} · ${formatBytes(segment.file_size)}</div>
+    `;
+    results.appendChild(item);
+  });
+}
+
+function playPlaybackSegment(segmentId) {
+  const segment = playbackSegments.find(s => s.id === segmentId);
+  if (!segment) return;
+  document.querySelectorAll('.playback-result').forEach(el => el.classList.remove('active'));
+  const idx = playbackSegments.findIndex(s => s.id === segmentId);
+  const activeEl = document.querySelectorAll('.playback-result')[idx];
+  if (activeEl) activeEl.classList.add('active');
+  const video = document.getElementById('playbackVideo');
+  document.getElementById('playbackEmpty').style.display = 'none';
+  video.src = `${segment.stream_url}?t=${Date.now()}`;
+  video.play().catch(() => {});
 }
 
 

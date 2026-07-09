@@ -101,7 +101,7 @@
             <h4>Thao tác nhanh</h4>
             <div class="qact-grid">
               <div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#475569" stroke-width="2"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>Xem trực tiếp</div>
-              <div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#475569" stroke-width="2"><circle cx="12" cy="12" r="10"/><polygon points="10,8 16,12 10,16"/></svg>Phát lại</div>
+              <div onclick="openPlaybackModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#475569" stroke-width="2"><circle cx="12" cy="12" r="10"/><polygon points="10,8 16,12 10,16"/></svg>Phát lại</div>
               <div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#475569" stroke-width="2"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>Ghi hình</div>
               <div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#475569" stroke-width="2"><path d="M23 19v-7a2 2 0 0 0-2-2H3a2 2 0 0 0-2 2v7"/><circle cx="12" cy="13" r="4"/></svg>Chụp ảnh</div>
               <div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#475569" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg>Đàm thoại</div>
@@ -109,6 +109,34 @@
             </div>
           </div>
         </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="playbackModal" class="modal-backdrop" style="display:none;">
+  <div class="playback-modal">
+    <div class="modal-head">
+      <div>
+        <h3>Phát lại video</h3>
+        <p>Tìm video đã lưu theo camera, khu vực và thời gian</p>
+      </div>
+      <button class="modal-close" onclick="closePlaybackModal()">×</button>
+    </div>
+    <div class="playback-filters">
+      <label>Camera<select id="playbackCamera"></select></label>
+      <label>Khu vực<select id="playbackZone"></select></label>
+      <label>Vị trí<select id="playbackLoc"></select></label>
+      <label>Từ thời điểm<input id="playbackFrom" type="datetime-local"></label>
+      <label>Đến thời điểm<input id="playbackTo" type="datetime-local"></label>
+      <button class="btn-sm primary" onclick="searchPlaybackSegments()">Tìm kiếm</button>
+    </div>
+    <div id="recordingStatusHint" class="playback-hint"></div>
+    <div class="playback-body">
+      <div id="playbackResults" class="playback-results"></div>
+      <div class="playback-player">
+        <video id="playbackVideo" controls></video>
+        <div id="playbackEmpty" class="playback-empty">Chọn một đoạn video để phát lại</div>
       </div>
     </div>
   </div>
