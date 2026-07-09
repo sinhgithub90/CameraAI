@@ -1,0 +1,23 @@
+{
+  "notifications": {
+    "email_enabled": true,
+    "email_address": "admin@multicamai.local",
+    "sms_enabled": false,
+    "sms_phone": "",
+    "min_alert_level": "trung_binh"
+  },
+  "integration": {
+    "go2rtc_api_url": "http://127.0.0.1:1984",
+    "webhook_url": "",
+    "webhook_enabled": false
+  },
+  "security": {
+    "session_timeout_hours": 8,
+    "min_password_length": 6,
+    "force_password_change_days": 0
+  },
+  "backup": {
+    "auto_backup_enabled": false,
+    "auto_backup_interval_hours": 24
+  }
+}

@@ -2,6 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import Optional
 import jwt
 import requests
 import yaml
@@ -32,6 +33,7 @@ GO2RTC_EXE_PATH = os.path.join(BASE_DIR, "go2rtc.exe")
 
 CAMERAS_JSON_PATH = os.path.join(BASE_DIR, "cameras.json")
 USERS_JSON_PATH = os.path.join(BASE_DIR, "users.json")
+SETTINGS_JSON_PATH = os.path.join(BASE_DIR, "settings.json")
 
 CAMERA_DB = {
     "cam_huyen_01": {"name": "Camera Ngã tư Huyện 1", "vlan": "VLAN_10", "status": "active"},
@@ -56,6 +58,52 @@ DEFAULT_USERS = [
         "permissions": ["live", "playback", "cammgmt", "usermgmt", "alertmgmt", "reports", "sysconfig", "export"]
     }
 ]
+
+DEFAULT_SETTINGS = {
+    "notifications": {
+        "email_enabled": True,
+        "email_address": "admin@multicamai.local",
+        "sms_enabled": False,
+        "sms_phone": "",
+        "min_alert_level": "trung_binh"   # thap | trung_binh | cao
+    },
+    "integration": {
+        "go2rtc_api_url": "http://127.0.0.1:1984",
+        "webhook_url": "",
+        "webhook_enabled": False
+    },
+    "security": {
+        "session_timeout_hours": 8,
+        "min_password_length": 6,
+        "force_password_change_days": 0   # 0 = tắt
+    },
+    "backup": {
+        "auto_backup_enabled": False,
+        "auto_backup_interval_hours": 24
+    }
+}
+
+def load_settings():
+    if os.path.exists(SETTINGS_JSON_PATH):
+        with open(SETTINGS_JSON_PATH, "r", encoding="utf-8") as f:
+            try:
+                data = json.load(f)
+                # Đảm bảo đủ field mặc định nếu file cũ thiếu key mới thêm sau này
+                merged = json.loads(json.dumps(DEFAULT_SETTINGS))
+                for section, values in data.items():
+                    if section in merged and isinstance(values, dict):
+                        merged[section].update(values)
+                    else:
+                        merged[section] = values
+                return merged
+            except Exception:
+                pass
+    save_settings(DEFAULT_SETTINGS)
+    return DEFAULT_SETTINGS
+
+def save_settings(settings):
+    with open(SETTINGS_JSON_PATH, "w", encoding="utf-8") as f:
+        json.dump(settings, f, ensure_ascii=False, indent=2)
 
 def load_ui_cameras():
     if os.path.exists(CAMERAS_JSON_PATH):
@@ -376,6 +424,92 @@ def start_go2rtc_proxy_sync():
 
 start_go2rtc_proxy_sync()
 load_users()
+
+# ==================== CÀI ĐẶT HỆ THỐNG ====================
+
+@app.get("/api/vms/settings")
+def get_settings():
+    return load_settings()
+
+class NotificationSettingsInput(BaseModel):
+    email_enabled: bool
+    email_address: str
+    sms_enabled: bool
+    sms_phone: str
+    min_alert_level: str
+
+@app.put("/api/vms/settings/notifications", dependencies=[Depends(verify_admin_role)])
+def update_notification_settings(data: NotificationSettingsInput):
+    settings = load_settings()
+    settings["notifications"] = data.dict()
+    save_settings(settings)
+    return {"status": "success"}
+
+class IntegrationSettingsInput(BaseModel):
+    go2rtc_api_url: str
+    webhook_url: str
+    webhook_enabled: bool
+
+@app.put("/api/vms/settings/integration", dependencies=[Depends(verify_admin_role)])
+def update_integration_settings(data: IntegrationSettingsInput):
+    settings = load_settings()
+    settings["integration"] = data.dict()
+    save_settings(settings)
+    return {"status": "success"}
+
+class SecuritySettingsInput(BaseModel):
+    session_timeout_hours: int
+    min_password_length: int
+    force_password_change_days: int
+
+@app.put("/api/vms/settings/security", dependencies=[Depends(verify_admin_role)])
+def update_security_settings(data: SecuritySettingsInput):
+    settings = load_settings()
+    settings["security"] = data.dict()
+    save_settings(settings)
+    return {"status": "success"}
+
+class BackupSettingsInput(BaseModel):
+    auto_backup_enabled: bool
+    auto_backup_interval_hours: int
+
+@app.put("/api/vms/settings/backup", dependencies=[Depends(verify_admin_role)])
+def update_backup_settings(data: BackupSettingsInput):
+    settings = load_settings()
+    settings["backup"] = data.dict()
+    save_settings(settings)
+    return {"status": "success"}
+
+@app.post("/api/vms/system/restart-media", dependencies=[Depends(verify_admin_role)])
+def restart_media_server():
+    restart_go2rtc_process()
+    return {"status": "success", "message": "Đã gửi lệnh khởi động lại Media Server (go2rtc)"}
+
+@app.get("/api/vms/backup/export", dependencies=[Depends(verify_admin_role)])
+def export_backup():
+    """Xuất toàn bộ cấu hình hệ thống (camera, người dùng, cài đặt) thành 1 gói JSON duy nhất"""
+    return {
+        "exported_at": datetime.utcnow().isoformat(),
+        "cameras": load_ui_cameras(),
+        "users": load_users(),
+        "settings": load_settings()
+    }
+
+class BackupRestoreInput(BaseModel):
+    cameras: Optional[list] = None
+    users: Optional[list] = None
+    settings: Optional[dict] = None
+
+@app.post("/api/vms/backup/restore", dependencies=[Depends(verify_admin_role)])
+def restore_backup(data: BackupRestoreInput):
+    """Phục hồi cấu hình từ gói backup đã xuất trước đó"""
+    if data.cameras is not None:
+        save_ui_cameras(data.cameras)
+    if data.users is not None:
+        save_users(data.users)
+    if data.settings is not None:
+        save_settings(data.settings)
+    return {"status": "success"}
 
 if __name__ == "__main__":
     import uvicorn
