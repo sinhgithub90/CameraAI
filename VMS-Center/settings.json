@@ -2,7 +2,7 @@
   "notifications": {
     "email_enabled": true,
     "email_address": "admin@multicamai.local",
-    "sms_enabled": false,
+    "sms_enabled": true,
     "sms_phone": "",
     "min_alert_level": "trung_binh"
   },

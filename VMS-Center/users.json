@@ -51,9 +51,7 @@
       "playback",
       "cammgmt",
       "alertmgmt",
-      "reports",
-      "sysconfig",
-      "export"
+      "reports"
     ]
   }
 ]

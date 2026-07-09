@@ -551,8 +551,6 @@ function updateSingleCameraUI(cam) {
 }
 
 
-// ==================== CÀI ĐẶT HỆ THỐNG ====================
-
 function switchSettingsTab(el) {
   document.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
   el.classList.add('active');
@@ -710,11 +708,11 @@ async function restoreBackup(event) {
     else { const err = await response.json(); alert("❌ " + (err.detail || "Không thể phục hồi bản sao lưu!")); }
   } catch (e) { alert("❌ File sao lưu không hợp lệ hoặc lỗi kết nối!"); }
   event.target.value = '';
-}
+}  
 
 document.addEventListener("DOMContentLoaded", async () => {
    if (!checkAuthSecurity()) return;
-   syncSessionUserDisplayName(); 
+   syncSessionUserDisplayName();
 
    await fetchCamerasFromBackend();
    if (document.getElementById('userTableBody')) { await fetchUsersFromBackend(); renderUserTable(); }
