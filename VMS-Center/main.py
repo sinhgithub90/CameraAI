@@ -425,7 +425,6 @@ def start_go2rtc_proxy_sync():
 start_go2rtc_proxy_sync()
 load_users()
 
-# ==================== CÀI ĐẶT HỆ THỐNG ====================
 
 @app.get("/api/vms/settings")
 def get_settings():
