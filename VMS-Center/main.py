@@ -10,11 +10,17 @@ import subprocess
 import os
 import json  
 import shutil
-import sqlite3
 import platform
 import threading
 import time
 from datetime import datetime, timedelta
+
+from db import (
+    get_recording_file_path,
+    list_cameras_for_ui,
+    search_recording_segments,
+    upsert_recording_segment,
+)
 
 app = FastAPI(title="VMS Central API Gateway", version="1.0")
 
@@ -35,8 +41,9 @@ GO2RTC_EXE_PATH = os.path.join(BASE_DIR, "go2rtc.exe")
 
 CAMERAS_JSON_PATH = os.path.join(BASE_DIR, "cameras.json")
 USERS_JSON_PATH = os.path.join(BASE_DIR, "users.json")
-RECORDINGS_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "recordings"))
-RECORDINGS_DB_PATH = os.path.join(BASE_DIR, "recordings.db")
+RECORDINGS_DIR = os.path.abspath(
+    os.getenv("RECORDINGS_DIR") or os.path.join(BASE_DIR, "..", "recordings")
+)
 RECORDING_SEGMENT_SECONDS = int(os.getenv("RECORDING_SEGMENT_SECONDS", "60"))
 FFMPEG_EXE = os.getenv("FFMPEG_PATH") or shutil.which("ffmpeg")
 if not FFMPEG_EXE:
@@ -96,35 +103,6 @@ def save_users(users):
     with open(USERS_JSON_PATH, "w", encoding="utf-8") as f:
         json.dump(users, f, ensure_ascii=False, indent=2)
 
-def get_recording_conn():
-    conn = sqlite3.connect(RECORDINGS_DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-def init_recording_db():
-    os.makedirs(RECORDINGS_DIR, exist_ok=True)
-    with get_recording_conn() as conn:
-        conn.execute(
-            """
-            create table if not exists recording_segments (
-              id integer primary key autoincrement,
-              camera_id text not null,
-              camera_name text,
-              zone text,
-              loc text,
-              file_path text not null unique,
-              start_time text not null,
-              end_time text not null,
-              duration_seconds integer,
-              file_size integer default 0,
-              status text default 'ready',
-              created_at text default current_timestamp
-            )
-            """
-        )
-        conn.execute("create index if not exists idx_recording_camera_time on recording_segments(camera_id, start_time, end_time)")
-        conn.execute("create index if not exists idx_recording_zone_time on recording_segments(zone, start_time)")
-
 def load_go2rtc_streams():
     if not os.path.exists(GO2RTC_YAML_PATH):
         return {}
@@ -133,7 +111,11 @@ def load_go2rtc_streams():
     return data.get("streams") or {}
 
 def get_camera_lookup():
-    return {cam["id"]: cam for cam in load_ui_cameras()}
+    try:
+        return {cam["id"]: cam for cam in list_cameras_for_ui()}
+    except Exception as exc:
+        print(f"Database camera lookup fallback: {exc}")
+        return {cam["id"]: cam for cam in load_ui_cameras()}
 
 def parse_segment_start(file_path):
     stem = os.path.splitext(os.path.basename(file_path))[0]
@@ -151,32 +133,21 @@ def index_recording_file(file_path, camera):
         modified_age = time.time() - os.path.getmtime(file_path)
     except OSError:
         return
-    if size <= 0 or modified_age < 3:
+    if size < 1024 * 1024 or modified_age < 10:
         return
     end_dt = start_dt + timedelta(seconds=RECORDING_SEGMENT_SECONDS)
-    with get_recording_conn() as conn:
-        conn.execute(
-            """
-            insert or ignore into recording_segments (
-              camera_id, camera_name, zone, loc, file_path,
-              start_time, end_time, duration_seconds, file_size, status
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready')
-            """,
-            (
-                camera.get("id"),
-                camera.get("name"),
-                camera.get("zone"),
-                camera.get("loc"),
-                os.path.abspath(file_path),
-                start_dt.isoformat(),
-                end_dt.isoformat(),
-                RECORDING_SEGMENT_SECONDS,
-                size,
-            ),
+    if camera.get("db_id"):
+        upsert_recording_segment(
+            camera,
+            file_path,
+            start_dt,
+            end_dt,
+            RECORDING_SEGMENT_SECONDS,
+            size,
         )
 
 def scan_recording_index():
-    init_recording_db()
+    os.makedirs(RECORDINGS_DIR, exist_ok=True)
     cameras = get_camera_lookup()
     for camera_id, camera in cameras.items():
         camera_dir = os.path.join(RECORDINGS_DIR, camera_id)
@@ -243,7 +214,7 @@ def stop_camera_recorder(camera_id):
         process.terminate()
 
 def recording_supervisor_loop():
-    init_recording_db()
+    os.makedirs(RECORDINGS_DIR, exist_ok=True)
     while True:
         try:
             streams = load_go2rtc_streams()
@@ -333,7 +304,11 @@ def google_mock_login(email: str):
 
 @app.get("/api/vms/cameras")
 def get_all_cameras():
-    return load_ui_cameras()
+    try:
+        return list_cameras_for_ui()
+    except Exception as exc:
+        print(f"Database camera fallback: {exc}")
+        return load_ui_cameras()
 
 class CameraAddInput(BaseModel):
     name: str; ip: str; user: str; password: str; model: str; zone: str; loc: str
@@ -478,7 +453,6 @@ def delete_user(username: str):
 # THAY THẾ HÀM start_go2rtc_proxy_sync TRONG main.py
 @app.get("/api/recording/status")
 def get_recording_status():
-    scan_recording_index()
     cameras = get_camera_lookup()
     with recording_lock:
         process_snapshot = dict(recording_processes)
@@ -520,38 +494,7 @@ def search_playback(
     from_time: str | None = Query(default=None),
     to_time: str | None = Query(default=None),
 ):
-    scan_recording_index()
-    where = ["1 = 1"]
-    params = []
-    if camera_id:
-        where.append("camera_id = ?")
-        params.append(camera_id)
-    if zone:
-        where.append("zone = ?")
-        params.append(zone)
-    if loc:
-        where.append("loc = ?")
-        params.append(loc)
-    if from_time:
-        where.append("end_time >= ?")
-        params.append(from_time)
-    if to_time:
-        where.append("start_time <= ?")
-        params.append(to_time)
-    sql = f"""
-        select id, camera_id, camera_name, zone, loc, file_path,
-               start_time, end_time, duration_seconds, file_size, status
-        from recording_segments
-        where {' and '.join(where)}
-        order by start_time desc
-        limit 200
-    """
-    with get_recording_conn() as conn:
-        rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
-    for row in rows:
-        row["stream_url"] = f"http://127.0.0.1:8000/api/playback/file/{row['id']}"
-        row["download_url"] = row["stream_url"]
-    return rows
+    return search_recording_segments(camera_id, zone, loc, from_time, to_time)
 
 def iter_file_bytes(file_path, start=0, end=None, chunk_size=1024 * 1024):
     with open(file_path, "rb") as f:
@@ -570,11 +513,9 @@ def iter_file_bytes(file_path, start=0, end=None, chunk_size=1024 * 1024):
 
 @app.get("/api/playback/file/{segment_id}")
 def get_playback_file(segment_id: int, request: Request):
-    with get_recording_conn() as conn:
-        row = conn.execute("select file_path from recording_segments where id = ?", (segment_id,)).fetchone()
-    if not row:
+    file_path = get_recording_file_path(segment_id)
+    if not file_path:
         raise HTTPException(status_code=404, detail="Khong tim thay doan video")
-    file_path = row["file_path"]
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File video khong con ton tai tren may")
     file_size = os.path.getsize(file_path)

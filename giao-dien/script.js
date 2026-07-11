@@ -497,7 +497,11 @@ function fillPlaybackSelect(selectId, values, allLabel) {
   });
 }
 
-async function openPlaybackModal() {
+async function openPlaybackModal(event) {
+  if (event) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
   const modal = document.getElementById('playbackModal');
   if (!modal) return;
   const cameraSelect = document.getElementById('playbackCamera');
@@ -557,7 +561,11 @@ async function loadRecordingStatusHint() {
   }
 }
 
-async function searchPlaybackSegments() {
+async function searchPlaybackSegments(event) {
+  if (event) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
   const params = new URLSearchParams();
   const cameraId = document.getElementById('playbackCamera').value;
   const zone = document.getElementById('playbackZone').value;
@@ -592,7 +600,7 @@ function renderPlaybackResults() {
   playbackSegments.forEach(segment => {
     const item = document.createElement('div');
     item.className = 'playback-result';
-    item.onclick = () => playPlaybackSegment(segment.id);
+    item.onclick = (event) => playPlaybackSegment(segment.id, event);
     item.innerHTML = `
       <div class="t">${segment.camera_name || segment.camera_id}</div>
       <div class="s">${formatPlaybackTime(segment.start_time)} → ${formatPlaybackTime(segment.end_time)}</div>
@@ -602,7 +610,11 @@ function renderPlaybackResults() {
   });
 }
 
-function playPlaybackSegment(segmentId) {
+function playPlaybackSegment(segmentId, event) {
+  if (event) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
   const segment = playbackSegments.find(s => s.id === segmentId);
   if (!segment) return;
   document.querySelectorAll('.playback-result').forEach(el => el.classList.remove('active'));

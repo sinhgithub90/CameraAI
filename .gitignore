@@ -1,0 +1,17 @@
+.env
+*.pyc
+__pycache__/
+.pytest_cache/
+
+# Runtime recordings and local databases
+recordings/
+VMS-Center/recordings.db
+VMS-Center/recordings.db-*
+*.sqlite
+*.sqlite3
+
+# Local media artifacts
+*.mp4
+*.mkv
+*.avi
+*.log
