@@ -1,0 +1,19 @@
+{
+  "liveServer.settings.ignoreFiles": [
+    ".vscode/**",
+    "**/__pycache__/**",
+    "**/*.pyc",
+    "**/recordings/**",
+    "**/*.mp4",
+    "**/*.mkv",
+    "**/*.log",
+    "**/*.db",
+    "**/*.db-journal",
+    "**/*.db-wal",
+    "**/*.db-shm",
+    "**/*.sqlite",
+    "**/*.sqlite3",
+    "VMS-Center/recordings.db",
+    "VMS-Center/recordings.db-journal"
+  ]
+}

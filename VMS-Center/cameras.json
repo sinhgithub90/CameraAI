@@ -1,0 +1,58 @@
+[
+  {
+    "id": "cam_huyen_01",
+    "index": 1,
+    "name": "Hành lang tầng 2",
+    "ip": "192.168.1.4",
+    "model": "Hikvision DS-2CD2143G2",
+    "zone": "Tòa nhà A / Huyện 1",
+    "loc": "Hành lang T2",
+    "type": "video",
+    "src": "http://127.0.0.1:1984/stream.html?src=cam_huyen_01&mode=webrtc",
+    "tag": "Live",
+    "status": "online",
+    "lat": 13.761426245174341,
+    "lng": 109.20764602371123
+  },
+  {
+    "id": "cam_huyen_02",
+    "index": 2,
+    "name": "Cổng chính cơ quan",
+    "ip": "192.168.1.5",
+    "model": "Hikvision DS-2CD1123G0",
+    "zone": "Khu ngoại vi / Huyện 2",
+    "loc": "Cổng kiểm soát",
+    "type": "video",
+    "src": "http://127.0.0.1:1984/stream.html?src=cam_huyen_02&mode=webrtc",
+    "tag": "Live",
+    "status": "online",
+    "lat": 13.761461415577786,
+    "lng": 109.20768095885197
+  },
+  {
+    "id": "cam_huyen_03",
+    "index": 3,
+    "name": "Tầng 3",
+    "ip": "10.10.10.15",
+    "model": "HikVision",
+    "zone": "Thế giới xanh",
+    "loc": "Tầng 3 hướng xuống công viên",
+    "type": "video",
+    "src": "http://127.0.0.1:1984/stream.html?src=cam_huyen_03&mode=webrtc",
+    "tag": "Live",
+    "status": "offline"
+  },
+  {
+    "id": "cam_huyen_04",
+    "index": 4,
+    "name": "Tầng 2",
+    "ip": "10.10.10.16",
+    "model": "HikVision",
+    "zone": "Thế giới xanh",
+    "loc": "Tầng 3 hướng xuống công viên",
+    "type": "video",
+    "src": "http://127.0.0.1:1984/stream.html?src=cam_huyen_04&mode=webrtc",
+    "tag": "Live",
+    "status": "offline"
+  }
+]

@@ -1,0 +1,445 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MultiCAMAI ERD Documentation</title>
+  <style>
+    :root {
+      --bg: #f6f8fb;
+      --panel: #ffffff;
+      --text: #172033;
+      --muted: #64748b;
+      --line: #dbe4f0;
+      --blue: #2563eb;
+      --blue-soft: #eaf1ff;
+      --code: #0f172a;
+      --green: #059669;
+      --shadow: 0 14px 40px rgba(15, 23, 42, .08);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      color: var(--text);
+      background: var(--bg);
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: 310px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    aside {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow: auto;
+      border-right: 1px solid var(--line);
+      background: var(--panel);
+      padding: 22px 18px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+
+    .logo {
+      width: 38px;
+      height: 38px;
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      color: #fff;
+      font-weight: 800;
+      background: linear-gradient(135deg, #2563eb, #14b8a6);
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 16px;
+      line-height: 1.2;
+    }
+
+    .brand p {
+      margin: 2px 0 0;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .search {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 12px;
+      outline: none;
+      font-size: 14px;
+      margin: 8px 0 16px;
+      background: #f8fafc;
+    }
+
+    .search:focus {
+      border-color: var(--blue);
+      background: #fff;
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, .12);
+    }
+
+    .toc {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .toc a {
+      color: #334155;
+      text-decoration: none;
+      font-size: 13px;
+      line-height: 1.3;
+      padding: 7px 9px;
+      border-radius: 7px;
+      border-left: 3px solid transparent;
+    }
+
+    .toc a:hover {
+      background: var(--blue-soft);
+      color: var(--blue);
+    }
+
+    .toc a.h2 { padding-left: 16px; color: #475569; }
+    .toc a.h3 { padding-left: 28px; color: #64748b; font-size: 12px; }
+
+    main {
+      min-width: 0;
+      padding: 28px;
+    }
+
+    .doc {
+      max-width: 1180px;
+      margin: 0 auto;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .doc-head {
+      padding: 26px 32px;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(180deg, #ffffff, #f8fbff);
+    }
+
+    .doc-head h2 {
+      margin: 0 0 8px;
+      font-size: 25px;
+    }
+
+    .doc-head p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    #content {
+      padding: 18px 32px 42px;
+    }
+
+    h1, h2, h3 {
+      scroll-margin-top: 20px;
+      letter-spacing: 0;
+    }
+
+    h1 {
+      font-size: 30px;
+      margin: 18px 0 12px;
+    }
+
+    h2 {
+      margin: 34px 0 14px;
+      padding-top: 14px;
+      border-top: 1px solid var(--line);
+      font-size: 22px;
+    }
+
+    h3 {
+      margin: 28px 0 10px;
+      font-size: 18px;
+      color: #0f3d7a;
+    }
+
+    p, li {
+      font-size: 14.5px;
+      line-height: 1.65;
+    }
+
+    p { color: #334155; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0 20px;
+      font-size: 13.5px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      display: table;
+    }
+
+    th {
+      text-align: left;
+      background: #edf4ff;
+      color: #17345d;
+      font-weight: 700;
+      border-bottom: 1px solid var(--line);
+    }
+
+    th, td {
+      padding: 10px 12px;
+      vertical-align: top;
+      border-right: 1px solid var(--line);
+    }
+
+    td {
+      border-top: 1px solid #edf2f7;
+      color: #26364d;
+    }
+
+    tr:nth-child(even) td { background: #fbfdff; }
+    th:last-child, td:last-child { border-right: 0; }
+
+    code {
+      font-family: Consolas, "Courier New", monospace;
+      font-size: .92em;
+      color: #0f3d7a;
+      background: #edf4ff;
+      border: 1px solid #d6e5ff;
+      border-radius: 5px;
+      padding: 1px 5px;
+    }
+
+    pre {
+      overflow: auto;
+      background: var(--code);
+      color: #dbeafe;
+      border-radius: 8px;
+      padding: 16px;
+      line-height: 1.5;
+    }
+
+    pre code {
+      background: transparent;
+      border: 0;
+      color: inherit;
+      padding: 0;
+    }
+
+    blockquote {
+      margin: 16px 0;
+      padding: 12px 16px;
+      border-left: 4px solid var(--blue);
+      background: var(--blue-soft);
+      color: #1e3a8a;
+    }
+
+    .loading {
+      padding: 30px;
+      color: var(--muted);
+    }
+
+    mark {
+      background: #fef08a;
+      color: #111827;
+      border-radius: 3px;
+      padding: 0 2px;
+    }
+
+    .top-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 14px;
+    }
+
+    .btn {
+      border: 1px solid var(--line);
+      background: #fff;
+      color: #334155;
+      padding: 8px 10px;
+      border-radius: 7px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+
+    .btn:hover {
+      border-color: var(--blue);
+      color: var(--blue);
+    }
+
+    @media (max-width: 980px) {
+      .app { grid-template-columns: 1fr; }
+      aside {
+        position: static;
+        height: auto;
+        max-height: 45vh;
+      }
+      main { padding: 16px; }
+      .doc-head, #content { padding-left: 18px; padding-right: 18px; }
+      table { display: block; overflow-x: auto; }
+    }
+
+    @media print {
+      body { background: #fff; }
+      .app { display: block; }
+      aside { display: none; }
+      main { padding: 0; }
+      .doc { box-shadow: none; border: 0; }
+      .doc-head { border-bottom: 1px solid #ddd; }
+      h2 { break-before: auto; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside>
+      <div class="brand">
+        <div class="logo">AI</div>
+        <div>
+          <h1>MultiCAMAI ERD</h1>
+          <p>Database documentation viewer</p>
+        </div>
+      </div>
+      <input id="search" class="search" placeholder="Tim bang, cot, quan he...">
+      <nav id="toc" class="toc"></nav>
+    </aside>
+
+    <main>
+      <section class="doc">
+        <div class="doc-head">
+          <h2>Database MultiCAMAI</h2>
+          <p>Ban xem dep tu file Markdown. Co the in ra PDF bang chuc nang Print cua trinh duyet.</p>
+          <div class="top-actions">
+            <button class="btn" onclick="window.print()">In / xuat PDF</button>
+            <button class="btn" onclick="location.reload()">Tai lai</button>
+          </div>
+        </div>
+        <article id="content">
+          <div class="loading">Dang tai tai lieu ERD...</div>
+        </article>
+      </section>
+    </main>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script>
+    const sourceFile = 'multicamai_erd_documentation.md';
+    const contentEl = document.getElementById('content');
+    const tocEl = document.getElementById('toc');
+    const searchEl = document.getElementById('search');
+    let originalHtml = '';
+
+    function slugify(text) {
+      return text
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/`/g, '')
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+    }
+
+    function escapeHtml(text) {
+      return text.replace(/[&<>"']/g, char => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#039;'
+      }[char]));
+    }
+
+    function buildToc() {
+      tocEl.innerHTML = '';
+      const headings = [...contentEl.querySelectorAll('h1, h2, h3')];
+      const used = new Map();
+
+      headings.forEach(heading => {
+        const base = slugify(heading.textContent) || 'section';
+        const count = used.get(base) || 0;
+        used.set(base, count + 1);
+        heading.id = count ? `${base}-${count + 1}` : base;
+
+        const link = document.createElement('a');
+        link.href = `#${heading.id}`;
+        link.textContent = heading.textContent;
+        link.className = heading.tagName.toLowerCase();
+        tocEl.appendChild(link);
+      });
+    }
+
+    function highlight(term) {
+      contentEl.innerHTML = originalHtml;
+      if (!term.trim()) {
+        buildToc();
+        return;
+      }
+
+      const safeTerm = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const regex = new RegExp(`(${safeTerm})`, 'gi');
+      const walker = document.createTreeWalker(contentEl, NodeFilter.SHOW_TEXT);
+      const nodes = [];
+
+      while (walker.nextNode()) {
+        const node = walker.currentNode;
+        if (node.parentElement && ['SCRIPT', 'STYLE', 'CODE', 'PRE'].includes(node.parentElement.tagName)) {
+          continue;
+        }
+        if (regex.test(node.nodeValue)) nodes.push(node);
+        regex.lastIndex = 0;
+      }
+
+      nodes.forEach(node => {
+        const span = document.createElement('span');
+        span.innerHTML = escapeHtml(node.nodeValue).replace(regex, '<mark>$1</mark>');
+        node.parentNode.replaceChild(span, node);
+      });
+      buildToc();
+    }
+
+    async function loadDoc() {
+      try {
+        const response = await fetch(sourceFile);
+        if (!response.ok) throw new Error('Khong tai duoc file Markdown');
+        const markdown = await response.text();
+
+        if (window.marked) {
+          contentEl.innerHTML = marked.parse(markdown, { gfm: true, breaks: false });
+        } else {
+          contentEl.innerHTML = `<pre>${escapeHtml(markdown)}</pre>`;
+        }
+
+        originalHtml = contentEl.innerHTML;
+        buildToc();
+      } catch (error) {
+        contentEl.innerHTML = `
+          <h1>Khong tai duoc tai lieu</h1>
+          <p>Hay mo file nay bang Live Server, vi trinh duyet co the chan doc Markdown khi mo truc tiep bang file://.</p>
+          <pre>${escapeHtml(String(error.message || error))}</pre>
+        `;
+      }
+    }
+
+    searchEl.addEventListener('input', event => {
+      highlight(event.target.value);
+      const firstMark = contentEl.querySelector('mark');
+      if (firstMark) firstMark.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+
+    loadDoc();
+  </script>
+</body>
+</html>
