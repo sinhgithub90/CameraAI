@@ -60,14 +60,181 @@
 
     <div class="content">
       <h1 class="page-title">Cài đặt</h1>
-      <p class="page-sub">Cấu hình hệ thống và tùy chọn chung</p>
-      <div class="card" style="padding:60px;text-align:center;color:var(--slate-400);">
-        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#cbd5e1" stroke-width="1.5" style="margin-bottom:10px;"><circle cx="12" cy="12" r="3"/></svg>
-        <p>Cấu hình thông báo, tích hợp, sao lưu và bảo mật hệ thống</p>
+      <p class="page-sub">Cấu hình thông báo, tích hợp, sao lưu và bảo mật hệ thống</p>
+
+      <div class="settings-layout" style="display:grid; grid-template-columns:220px 1fr; gap:20px; align-items:start;">
+
+        <div class="card" style="padding:10px;">
+          <div id="settingsTabNav" style="display:flex; flex-direction:column; gap:2px;">
+            <div class="settings-tab active" data-tab="notifications" onclick="switchSettingsTab(this)" style="display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:8px; cursor:pointer; font-size:13.5px; font-weight:600;">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+              Thông báo
+            </div>
+            <div class="settings-tab" data-tab="integration" onclick="switchSettingsTab(this)" style="display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:8px; cursor:pointer; font-size:13.5px; font-weight:600;">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>
+              Tích hợp
+            </div>
+            <div class="settings-tab" data-tab="backup" onclick="switchSettingsTab(this)" style="display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:8px; cursor:pointer; font-size:13.5px; font-weight:600;">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+              Sao lưu &amp; Phục hồi
+            </div>
+            <div class="settings-tab" data-tab="security" onclick="switchSettingsTab(this)" style="display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:8px; cursor:pointer; font-size:13.5px; font-weight:600;">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+              Bảo mật
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="padding:24px;" id="settingsPanelHost">
+
+          <!-- TAB: THÔNG BÁO -->
+          <div class="settings-panel" data-panel="notifications">
+            <h3 style="margin-top:0; margin-bottom:4px; font-size:15px;">Thông báo</h3>
+            <p style="font-size:12.5px; color:var(--slate-400); margin-bottom:20px;">Thiết lập kênh nhận cảnh báo khi hệ thống phát hiện sự kiện AI hoặc camera mất kết nối</p>
+
+            <div class="settings-row">
+              <div>
+                <div class="settings-row-title">Cảnh báo qua Email</div>
+                <div class="settings-row-sub">Gửi email khi có cảnh báo mới phát sinh</div>
+              </div>
+              <label class="switch"><input type="checkbox" id="setEmailEnabled"><span class="slider"></span></label>
+            </div>
+            <div class="field" style="margin:10px 0 18px;">
+              <label>Địa chỉ Email nhận cảnh báo</label>
+              <div class="input-wrap"><input id="setEmailAddress" placeholder="admin@multicamai.local"></div>
+            </div>
+
+            <div class="settings-row">
+              <div>
+                <div class="settings-row-title">Cảnh báo qua SMS</div>
+                <div class="settings-row-sub">Gửi tin nhắn SMS cho các cảnh báo mức độ cao</div>
+              </div>
+              <label class="switch"><input type="checkbox" id="setSmsEnabled"><span class="slider"></span></label>
+            </div>
+            <div class="field" style="margin:10px 0 18px;">
+              <label>Số điện thoại nhận SMS</label>
+              <div class="input-wrap"><input id="setSmsPhone" placeholder="09xxxxxxxx"></div>
+            </div>
+
+            <div class="field" style="margin-bottom:22px;">
+              <label>Mức độ cảnh báo tối thiểu để gửi thông báo</label>
+              <select id="setMinAlertLevel" style="width:100%; padding:9px; border:1px solid var(--slate-200); border-radius:8px; font-size:13px;">
+                <option value="thap">Thấp trở lên</option>
+                <option value="trung_binh">Trung bình trở lên</option>
+                <option value="cao">Chỉ mức Cao</option>
+              </select>
+            </div>
+
+            <button class="btn-sm primary" style="width:auto; padding:10px 22px; cursor:pointer;" onclick="saveNotificationSettings()">💾 Lưu thay đổi</button>
+          </div>
+
+          <!-- TAB: TÍCH HỢP -->
+          <div class="settings-panel" data-panel="integration" style="display:none;">
+            <h3 style="margin-top:0; margin-bottom:4px; font-size:15px;">Tích hợp hệ thống</h3>
+            <p style="font-size:12.5px; color:var(--slate-400); margin-bottom:20px;">Kết nối MultiCAMAI với Media Server (go2rtc) và các hệ thống bên ngoài qua Webhook</p>
+
+            <div class="field" style="margin-bottom:14px;">
+              <label>Địa chỉ API Media Server (go2rtc)</label>
+              <div class="input-wrap"><input id="setGo2rtcUrl" placeholder="http://127.0.0.1:1984"></div>
+            </div>
+
+            <div style="display:flex; align-items:center; gap:10px; padding:12px 14px; background:var(--slate-50, #f8fafc); border-radius:8px; margin-bottom:20px;">
+              <span id="mediaServerStatusDot" style="width:9px; height:9px; border-radius:50%; background:#94a3b8; flex-shrink:0;"></span>
+              <span id="mediaServerStatusText" style="font-size:12.5px; color:var(--slate-500);">Đang kiểm tra kết nối Media Server...</span>
+              <button class="btn-sm" style="width:auto; padding:7px 14px; margin-left:auto; cursor:pointer;" onclick="restartMediaServer()">🔄 Khởi động lại Media Server</button>
+            </div>
+
+            <hr style="border:none; border-top:1px solid #e2e8f0; margin:20px 0;">
+
+            <div class="settings-row">
+              <div>
+                <div class="settings-row-title">Gửi sự kiện qua Webhook</div>
+                <div class="settings-row-sub">Đẩy dữ liệu cảnh báo AI tới hệ thống ngoài (VD: Zalo OA, hệ thống ERP nội bộ...)</div>
+              </div>
+              <label class="switch"><input type="checkbox" id="setWebhookEnabled"><span class="slider"></span></label>
+            </div>
+            <div class="field" style="margin:10px 0 22px;">
+              <label>Webhook URL</label>
+              <div class="input-wrap"><input id="setWebhookUrl" placeholder="https://hooks.example.com/multicamai"></div>
+            </div>
+
+            <button class="btn-sm primary" style="width:auto; padding:10px 22px; cursor:pointer;" onclick="saveIntegrationSettings()">💾 Lưu thay đổi</button>
+          </div>
+
+          <!-- TAB: SAO LƯU -->
+          <div class="settings-panel" data-panel="backup" style="display:none;">
+            <h3 style="margin-top:0; margin-bottom:4px; font-size:15px;">Sao lưu &amp; Phục hồi</h3>
+            <p style="font-size:12.5px; color:var(--slate-400); margin-bottom:20px;">Xuất/nhập toàn bộ cấu hình camera, người dùng và cài đặt hệ thống</p>
+
+            <div style="display:flex; gap:12px; margin-bottom:24px; flex-wrap:wrap;">
+              <button class="btn-sm primary" style="width:auto; padding:11px 20px; cursor:pointer;" onclick="exportBackup()">⬇ Xuất bản sao lưu (.json)</button>
+              <button class="btn-sm" style="width:auto; padding:11px 20px; cursor:pointer;" onclick="document.getElementById('restoreFileInput').click()">⬆ Phục hồi từ file sao lưu</button>
+              <input type="file" id="restoreFileInput" accept="application/json" style="display:none;" onchange="restoreBackup(event)">
+            </div>
+
+            <div style="padding:12px 14px; background:#fffbeb; border:1px solid #fde68a; border-radius:8px; font-size:12px; color:#92400e; margin-bottom:24px;">
+              ⚠️ Phục hồi bản sao lưu sẽ <b>ghi đè toàn bộ</b> danh sách camera, người dùng và cài đặt hiện tại. Hãy xuất bản sao lưu hiện tại trước khi phục hồi.
+            </div>
+
+            <hr style="border:none; border-top:1px solid #e2e8f0; margin:20px 0;">
+
+            <div class="settings-row">
+              <div>
+                <div class="settings-row-title">Tự động sao lưu định kỳ</div>
+                <div class="settings-row-sub">Tự động tải bản sao lưu về máy chủ theo chu kỳ đã đặt</div>
+              </div>
+              <label class="switch"><input type="checkbox" id="setAutoBackupEnabled"><span class="slider"></span></label>
+            </div>
+            <div class="field" style="margin:10px 0 22px; max-width:220px;">
+              <label>Chu kỳ sao lưu (giờ)</label>
+              <div class="input-wrap"><input type="number" min="1" id="setAutoBackupInterval" placeholder="24"></div>
+            </div>
+
+            <button class="btn-sm primary" style="width:auto; padding:10px 22px; cursor:pointer;" onclick="saveBackupSettings()">💾 Lưu thay đổi</button>
+          </div>
+
+          <!-- TAB: BẢO MẬT -->
+          <div class="settings-panel" data-panel="security" style="display:none;">
+            <h3 style="margin-top:0; margin-bottom:4px; font-size:15px;">Bảo mật hệ thống</h3>
+            <p style="font-size:12.5px; color:var(--slate-400); margin-bottom:20px;">Chính sách phiên đăng nhập và yêu cầu mật khẩu áp dụng cho toàn hệ thống</p>
+
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-bottom:22px;">
+              <div class="field" style="margin-bottom:0;">
+                <label>Thời gian hết hạn phiên đăng nhập (giờ)</label>
+                <div class="input-wrap"><input type="number" min="1" id="setSessionTimeout" placeholder="8"></div>
+              </div>
+              <div class="field" style="margin-bottom:0;">
+                <label>Độ dài mật khẩu tối thiểu</label>
+                <div class="input-wrap"><input type="number" min="4" id="setMinPasswordLength" placeholder="6"></div>
+              </div>
+            </div>
+
+            <div class="field" style="margin-bottom:24px; max-width:320px;">
+              <label>Bắt buộc đổi mật khẩu định kỳ (ngày, 0 = tắt)</label>
+              <div class="input-wrap"><input type="number" min="0" id="setForcePasswordChangeDays" placeholder="0"></div>
+            </div>
+
+            <button class="btn-sm primary" style="width:auto; padding:10px 22px; cursor:pointer;" onclick="saveSecuritySettings()">💾 Lưu thay đổi</button>
+          </div>
+
+        </div>
       </div>
     </div>
+
+    <style>
+      .settings-tab:hover { background:#f1f5f9; }
+      .settings-tab.active { background:var(--blue-50, #eff6ff); color:var(--blue-600, #2563eb); }
+      .settings-row { display:flex; align-items:center; justify-content:space-between; padding:12px 0; }
+      .settings-row-title { font-size:13.5px; font-weight:600; color:var(--slate-900); }
+      .settings-row-sub { font-size:12px; color:var(--slate-400); margin-top:2px; }
+      .switch { position:relative; display:inline-block; width:42px; height:24px; flex-shrink:0; }
+      .switch input { opacity:0; width:0; height:0; }
+      .switch .slider { position:absolute; cursor:pointer; inset:0; background-color:#cbd5e1; transition:.2s; border-radius:24px; }
+      .switch .slider:before { position:absolute; content:""; height:18px; width:18px; left:3px; bottom:3px; background-color:white; transition:.2s; border-radius:50%; }
+      .switch input:checked + .slider { background-color:var(--blue-600, #2563eb); }
+      .switch input:checked + .slider:before { transform:translateX(18px); }
+    </style>
   </div>
 </div>
 <script src="script.js"></script>
 </body>
-</html>

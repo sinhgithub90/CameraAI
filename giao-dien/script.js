@@ -3,8 +3,6 @@ let ALL_CAMERAS = [];
 let ALL_USERS = [];
 let selectedUsername = null;
 let currentGridLimit = 6;
-let selectedCameraId = null;
-let playbackSegments = [];
 
 // 1. Hàm gọi API lấy danh sách camera tập trung từ Backend FastAPI
 async function fetchCamerasFromBackend() {
@@ -217,23 +215,7 @@ async function deleteCamera(id) {
 function openAddCamModal() { const modal = document.getElementById('addCamModal'); if (modal) modal.style.display = 'flex'; }
 function closeAddCamModal() { const modal = document.getElementById('addCamModal'); if (modal) modal.style.display = 'none'; }
 function changeGridLimit(val) { currentGridLimit = parseInt(val); const liveGrid = document.getElementById('liveCamGrid'); if(liveGrid) { liveGrid.style.gridTemplateColumns = (currentGridLimit === 2 || currentGridLimit === 4) ? 'repeat(2, 1fr)' : 'repeat(3, 1fr)'; renderLiveGrid(); } }
-function selectCam(el){
-  document.querySelectorAll('.live-tile').forEach(t => t.classList.remove('selected'));
-  el.classList.add('selected');
-  const camId = el.getAttribute('data-id');
-  const camData = ALL_CAMERAS.find(c => c.id === camId);
-  if (!camData) return;
-  selectedCameraId = camData.id;
-  if(document.getElementById('sideCamName')) document.getElementById('sideCamName').textContent = `${camData.index}. ${camData.name}`;
-  if(document.getElementById('sideCamIP')) document.getElementById('sideCamIP').textContent = camData.ip;
-  if(document.getElementById('sideCamModel')) document.getElementById('sideCamModel').textContent = camData.model;
-  if(document.getElementById('sideCamZone')) document.getElementById('sideCamZone').textContent = camData.zone;
-  if(document.getElementById('sideCamLoc')) document.getElementById('sideCamLoc').textContent = camData.loc;
-  const detailContainer = document.getElementById('mainDetailContainer');
-  if (detailContainer) {
-    detailContainer.innerHTML = `<iframe src="http://127.0.0.1:1984/stream.html?src=${camData.id}&mode=webrtc" frameborder="0" scrolling="no" style="width:100%; aspect-ratio:16/9; pointer-events:none; display:block;"></iframe>`;
-  }
-}
+function selectCam(el){ document.querySelectorAll('.live-tile').forEach(t => t.classList.remove('selected')); el.classList.add('selected'); const camId = el.getAttribute('data-id'); const camData = ALL_CAMERAS.find(c => c.id === camId); if (!camData) return; if(document.getElementById('sideCamName')) document.getElementById('sideCamName').textContent = `${camData.index}. ${camData.name}`; if(document.getElementById('sideCamIP')) document.getElementById('sideCamIP').textContent = camData.ip; if(document.getElementById('sideCamModel')) document.getElementById('sideCamModel').textContent = camData.model; if(document.getElementById('sideCamZone')) document.getElementById('sideCamZone').textContent = camData.zone; if(document.getElementById('sideCamLoc')) document.getElementById('sideCamLoc').textContent = camData.loc; const detailContainer = document.getElementById('mainDetailContainer'); if (detailContainer) { detailContainer.innerHTML = `<iframe src="http://127.0.0.1:1984/stream.html?src=${camData.id}&mode=webrtc" frameborder="0" scrolling="no" style="width:100%; aspect-ratio:16/9; pointer-events:none; display:block;"></iframe>`; } }
 function maximizeCam(el) { const mediaElement = el.querySelector('iframe') || el.querySelector('img'); if (mediaElement && mediaElement.requestFullscreen) mediaElement.requestFullscreen(); }
 
 function renderUserTable() {
@@ -291,34 +273,142 @@ async function submitNewUser(event) {
 async function saveUserPermissionsInstant() {
   if (!selectedUsername) return;
   const token = localStorage.getItem('token');
+  if (!token) return alert("🔒 Phiên làm việc hết hạn, vui lòng đăng nhập lại!");
+
   const permissionsList = ['live', 'playback', 'cammgmt', 'usermgmt', 'alertmgmt', 'reports', 'sysconfig', 'export'];
-  const activePermissions = permissionsList.filter(p => { const chk = document.getElementById(`chk_${p}`); return chk ? chk.checked : false; });
-  const payload = { name: document.getElementById('inpDetailName').value.trim(), email: document.getElementById('inpDetailEmail').value.trim(), phone: document.getElementById('inpDetailPhone').value.trim(), unit: document.getElementById('inpDetailUnit').value.trim(), role: document.getElementById('selDetailRole').value, permissions: activePermissions };
+  const activePermissions = permissionsList.filter(p => {
+    const chk = document.getElementById(`chk_${p}`);
+    return chk ? chk.checked : false;
+  });
+
+  const payload = {
+    name: document.getElementById('inpDetailName').value.trim(),
+    email: document.getElementById('inpDetailEmail').value.trim(),
+    phone: document.getElementById('inpDetailPhone').value.trim(),
+    unit: document.getElementById('inpDetailUnit').value.trim(),
+    role: document.getElementById('selDetailRole').value,
+    permissions: activePermissions
+  };
+
   try {
-    const response = await fetch(`http://127.0.0.1:8000/api/vms/user/${selectedUsername}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }, body: JSON.stringify(payload) });
-    if (response.ok) await fetchUsersFromBackend(); 
-  } catch (e) { console.error("Lỗi kết nối lưu quyền tự động:", e); }
+    const response = await fetch(`http://127.0.0.1:8000/api/vms/user/${selectedUsername}`, {
+      method: 'PUT',
+      headers: { 
+         'Content-Type': 'application/json',
+         'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify(payload)
+    });
+    if (response.ok) {
+      console.log(`Đã tự động cập nhật phân quyền cho @${selectedUsername}:`, activePermissions);
+      await fetchUsersFromBackend(); 
+    } else {
+      const err = await response.json();
+      alert("❌ Lỗi cấu hình quyền: " + (err.detail || "Không có thẩm quyền!"));
+    }
+  } catch (e) { console.error("Lỗi kết nối lưu quyền:", e); }
 }
 
-function openAddUserModal() { document.getElementById('addUserModal').style.display = 'flex'; }
-function closeAddUserModal() { document.getElementById('addUserModal').style.display = 'none'; }
+// Được gọi khi bấm nút "💾 Lưu thay đổi" trong users.html - lưu toàn bộ thông tin + quyền hạn, có thông báo kết quả rõ ràng
+async function saveUserProfileChanges() {
+  if (!selectedUsername) { alert("Vui lòng chọn một người dùng trước!"); return; }
+  const token = localStorage.getItem('token');
+  if (!token) return alert("🔒 Phiên làm việc hết hạn, vui lòng đăng nhập lại!");
 
+  const permissionsList = ['live', 'playback', 'cammgmt', 'usermgmt', 'alertmgmt', 'reports', 'sysconfig', 'export'];
+  const activePermissions = permissionsList.filter(p => {
+    const chk = document.getElementById(`chk_${p}`);
+    return chk ? chk.checked : false;
+  });
+
+  const payload = {
+    name: document.getElementById('inpDetailName').value.trim(),
+    email: document.getElementById('inpDetailEmail').value.trim(),
+    phone: document.getElementById('inpDetailPhone').value.trim(),
+    unit: document.getElementById('inpDetailUnit').value.trim(),
+    role: document.getElementById('selDetailRole').value,
+    permissions: activePermissions
+  };
+
+  const btn = document.querySelector('#userDetailPanel button[onclick="saveUserProfileChanges()"]');
+  const originalText = btn ? btn.textContent : null;
+  if (btn) { btn.textContent = "Đang lưu..."; btn.disabled = true; }
+
+  try {
+    const response = await fetch(`http://127.0.0.1:8000/api/vms/user/${selectedUsername}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify(payload)
+    });
+    if (response.ok) {
+      await fetchUsersFromBackend();
+      renderUserTable();
+      selectUserAccount(selectedUsername);
+      alert("✅ Đã lưu thay đổi thông tin người dùng!");
+    } else {
+      const err = await response.json();
+      alert("❌ Lỗi khi lưu thay đổi: " + (err.detail || "Không có thẩm quyền!"));
+    }
+  } catch (e) {
+    alert("❌ Không thể kết nối tới máy chủ Backend!");
+  } finally {
+    if (btn) { btn.textContent = originalText; btn.disabled = false; }
+  }
+}
+
+// 12. Nút ĐẶT LẠI MẬT KHẨU (ĐÃ SỬA LỖI THIẾU HEADERS)
 async function resetUserPassword() {
   if (!selectedUsername) return;
+  if (!confirm(`Bạn có chắc chắn muốn đặt lại mật khẩu cho tài khoản @${selectedUsername} về mặc định không?`)) return;
+  
   const token = localStorage.getItem('token');
+  if (!token) return alert("🔒 Vui lòng đăng nhập tài khoản Quản trị viên!");
+
   try {
-    const response = await fetch(`http://127.0.0.1:8000/api/vms/user/${selectedUsername}/reset-password`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } });
-    if (response.ok) { const result = await response.json(); alert(`Đã đặt lại mật khẩu thành công!\\nMật khẩu mới: ${result.new_password}`); }
-  } catch (e) {}
+    const response = await fetch(`http://127.0.0.1:8000/api/vms/user/${selectedUsername}/reset-password`, { 
+       method: 'POST',
+       headers: { 
+         'Content-Type': 'application/json',
+         'Authorization': `Bearer ${token}` 
+       }
+    });
+    if (response.ok) {
+      const result = await response.json();
+      alert(`🎉 Đặt lại thành công!\nMật khẩu mới của @${selectedUsername} là: ${result.new_password}`);
+    } else {
+      const err = await response.json(); 
+      alert("❌ Từ chối thao tác: " + (err.detail || "Lỗi phân quyền"));
+    }
+  } catch (e) { alert("Lỗi xử lý yêu cầu đặt lại mật khẩu!"); }
 }
 
+// 13. Nút KHÓA / MỞ KHÓA TÀI KHOẢN (ĐÃ FIX KHỚP BACKEND)
 async function toggleLockAccount() {
   if (!selectedUsername) return;
   const token = localStorage.getItem('token');
+  if (!token) return alert("🔒 Phiên làm việc hết hạn!");
+
   try {
-    const response = await fetch(`http://127.0.0.1:8000/api/vms/user/${selectedUsername}/toggle-lock`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } });
-    if (response.ok) { await fetchUsersFromBackend(); selectUserAccount(selectedUsername); }
-  } catch (e) {}
+    const response = await fetch(`http://127.0.0.1:8000/api/vms/user/${selectedUsername}/toggle-lock`, { 
+       method: 'POST',
+       headers: { 
+         'Content-Type': 'application/json',
+         'Authorization': `Bearer ${token}` 
+       }
+    });
+    if (response.ok) {
+      const result = await response.json();
+      alert(`Trạng thái tài khoản đổi thành: [${result.new_status}]`);
+      await fetchUsersFromBackend();
+      selectUserAccount(selectedUsername); // Vẽ lại giao diện panel phải
+    } else {
+      const err = await response.json();
+      alert("❌ Lỗi: " + (err.detail || "Không thể thao tác trên tài khoản này!"));
+    }
+  } catch (e) { alert("Lỗi khi kết nối thay đổi trạng thái khóa!"); }
 }
 
 async function deleteUserAccount() {
@@ -328,9 +418,9 @@ async function deleteUserAccount() {
   try {
     const response = await fetch(`http://127.0.0.1:8000/api/vms/user/${selectedUsername}`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${token}` } });
     if (response.ok) { document.getElementById('userDetailPanel').style.display = 'none'; selectedUsername = null; await fetchUsersFromBackend(); renderUserTable(); }
-  } catch (e) {}
+    else { const err = await response.json(); alert("❌ " + (err.detail || "Không thể xóa tài khoản!")); }
+  } catch (e) { alert("❌ Không thể kết nối tới máy chủ Backend!"); }
 }
-
 // HÀM MỚI: Đồng bộ tên và vai trò người dùng lên thanh Top Header
 function syncSessionUserDisplayName() {
     const userStr = localStorage.getItem('currentUser');
@@ -460,179 +550,169 @@ function updateSingleCameraUI(cam) {
   }
 }
 
-function toDatetimeLocalValue(date) {
-  const pad = n => String(n).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
 
-function formatPlaybackTime(value) {
-  if (!value) return '-';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString('vi-VN', { hour12: false });
-}
-
-function formatBytes(size) {
-  if (!size) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  let value = size;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value = value / 1024;
-    unit += 1;
-  }
-  return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unit]}`;
-}
-
-function fillPlaybackSelect(selectId, values, allLabel) {
-  const select = document.getElementById(selectId);
-  if (!select) return;
-  select.innerHTML = `<option value="">${allLabel}</option>`;
-  values.forEach(value => {
-    if (!value) return;
-    const option = document.createElement('option');
-    option.value = value;
-    option.textContent = value;
-    select.appendChild(option);
+function switchSettingsTab(el) {
+  document.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  const tabName = el.getAttribute('data-tab');
+  document.querySelectorAll('.settings-panel').forEach(p => {
+    p.style.display = (p.getAttribute('data-panel') === tabName) ? 'block' : 'none';
   });
 }
 
-async function openPlaybackModal(event) {
-  if (event) {
-    event.preventDefault();
-    event.stopPropagation();
-  }
-  const modal = document.getElementById('playbackModal');
-  if (!modal) return;
-  const cameraSelect = document.getElementById('playbackCamera');
-  cameraSelect.innerHTML = '<option value="">Tất cả camera</option>';
-  ALL_CAMERAS.forEach(cam => {
-    const option = document.createElement('option');
-    option.value = cam.id;
-    option.textContent = `${cam.index}. ${cam.name}`;
-    cameraSelect.appendChild(option);
-  });
-  fillPlaybackSelect('playbackZone', [...new Set(ALL_CAMERAS.map(c => c.zone).filter(Boolean))], 'Tất cả khu vực');
-  fillPlaybackSelect('playbackLoc', [...new Set(ALL_CAMERAS.map(c => c.loc).filter(Boolean))], 'Tất cả vị trí');
-
-  const currentCam = ALL_CAMERAS.find(c => c.id === selectedCameraId) || ALL_CAMERAS[0];
-  if (currentCam) {
-    document.getElementById('playbackCamera').value = currentCam.id;
-    document.getElementById('playbackZone').value = currentCam.zone || '';
-    document.getElementById('playbackLoc').value = currentCam.loc || '';
-  }
-
-  const now = new Date();
-  const from = new Date(now.getTime() - 60 * 60 * 1000);
-  document.getElementById('playbackFrom').value = toDatetimeLocalValue(from);
-  document.getElementById('playbackTo').value = toDatetimeLocalValue(now);
-  document.getElementById('playbackResults').innerHTML = '<div class="playback-result"><div class="s">Chọn khoảng thời gian rồi bấm Tìm kiếm.</div></div>';
-  document.getElementById('playbackVideo').removeAttribute('src');
-  document.getElementById('playbackVideo').load();
-  document.getElementById('playbackEmpty').style.display = 'block';
-  modal.style.display = 'flex';
-  await loadRecordingStatusHint();
-}
-
-function closePlaybackModal() {
-  const modal = document.getElementById('playbackModal');
-  const video = document.getElementById('playbackVideo');
-  if (video) {
-    video.pause();
-    video.removeAttribute('src');
-    video.load();
-  }
-  if (modal) modal.style.display = 'none';
-}
-
-async function loadRecordingStatusHint() {
-  const hint = document.getElementById('recordingStatusHint');
-  if (!hint) return;
+async function fetchSettingsFromBackend() {
   try {
-    const response = await fetch('http://127.0.0.1:8000/api/recording/status');
-    if (!response.ok) throw new Error('status failed');
-    const status = await response.json();
-    const running = (status.cameras || []).filter(c => c.running).length;
-    hint.textContent = status.ffmpeg_available
-      ? `Đang ghi ${running}/${(status.cameras || []).length} camera. Lưu tại: ${status.recordings_dir}`
-      : `Chưa tìm thấy ffmpeg. Cài FFmpeg hoặc đặt FFMPEG_PATH rồi khởi động lại backend để bắt đầu ghi. Thư mục lưu: ${status.recordings_dir}`;
-  } catch (error) {
-    hint.textContent = 'Chưa đọc được trạng thái ghi hình từ backend.';
-  }
+    const response = await fetch('http://127.0.0.1:8000/api/vms/settings');
+    if (response.ok) return await response.json();
+  } catch (e) { console.error("Lỗi tải cài đặt:", e); }
+  return null;
 }
 
-async function searchPlaybackSegments(event) {
-  if (event) {
-    event.preventDefault();
-    event.stopPropagation();
-  }
-  const params = new URLSearchParams();
-  const cameraId = document.getElementById('playbackCamera').value;
-  const zone = document.getElementById('playbackZone').value;
-  const loc = document.getElementById('playbackLoc').value;
-  const from = document.getElementById('playbackFrom').value;
-  const to = document.getElementById('playbackTo').value;
-  if (cameraId) params.set('camera_id', cameraId);
-  if (zone) params.set('zone', zone);
-  if (loc) params.set('loc', loc);
-  if (from) params.set('from_time', `${from}:00`);
-  if (to) params.set('to_time', `${to}:00`);
+function fillSettingsForm(settings) {
+  if (!settings) return;
+  const n = settings.notifications || {};
+  document.getElementById('setEmailEnabled').checked = !!n.email_enabled;
+  document.getElementById('setEmailAddress').value = n.email_address || '';
+  document.getElementById('setSmsEnabled').checked = !!n.sms_enabled;
+  document.getElementById('setSmsPhone').value = n.sms_phone || '';
+  document.getElementById('setMinAlertLevel').value = n.min_alert_level || 'trung_binh';
 
-  const results = document.getElementById('playbackResults');
-  results.innerHTML = '<div class="playback-result"><div class="s">Đang tìm video...</div></div>';
+  const i = settings.integration || {};
+  document.getElementById('setGo2rtcUrl').value = i.go2rtc_api_url || '';
+  document.getElementById('setWebhookEnabled').checked = !!i.webhook_enabled;
+  document.getElementById('setWebhookUrl').value = i.webhook_url || '';
+
+  const b = settings.backup || {};
+  document.getElementById('setAutoBackupEnabled').checked = !!b.auto_backup_enabled;
+  document.getElementById('setAutoBackupInterval').value = b.auto_backup_interval_hours || 24;
+
+  const s = settings.security || {};
+  document.getElementById('setSessionTimeout').value = s.session_timeout_hours || 8;
+  document.getElementById('setMinPasswordLength').value = s.min_password_length || 6;
+  document.getElementById('setForcePasswordChangeDays').value = s.force_password_change_days ?? 0;
+}
+
+async function checkMediaServerStatus() {
+  const dot = document.getElementById('mediaServerStatusDot');
+  const txt = document.getElementById('mediaServerStatusText');
+  if (!dot || !txt) return;
   try {
-    const response = await fetch(`http://127.0.0.1:8000/api/playback/search?${params.toString()}`);
-    if (!response.ok) throw new Error('search failed');
-    playbackSegments = await response.json();
-    renderPlaybackResults();
-  } catch (error) {
-    results.innerHTML = '<div class="playback-result"><div class="s">Không thể tìm video. Kiểm tra backend đang chạy ở port 8000.</div></div>';
+    const url = document.getElementById('setGo2rtcUrl').value || 'http://127.0.0.1:1984';
+    const response = await fetch(`${url}/api/streams`, { signal: AbortSignal.timeout(2500) });
+    if (response.ok) {
+      dot.style.background = '#16a34a';
+      txt.textContent = 'Media Server (go2rtc) đang hoạt động bình thường';
+    } else {
+      dot.style.background = '#dc2626';
+      txt.textContent = 'Media Server phản hồi lỗi';
+    }
+  } catch (e) {
+    dot.style.background = '#dc2626';
+    txt.textContent = 'Không thể kết nối tới Media Server';
   }
 }
 
-function renderPlaybackResults() {
-  const results = document.getElementById('playbackResults');
-  if (!playbackSegments.length) {
-    results.innerHTML = '<div class="playback-result"><div class="s">Chưa có video trong khoảng thời gian đã chọn.</div></div>';
-    return;
-  }
-  results.innerHTML = '';
-  playbackSegments.forEach(segment => {
-    const item = document.createElement('div');
-    item.className = 'playback-result';
-    item.onclick = (event) => playPlaybackSegment(segment.id, event);
-    item.innerHTML = `
-      <div class="t">${segment.camera_name || segment.camera_id}</div>
-      <div class="s">${formatPlaybackTime(segment.start_time)} → ${formatPlaybackTime(segment.end_time)}</div>
-      <div class="s">${segment.zone || '-'} / ${segment.loc || '-'} · ${formatBytes(segment.file_size)}</div>
-    `;
-    results.appendChild(item);
-  });
+async function saveNotificationSettings() {
+  const payload = {
+    email_enabled: document.getElementById('setEmailEnabled').checked,
+    email_address: document.getElementById('setEmailAddress').value.trim(),
+    sms_enabled: document.getElementById('setSmsEnabled').checked,
+    sms_phone: document.getElementById('setSmsPhone').value.trim(),
+    min_alert_level: document.getElementById('setMinAlertLevel').value
+  };
+  await putSettingsSection('notifications', payload);
 }
 
-function playPlaybackSegment(segmentId, event) {
-  if (event) {
-    event.preventDefault();
-    event.stopPropagation();
-  }
-  const segment = playbackSegments.find(s => s.id === segmentId);
-  if (!segment) return;
-  document.querySelectorAll('.playback-result').forEach(el => el.classList.remove('active'));
-  const idx = playbackSegments.findIndex(s => s.id === segmentId);
-  const activeEl = document.querySelectorAll('.playback-result')[idx];
-  if (activeEl) activeEl.classList.add('active');
-  const video = document.getElementById('playbackVideo');
-  document.getElementById('playbackEmpty').style.display = 'none';
-  video.src = `${segment.stream_url}?t=${Date.now()}`;
-  video.play().catch(() => {});
+async function saveIntegrationSettings() {
+  const payload = {
+    go2rtc_api_url: document.getElementById('setGo2rtcUrl').value.trim(),
+    webhook_url: document.getElementById('setWebhookUrl').value.trim(),
+    webhook_enabled: document.getElementById('setWebhookEnabled').checked
+  };
+  await putSettingsSection('integration', payload);
+  checkMediaServerStatus();
 }
 
+async function saveBackupSettings() {
+  const payload = {
+    auto_backup_enabled: document.getElementById('setAutoBackupEnabled').checked,
+    auto_backup_interval_hours: parseInt(document.getElementById('setAutoBackupInterval').value) || 24
+  };
+  await putSettingsSection('backup', payload);
+}
+
+async function saveSecuritySettings() {
+  const payload = {
+    session_timeout_hours: parseInt(document.getElementById('setSessionTimeout').value) || 8,
+    min_password_length: parseInt(document.getElementById('setMinPasswordLength').value) || 6,
+    force_password_change_days: parseInt(document.getElementById('setForcePasswordChangeDays').value) || 0
+  };
+  await putSettingsSection('security', payload);
+}
+
+async function putSettingsSection(section, payload) {
+  const token = localStorage.getItem('token');
+  if (!token) return alert("🔒 Phiên làm việc hết hạn, vui lòng đăng nhập lại!");
+  try {
+    const response = await fetch(`http://127.0.0.1:8000/api/vms/settings/${section}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify(payload)
+    });
+    if (response.ok) alert("✅ Đã lưu cài đặt!");
+    else { const err = await response.json(); alert("❌ " + (err.detail || "Lỗi khi lưu cài đặt!")); }
+  } catch (e) { alert("❌ Không thể kết nối tới máy chủ Backend!"); }
+}
+
+async function restartMediaServer() {
+  if (!confirm("Khởi động lại Media Server (go2rtc) sẽ tạm gián đoạn toàn bộ luồng camera trong vài giây. Tiếp tục?")) return;
+  const token = localStorage.getItem('token');
+  try {
+    const response = await fetch('http://127.0.0.1:8000/api/vms/system/restart-media', { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } });
+    if (response.ok) { alert("✅ Đã gửi lệnh khởi động lại Media Server."); setTimeout(checkMediaServerStatus, 4000); }
+    else { const err = await response.json(); alert("❌ " + (err.detail || "Không thể khởi động lại Media Server!")); }
+  } catch (e) { alert("❌ Không thể kết nối tới máy chủ Backend!"); }
+}
+
+async function exportBackup() {
+  const token = localStorage.getItem('token');
+  try {
+    const response = await fetch('http://127.0.0.1:8000/api/vms/backup/export', { headers: { 'Authorization': `Bearer ${token}` } });
+    if (!response.ok) { const err = await response.json(); alert("❌ " + (err.detail || "Không thể xuất bản sao lưu!")); return; }
+    const data = await response.json();
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `multicamai_backup_${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.json`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (e) { alert("❌ Không thể kết nối tới máy chủ Backend!"); }
+}
+
+async function restoreBackup(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  if (!confirm("Phục hồi sẽ GHI ĐÈ toàn bộ camera, người dùng và cài đặt hiện tại. Bạn có chắc chắn?")) { event.target.value = ''; return; }
+  const token = localStorage.getItem('token');
+  try {
+    const text = await file.text();
+    const parsed = JSON.parse(text);
+    const payload = { cameras: parsed.cameras || null, users: parsed.users || null, settings: parsed.settings || null };
+    const response = await fetch('http://127.0.0.1:8000/api/vms/backup/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify(payload)
+    });
+    if (response.ok) { alert("✅ Đã phục hồi cấu hình thành công! Trang sẽ tải lại."); window.location.reload(); }
+    else { const err = await response.json(); alert("❌ " + (err.detail || "Không thể phục hồi bản sao lưu!")); }
+  } catch (e) { alert("❌ File sao lưu không hợp lệ hoặc lỗi kết nối!"); }
+  event.target.value = '';
+}  
 
 document.addEventListener("DOMContentLoaded", async () => {
    if (!checkAuthSecurity()) return;
-   
-   // Gọi hàm đồng bộ giao diện người dùng
-   syncSessionUserDisplayName(); 
+   syncSessionUserDisplayName();
 
    await fetchCamerasFromBackend();
    if (document.getElementById('userTableBody')) { await fetchUsersFromBackend(); renderUserTable(); }
@@ -640,6 +720,11 @@ document.addEventListener("DOMContentLoaded", async () => {
    if(document.getElementById('overviewCamGrid')) renderOverviewGrid();
    if(document.getElementById('statTotalCameras')) renderDashboardStats();
    if(document.getElementById('camManagementTableBody')) renderCamManagementTable();
+   if(document.getElementById('settingsPanelHost')) {
+     const settings = await fetchSettingsFromBackend();
+     fillSettingsForm(settings);
+     checkMediaServerStatus();
+   }
 
    // Bật tính năng vượt CORS
    startCameraHealthMonitor();

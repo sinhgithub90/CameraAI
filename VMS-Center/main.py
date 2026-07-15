@@ -1,26 +1,18 @@
-from fastapi import FastAPI, Depends, HTTPException, Query, Request, status
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import Optional
 import jwt
 import requests
 import yaml
 import subprocess
 import os
 import json  
-import shutil
 import platform
 import threading
 import time
 from datetime import datetime, timedelta
-
-from db import (
-    get_recording_file_path,
-    list_cameras_for_ui,
-    search_recording_segments,
-    upsert_recording_segment,
-)
 
 app = FastAPI(title="VMS Central API Gateway", version="1.0")
 
@@ -41,20 +33,7 @@ GO2RTC_EXE_PATH = os.path.join(BASE_DIR, "go2rtc.exe")
 
 CAMERAS_JSON_PATH = os.path.join(BASE_DIR, "cameras.json")
 USERS_JSON_PATH = os.path.join(BASE_DIR, "users.json")
-RECORDINGS_DIR = os.path.abspath(
-    os.getenv("RECORDINGS_DIR") or os.path.join(BASE_DIR, "..", "recordings")
-)
-RECORDING_SEGMENT_SECONDS = int(os.getenv("RECORDING_SEGMENT_SECONDS", "60"))
-FFMPEG_EXE = os.getenv("FFMPEG_PATH") or shutil.which("ffmpeg")
-if not FFMPEG_EXE:
-    winget_packages_dir = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "WinGet", "Packages")
-    if os.path.exists(winget_packages_dir):
-        for root, _dirs, files in os.walk(winget_packages_dir):
-            if "ffmpeg.exe" in files:
-                FFMPEG_EXE = os.path.join(root, "ffmpeg.exe")
-                break
-recording_processes = {}
-recording_lock = threading.Lock()
+SETTINGS_JSON_PATH = os.path.join(BASE_DIR, "settings.json")
 
 CAMERA_DB = {
     "cam_huyen_01": {"name": "Camera Ngã tư Huyện 1", "vlan": "VLAN_10", "status": "active"},
@@ -80,6 +59,52 @@ DEFAULT_USERS = [
     }
 ]
 
+DEFAULT_SETTINGS = {
+    "notifications": {
+        "email_enabled": True,
+        "email_address": "admin@multicamai.local",
+        "sms_enabled": False,
+        "sms_phone": "",
+        "min_alert_level": "trung_binh"   # thap | trung_binh | cao
+    },
+    "integration": {
+        "go2rtc_api_url": "http://127.0.0.1:1984",
+        "webhook_url": "",
+        "webhook_enabled": False
+    },
+    "security": {
+        "session_timeout_hours": 8,
+        "min_password_length": 6,
+        "force_password_change_days": 0   # 0 = tắt
+    },
+    "backup": {
+        "auto_backup_enabled": False,
+        "auto_backup_interval_hours": 24
+    }
+}
+
+def load_settings():
+    if os.path.exists(SETTINGS_JSON_PATH):
+        with open(SETTINGS_JSON_PATH, "r", encoding="utf-8") as f:
+            try:
+                data = json.load(f)
+                # Đảm bảo đủ field mặc định nếu file cũ thiếu key mới thêm sau này
+                merged = json.loads(json.dumps(DEFAULT_SETTINGS))
+                for section, values in data.items():
+                    if section in merged and isinstance(values, dict):
+                        merged[section].update(values)
+                    else:
+                        merged[section] = values
+                return merged
+            except Exception:
+                pass
+    save_settings(DEFAULT_SETTINGS)
+    return DEFAULT_SETTINGS
+
+def save_settings(settings):
+    with open(SETTINGS_JSON_PATH, "w", encoding="utf-8") as f:
+        json.dump(settings, f, ensure_ascii=False, indent=2)
+
 def load_ui_cameras():
     if os.path.exists(CAMERAS_JSON_PATH):
         with open(CAMERAS_JSON_PATH, "r", encoding="utf-8") as f:
@@ -102,139 +127,6 @@ def load_users():
 def save_users(users):
     with open(USERS_JSON_PATH, "w", encoding="utf-8") as f:
         json.dump(users, f, ensure_ascii=False, indent=2)
-
-def load_go2rtc_streams():
-    if not os.path.exists(GO2RTC_YAML_PATH):
-        return {}
-    with open(GO2RTC_YAML_PATH, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
-    return data.get("streams") or {}
-
-def get_camera_lookup():
-    try:
-        return {cam["id"]: cam for cam in list_cameras_for_ui()}
-    except Exception as exc:
-        print(f"Database camera lookup fallback: {exc}")
-        return {cam["id"]: cam for cam in load_ui_cameras()}
-
-def parse_segment_start(file_path):
-    stem = os.path.splitext(os.path.basename(file_path))[0]
-    try:
-        return datetime.strptime(stem, "%Y%m%d_%H%M%S")
-    except ValueError:
-        return None
-
-def index_recording_file(file_path, camera):
-    start_dt = parse_segment_start(file_path)
-    if not start_dt:
-        return
-    try:
-        size = os.path.getsize(file_path)
-        modified_age = time.time() - os.path.getmtime(file_path)
-    except OSError:
-        return
-    if size < 1024 * 1024 or modified_age < 10:
-        return
-    end_dt = start_dt + timedelta(seconds=RECORDING_SEGMENT_SECONDS)
-    if camera.get("db_id"):
-        upsert_recording_segment(
-            camera,
-            file_path,
-            start_dt,
-            end_dt,
-            RECORDING_SEGMENT_SECONDS,
-            size,
-        )
-
-def scan_recording_index():
-    os.makedirs(RECORDINGS_DIR, exist_ok=True)
-    cameras = get_camera_lookup()
-    for camera_id, camera in cameras.items():
-        camera_dir = os.path.join(RECORDINGS_DIR, camera_id)
-        if not os.path.exists(camera_dir):
-            continue
-        for root, _dirs, files in os.walk(camera_dir):
-            for name in files:
-                if name.lower().endswith((".mp4", ".mkv")):
-                    index_recording_file(os.path.join(root, name), camera)
-
-def build_recording_output_pattern(camera_id):
-    return os.path.join(RECORDINGS_DIR, camera_id, "%Y%m%d_%H%M%S.mp4")
-
-def start_camera_recorder(camera_id, rtsp_url):
-    if not FFMPEG_EXE:
-        return {"ok": False, "error": "ffmpeg_not_found"}
-    os.makedirs(os.path.join(RECORDINGS_DIR, camera_id), exist_ok=True)
-    log_path = os.path.join(RECORDINGS_DIR, camera_id, "ffmpeg.log")
-    output_pattern = build_recording_output_pattern(camera_id)
-    cmd = [
-        FFMPEG_EXE,
-        "-hide_banner",
-        "-loglevel",
-        "warning",
-        "-rtsp_transport",
-        "tcp",
-        "-i",
-        rtsp_url,
-        "-c",
-        "copy",
-        "-f",
-        "segment",
-        "-segment_time",
-        str(RECORDING_SEGMENT_SECONDS),
-        "-reset_timestamps",
-        "1",
-        "-strftime",
-        "1",
-        "-strftime_mkdir",
-        "1",
-        output_pattern,
-    ]
-    try:
-        log_file = open(log_path, "ab")
-        process = subprocess.Popen(cmd, stdout=log_file, stderr=log_file, cwd=BASE_DIR)
-        with recording_lock:
-            recording_processes[camera_id] = {
-                "process": process,
-                "started_at": datetime.now().isoformat(),
-                "rtsp_url": rtsp_url,
-                "log_path": log_path,
-            }
-        return {"ok": True, "pid": process.pid}
-    except Exception as exc:
-        return {"ok": False, "error": str(exc)}
-
-def stop_camera_recorder(camera_id):
-    with recording_lock:
-        info = recording_processes.pop(camera_id, None)
-    if not info:
-        return
-    process = info["process"]
-    if process.poll() is None:
-        process.terminate()
-
-def recording_supervisor_loop():
-    os.makedirs(RECORDINGS_DIR, exist_ok=True)
-    while True:
-        try:
-            streams = load_go2rtc_streams()
-            cameras = get_camera_lookup()
-            for camera_id, rtsp_url in streams.items():
-                if camera_id not in cameras:
-                    continue
-                with recording_lock:
-                    info = recording_processes.get(camera_id)
-                    running = bool(info and info["process"].poll() is None)
-                if not running:
-                    start_camera_recorder(camera_id, rtsp_url)
-            scan_recording_index()
-        except Exception as exc:
-            print(f"Recording supervisor error: {exc}")
-        time.sleep(10)
-
-def start_recording_supervisor():
-    thread = threading.Thread(target=recording_supervisor_loop, daemon=True)
-    thread.start()
 
 def restart_go2rtc_process():
     try:
@@ -304,11 +196,7 @@ def google_mock_login(email: str):
 
 @app.get("/api/vms/cameras")
 def get_all_cameras():
-    try:
-        return list_cameras_for_ui()
-    except Exception as exc:
-        print(f"Database camera fallback: {exc}")
-        return load_ui_cameras()
+    return load_ui_cameras()
 
 class CameraAddInput(BaseModel):
     name: str; ip: str; user: str; password: str; model: str; zone: str; loc: str
@@ -451,95 +339,6 @@ def delete_user(username: str):
 
 # 🌟 LUỒNG QUYÉT NGẦM TRUNG GIAN (PROXY HEALTH CHECK)
 # THAY THẾ HÀM start_go2rtc_proxy_sync TRONG main.py
-@app.get("/api/recording/status")
-def get_recording_status():
-    cameras = get_camera_lookup()
-    with recording_lock:
-        process_snapshot = dict(recording_processes)
-    camera_status = []
-    for camera in cameras.values():
-        info = process_snapshot.get(camera["id"])
-        running = bool(info and info["process"].poll() is None)
-        camera_status.append(
-            {
-                "camera_id": camera["id"],
-                "camera_name": camera.get("name"),
-                "running": running,
-                "pid": info["process"].pid if info else None,
-                "started_at": info.get("started_at") if info else None,
-                "log_path": info.get("log_path") if info else None,
-            }
-        )
-    return {
-        "ffmpeg_available": bool(FFMPEG_EXE),
-        "ffmpeg_path": FFMPEG_EXE,
-        "recordings_dir": RECORDINGS_DIR,
-        "segment_seconds": RECORDING_SEGMENT_SECONDS,
-        "cameras": camera_status,
-    }
-
-@app.post("/api/recording/restart")
-def restart_recording():
-    with recording_lock:
-        camera_ids = list(recording_processes)
-    for camera_id in camera_ids:
-        stop_camera_recorder(camera_id)
-    return {"status": "restarting"}
-
-@app.get("/api/playback/search")
-def search_playback(
-    camera_id: str | None = None,
-    zone: str | None = None,
-    loc: str | None = None,
-    from_time: str | None = Query(default=None),
-    to_time: str | None = Query(default=None),
-):
-    return search_recording_segments(camera_id, zone, loc, from_time, to_time)
-
-def iter_file_bytes(file_path, start=0, end=None, chunk_size=1024 * 1024):
-    with open(file_path, "rb") as f:
-        f.seek(start)
-        remaining = None if end is None else end - start + 1
-        while True:
-            read_size = chunk_size if remaining is None else min(chunk_size, remaining)
-            if read_size <= 0:
-                break
-            data = f.read(read_size)
-            if not data:
-                break
-            yield data
-            if remaining is not None:
-                remaining -= len(data)
-
-@app.get("/api/playback/file/{segment_id}")
-def get_playback_file(segment_id: int, request: Request):
-    file_path = get_recording_file_path(segment_id)
-    if not file_path:
-        raise HTTPException(status_code=404, detail="Khong tim thay doan video")
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="File video khong con ton tai tren may")
-    file_size = os.path.getsize(file_path)
-    range_header = request.headers.get("range")
-    headers = {
-        "Accept-Ranges": "bytes",
-        "Content-Disposition": f'inline; filename="{os.path.basename(file_path)}"',
-    }
-    if range_header and range_header.startswith("bytes="):
-        start_text, _, end_text = range_header.replace("bytes=", "", 1).partition("-")
-        start = int(start_text) if start_text else 0
-        end = int(end_text) if end_text else file_size - 1
-        end = min(end, file_size - 1)
-        headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
-        headers["Content-Length"] = str(end - start + 1)
-        return StreamingResponse(
-            iter_file_bytes(file_path, start, end),
-            status_code=206,
-            media_type="video/mp4",
-            headers=headers,
-        )
-    headers["Content-Length"] = str(file_size)
-    return StreamingResponse(iter_file_bytes(file_path), media_type="video/mp4", headers=headers)
-
 def start_go2rtc_proxy_sync():
     import socket
     from urllib.parse import urlparse
@@ -624,8 +423,92 @@ def start_go2rtc_proxy_sync():
     t.start()
 
 start_go2rtc_proxy_sync()
-start_recording_supervisor()
 load_users()
+
+
+@app.get("/api/vms/settings")
+def get_settings():
+    return load_settings()
+
+class NotificationSettingsInput(BaseModel):
+    email_enabled: bool
+    email_address: str
+    sms_enabled: bool
+    sms_phone: str
+    min_alert_level: str
+
+@app.put("/api/vms/settings/notifications", dependencies=[Depends(verify_admin_role)])
+def update_notification_settings(data: NotificationSettingsInput):
+    settings = load_settings()
+    settings["notifications"] = data.dict()
+    save_settings(settings)
+    return {"status": "success"}
+
+class IntegrationSettingsInput(BaseModel):
+    go2rtc_api_url: str
+    webhook_url: str
+    webhook_enabled: bool
+
+@app.put("/api/vms/settings/integration", dependencies=[Depends(verify_admin_role)])
+def update_integration_settings(data: IntegrationSettingsInput):
+    settings = load_settings()
+    settings["integration"] = data.dict()
+    save_settings(settings)
+    return {"status": "success"}
+
+class SecuritySettingsInput(BaseModel):
+    session_timeout_hours: int
+    min_password_length: int
+    force_password_change_days: int
+
+@app.put("/api/vms/settings/security", dependencies=[Depends(verify_admin_role)])
+def update_security_settings(data: SecuritySettingsInput):
+    settings = load_settings()
+    settings["security"] = data.dict()
+    save_settings(settings)
+    return {"status": "success"}
+
+class BackupSettingsInput(BaseModel):
+    auto_backup_enabled: bool
+    auto_backup_interval_hours: int
+
+@app.put("/api/vms/settings/backup", dependencies=[Depends(verify_admin_role)])
+def update_backup_settings(data: BackupSettingsInput):
+    settings = load_settings()
+    settings["backup"] = data.dict()
+    save_settings(settings)
+    return {"status": "success"}
+
+@app.post("/api/vms/system/restart-media", dependencies=[Depends(verify_admin_role)])
+def restart_media_server():
+    restart_go2rtc_process()
+    return {"status": "success", "message": "Đã gửi lệnh khởi động lại Media Server (go2rtc)"}
+
+@app.get("/api/vms/backup/export", dependencies=[Depends(verify_admin_role)])
+def export_backup():
+    """Xuất toàn bộ cấu hình hệ thống (camera, người dùng, cài đặt) thành 1 gói JSON duy nhất"""
+    return {
+        "exported_at": datetime.utcnow().isoformat(),
+        "cameras": load_ui_cameras(),
+        "users": load_users(),
+        "settings": load_settings()
+    }
+
+class BackupRestoreInput(BaseModel):
+    cameras: Optional[list] = None
+    users: Optional[list] = None
+    settings: Optional[dict] = None
+
+@app.post("/api/vms/backup/restore", dependencies=[Depends(verify_admin_role)])
+def restore_backup(data: BackupRestoreInput):
+    """Phục hồi cấu hình từ gói backup đã xuất trước đó"""
+    if data.cameras is not None:
+        save_ui_cameras(data.cameras)
+    if data.users is not None:
+        save_users(data.users)
+    if data.settings is not None:
+        save_settings(data.settings)
+    return {"status": "success"}
 
 if __name__ == "__main__":
     import uvicorn
