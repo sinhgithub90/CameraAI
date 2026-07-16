@@ -307,6 +307,74 @@ def update_camera_location_for_ui(cam_id, lat, lng):
         return True
 
 
+def soft_delete_camera_for_ui(cam_id, remove_stream_callback=None):
+    with db_cursor(commit=True) as cur:
+        cur.execute(
+            """
+            select id, stream_key, ma_camera, ten_camera, trang_thai_hien_tai, deleted_at
+            from camera
+            where deleted_at is null
+              and (stream_key = %s or ma_camera = %s)
+            limit 1
+            """,
+            (cam_id, cam_id),
+        )
+        camera = cur.fetchone()
+        if not camera:
+            return None
+
+        old_value = dict(camera)
+        cur.execute(
+            """
+            update camera
+            set deleted_at = now(),
+                updated_at = now(),
+                trang_thai_hien_tai = 'DELETED',
+                bat_ghi_hinh = false
+            where id = %s
+            """,
+            (camera["id"],),
+        )
+        cur.execute(
+            """
+            update ket_noi_camera
+            set trang_thai_ket_noi = 'DISABLED',
+                updated_at = now()
+            where camera_id = %s
+            """,
+            (camera["id"],),
+        )
+        cur.execute(
+            """
+            insert into nhat_ky_camera (camera_id, hanh_dong, noi_dung, muc_do)
+            values (%s, 'DELETE', %s, 'INFO')
+            """,
+            (camera["id"], f"Soft delete camera {camera['stream_key']} tu API"),
+        )
+        cur.execute(
+            """
+            insert into nhat_ky_he_thong (
+              hanh_dong, ten_bang, ban_ghi_id, gia_tri_cu, gia_tri_moi
+            ) values ('DELETE', 'camera', %s, %s::jsonb, %s::jsonb)
+            """,
+            (
+                str(camera["id"]),
+                psycopg2.extras.Json(old_value),
+                psycopg2.extras.Json(
+                    {
+                        "stream_key": camera["stream_key"],
+                        "deleted_at": "now()",
+                        "trang_thai_hien_tai": "DELETED",
+                        "bat_ghi_hinh": False,
+                    }
+                ),
+            ),
+        )
+        if remove_stream_callback:
+            remove_stream_callback(camera["stream_key"])
+        return camera["stream_key"]
+
+
 def upsert_recording_segment(camera, file_path, start_time, end_time, duration_seconds, file_size):
     with db_cursor(commit=True) as cur:
         cur.execute(

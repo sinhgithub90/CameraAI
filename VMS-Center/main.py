@@ -14,7 +14,12 @@ import threading
 import time
 from datetime import datetime, timedelta
 
-from db import create_camera_for_ui, list_cameras_for_ui, update_camera_location_for_ui
+from db import (
+    create_camera_for_ui,
+    list_cameras_for_ui,
+    soft_delete_camera_for_ui,
+    update_camera_location_for_ui,
+)
 
 app = FastAPI(title="VMS Central API Gateway", version="1.0")
 
@@ -141,6 +146,17 @@ def sync_go2rtc_stream(stream_key, rtsp_url):
     with open(GO2RTC_YAML_PATH, "w", encoding="utf-8") as f:
         yaml.dump(config_data, f, allow_unicode=True, default_flow_style=False)
 
+def remove_go2rtc_stream(stream_key):
+    if not os.path.exists(GO2RTC_YAML_PATH):
+        return
+    with open(GO2RTC_YAML_PATH, "r", encoding="utf-8") as f:
+        config_data = yaml.safe_load(f) or {}
+    streams = config_data.get("streams")
+    if isinstance(streams, dict) and stream_key in streams:
+        del streams[stream_key]
+        with open(GO2RTC_YAML_PATH, "w", encoding="utf-8") as f:
+            yaml.dump(config_data, f, allow_unicode=True, default_flow_style=False)
+
 def restart_go2rtc_process():
     try:
         if platform.system() == "Windows":
@@ -239,19 +255,13 @@ def add_camera_and_sync_media(cam: CameraAddInput):
 
 @app.delete("/api/vms/camera/{cam_id}")
 def delete_camera(cam_id: str):
-    cameras = load_ui_cameras()
-    cameras = [c for c in cameras if c["id"] != cam_id]
-    for idx, c in enumerate(cameras): c["index"] = idx + 1
-    save_ui_cameras(cameras)
     try:
-        if os.path.exists(GO2RTC_YAML_PATH):
-            with open(GO2RTC_YAML_PATH, 'r', encoding='utf-8') as f:
-                config_data = yaml.safe_load(f) or {}
-            if 'streams' in config_data and cam_id in config_data['streams']:
-                del config_data['streams'][cam_id]
-                with open(GO2RTC_YAML_PATH, 'w', encoding='utf-8') as f:
-                    yaml.dump(config_data, f, allow_unicode=True, default_flow_style=False)
-    except: pass
+        stream_key = soft_delete_camera_for_ui(cam_id, remove_go2rtc_stream)
+    except Exception as e:
+        print(f"PostgreSQL camera delete error: {e}")
+        raise HTTPException(status_code=500, detail=f"Khong the xoa camera trong PostgreSQL: {str(e)}")
+    if not stream_key:
+        raise HTTPException(status_code=404, detail="Không tìm thấy camera")
     restart_go2rtc_process()
     return {"status": "success"}
 
