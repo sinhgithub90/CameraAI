@@ -14,7 +14,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 
-from db import create_camera_for_ui, list_cameras_for_ui
+from db import create_camera_for_ui, list_cameras_for_ui, update_camera_location_for_ui
 
 app = FastAPI(title="VMS Central API Gateway", version="1.0")
 
@@ -263,20 +263,10 @@ class CameraLocationInput(BaseModel):
 
 @app.put("/api/vms/camera/{cam_id}/location")
 def update_camera_location(cam_id: str, data: CameraLocationInput, admin_user: str = Depends(verify_admin_role)):
-    cameras = load_ui_cameras()
-    is_changed = False
-    for c in cameras:
-        if c["id"] == cam_id:
-            c["lat"] = data.lat
-            c["lng"] = data.lng
-            is_changed = True
-            break
-            
-    if is_changed:
-        save_ui_cameras(cameras)
-        print(f"🗺️ GIS: Đã gán tọa độ ({data.lat}, {data.lng}) cho camera {cam_id}")
+    if update_camera_location_for_ui(cam_id, data.lat, data.lng):
+        print(f"GIS: Da gan toa do ({data.lat}, {data.lng}) cho camera {cam_id}")
         return {"status": "success"}
-        
+
     raise HTTPException(status_code=404, detail="Không tìm thấy camera")
 
 @app.get("/api/vms/users")

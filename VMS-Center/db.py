@@ -271,6 +271,42 @@ def create_camera_for_ui(camera_input, sync_stream_callback=None):
         return new_camera
 
 
+def update_camera_location_for_ui(cam_id, lat, lng):
+    with db_cursor(commit=True) as cur:
+        cur.execute(
+            """
+            select id, khu_vuc_id
+            from camera
+            where deleted_at is null
+              and (stream_key = %s or ma_camera = %s)
+            limit 1
+            """,
+            (cam_id, cam_id),
+        )
+        camera = cur.fetchone()
+        if not camera:
+            return False
+
+        cur.execute(
+            """
+            update lap_dat_camera
+            set vi_do = %s,
+                kinh_do = %s
+            where camera_id = %s
+            """,
+            (lat, lng, camera["id"]),
+        )
+        if cur.rowcount == 0:
+            cur.execute(
+                """
+                insert into lap_dat_camera (camera_id, khu_vuc_id, vi_do, kinh_do)
+                values (%s, %s, %s, %s)
+                """,
+                (camera["id"], camera["khu_vuc_id"], lat, lng),
+            )
+        return True
+
+
 def upsert_recording_segment(camera, file_path, start_time, end_time, duration_seconds, file_size):
     with db_cursor(commit=True) as cur:
         cur.execute(
