@@ -14,6 +14,8 @@ import threading
 import time
 from datetime import datetime, timedelta
 
+from db import list_cameras_for_ui
+
 app = FastAPI(title="VMS Central API Gateway", version="1.0")
 
 app.add_middleware(
@@ -196,7 +198,17 @@ def google_mock_login(email: str):
 
 @app.get("/api/vms/cameras")
 def get_all_cameras():
-    return load_ui_cameras()
+    try:
+        return list_cameras_for_ui()
+    except Exception as exc:
+        print(f"PostgreSQL camera query error: {exc}")
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Khong the doc danh sach camera tu PostgreSQL. "
+                "Kiem tra DATABASE_URL, PostgreSQL server va schema multicamai."
+            ),
+        )
 
 class CameraAddInput(BaseModel):
     name: str; ip: str; user: str; password: str; model: str; zone: str; loc: str
