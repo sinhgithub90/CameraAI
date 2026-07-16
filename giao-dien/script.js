@@ -2,6 +2,7 @@
 let ALL_CAMERAS = [];
 let ALL_USERS = [];
 let selectedUsername = null;
+let editingCameraId = null;
 let currentGridLimit = 6;
 
 // 1. Hàm gọi API lấy danh sách camera tập trung từ Backend FastAPI
@@ -179,28 +180,46 @@ function renderCamManagementTable() {
   if (!tbody) return;
   tbody.innerHTML = '';
   ALL_CAMERAS.forEach((cam) => {
-    const trHTML = `<tr><td><b>#${cam.index}</b></td><td><span style="font-weight:600; color:var(--slate-900);">${cam.name}</span></td><td><span class="pill thap" style="font-family:monospace;">${cam.ip}</span></td><td>${cam.model}</td><td>${cam.zone}</td><td>${cam.loc}</td><td><span class="status daxuly"><span class="d"></span>${cam.status === 'online' ? 'Hoạt động' : 'Ngoại tuyến'}</span></td><td><button class="btn-sm red" onclick="deleteCamera('${cam.id}')" style="width:auto; padding:5px 12px; display:inline-block; cursor:pointer;">Xóa</button></td></tr>`;
+    const trHTML = `<tr><td><b>#${cam.index}</b></td><td><span style="font-weight:600; color:var(--slate-900);">${cam.name}</span></td><td><span class="pill thap" style="font-family:monospace;">${cam.ip}</span></td><td>${cam.model}</td><td>${cam.zone}</td><td>${cam.loc}</td><td><span class="status daxuly"><span class="d"></span>${cam.status === 'online' ? 'Hoạt động' : 'Ngoại tuyến'}</span></td><td><div style="display:flex; gap:6px; align-items:center;"><button class="btn-sm" onclick="openEditCamModal('${cam.id}')" style="width:auto; padding:5px 12px; display:inline-block; cursor:pointer;">Sửa</button><button class="btn-sm red" onclick="deleteCamera('${cam.id}')" style="width:auto; padding:5px 12px; display:inline-block; cursor:pointer;">Xóa</button></div></td></tr>`;
     tbody.insertAdjacentHTML('beforeend', trHTML);
   });
 }
 
 async function handleAddCamera(event) {
   event.preventDefault();
-  const name = document.getElementById('modalCamName').value;
-  const ip = document.getElementById('modalCamIP').value;
-  const model = document.getElementById('modalCamModel').value;
-  const user = document.getElementById('modalCamUser').value;
-  const pass = document.getElementById('modalCamPass').value;
-  const zone = document.getElementById('modalCamZone').value;
-  const loc = document.getElementById('modalCamLoc').value;
+  const payload = editingCameraId ? getCameraUpdatePayload(editingCameraId) : getCameraFormPayload(false);
+  if (editingCameraId && Object.keys(payload).length === 0) {
+    alert("Chưa có thông tin camera nào được thay đổi.");
+    return;
+  }
   const submitBtn = event.target.querySelector('button[type="submit"]');
   const originalText = submitBtn.textContent;
-  submitBtn.textContent = "Đang kết nối & khởi động lại..."; submitBtn.disabled = true;
+  submitBtn.textContent = editingCameraId ? "Đang lưu thay đổi..." : "Đang kết nối & khởi động lại...";
+  submitBtn.disabled = true;
   try {
-    const response = await fetch('http://127.0.0.1:8000/api/vms/camera/add', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, ip, user, password: pass, model, zone, loc }) });
-    if (response.ok) { closeAddCamModal(); document.getElementById('addCamForm').reset(); setTimeout(async () => { await fetchCamerasFromBackend(); renderCamManagementTable(); }, 1000); } 
-    else alert("Lỗi ghi nhận cấu hình từ Backend.");
-  } catch (error) { alert("Không thể kết nối API tới FastAPI."); } finally { submitBtn.textContent = originalText; submitBtn.disabled = false; }
+    const url = editingCameraId
+      ? `http://127.0.0.1:8000/api/vms/camera/${editingCameraId}`
+      : 'http://127.0.0.1:8000/api/vms/camera/add';
+    const response = await fetch(url, {
+      method: editingCameraId ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (response.ok) {
+      closeAddCamModal();
+      document.getElementById('addCamForm').reset();
+      await fetchCamerasFromBackend();
+      renderCamManagementTable();
+    } else {
+      const err = await response.json().catch(() => ({}));
+      alert(err.detail || (editingCameraId ? "Không thể cập nhật camera." : "Lỗi ghi nhận cấu hình từ Backend."));
+    }
+  } catch (error) {
+    alert("Không thể kết nối API tới FastAPI.");
+  } finally {
+    submitBtn.textContent = originalText;
+    submitBtn.disabled = false;
+  }
 }
 
 async function deleteCamera(id) {
@@ -212,8 +231,135 @@ async function deleteCamera(id) {
   }
 }
 
-function openAddCamModal() { const modal = document.getElementById('addCamModal'); if (modal) modal.style.display = 'flex'; }
-function closeAddCamModal() { const modal = document.getElementById('addCamModal'); if (modal) modal.style.display = 'none'; }
+function getCameraFormPayload(isEdit = false) {
+  const payload = {
+    name: document.getElementById('modalCamName').value.trim(),
+    ip: document.getElementById('modalCamIP').value.trim(),
+    user: document.getElementById('modalCamUser').value.trim(),
+    model: document.getElementById('modalCamModel').value.trim(),
+    zone: document.getElementById('modalCamZone').value.trim(),
+    loc: document.getElementById('modalCamLoc').value.trim()
+  };
+  const password = document.getElementById('modalCamPass').value.trim();
+  if (password || !isEdit) payload.password = password;
+
+  const optionalTextFields = [
+    ['resolution', 'modalCamResolution'],
+    ['codec', 'modalCamCodec']
+  ];
+  optionalTextFields.forEach(([key, id]) => {
+    const value = document.getElementById(id).value.trim();
+    if (value) payload[key] = value;
+  });
+
+  const optionalNumberFields = [
+    ['fps', 'modalCamFPS'],
+    ['bitrate', 'modalCamBitrate'],
+    ['lat', 'modalCamLat'],
+    ['lng', 'modalCamLng']
+  ];
+  optionalNumberFields.forEach(([key, id]) => {
+    const value = document.getElementById(id).value.trim();
+    if (value !== '') payload[key] = Number(value);
+  });
+  return payload;
+}
+
+function getCameraUpdatePayload(camId) {
+  const cam = ALL_CAMERAS.find(c => c.id === camId);
+  const fullPayload = getCameraFormPayload(true);
+  const updatePayload = {};
+  const comparableFields = [
+    ['name', cam?.name],
+    ['ip', cam?.ip],
+    ['model', cam?.model],
+    ['zone', cam?.zone],
+    ['loc', cam?.loc],
+    ['resolution', cam?.resolution],
+    ['codec', cam?.codec],
+    ['fps', cam?.fps],
+    ['bitrate', cam?.bitrate],
+    ['lat', cam?.lat],
+    ['lng', cam?.lng]
+  ];
+  comparableFields.forEach(([key, currentValue]) => {
+    if (!(key in fullPayload)) return;
+    if (String(fullPayload[key] ?? '') !== String(currentValue ?? '')) {
+      updatePayload[key] = fullPayload[key];
+    }
+  });
+
+  const password = document.getElementById('modalCamPass').value.trim();
+  if (password) {
+    updatePayload.password = password;
+    const user = document.getElementById('modalCamUser').value.trim();
+    if (user) updatePayload.user = user;
+    const ip = document.getElementById('modalCamIP').value.trim();
+    if (ip) updatePayload.ip = ip;
+  }
+  return updatePayload;
+}
+
+function fillCameraForm(cam) {
+  document.getElementById('modalCamName').value = cam.name || '';
+  document.getElementById('modalCamIP').value = cam.ip || '';
+  document.getElementById('modalCamModel').value = cam.model || '';
+  document.getElementById('modalCamUser').value = 'admin';
+  document.getElementById('modalCamPass').value = '';
+  document.getElementById('modalCamZone').value = cam.zone || '';
+  document.getElementById('modalCamLoc').value = cam.loc || '';
+  document.getElementById('modalCamResolution').value = cam.resolution || '';
+  document.getElementById('modalCamCodec').value = cam.codec || '';
+  document.getElementById('modalCamFPS').value = cam.fps || '';
+  document.getElementById('modalCamBitrate').value = cam.bitrate || '';
+  document.getElementById('modalCamLat').value = cam.lat ?? '';
+  document.getElementById('modalCamLng').value = cam.lng ?? '';
+}
+
+function setCameraModalMode(mode) {
+  const isEdit = mode === 'edit';
+  const title = document.getElementById('camModalTitle');
+  const submitBtn = document.getElementById('camModalSubmitBtn');
+  const passwordInput = document.getElementById('modalCamPass');
+  if (title) title.textContent = isEdit ? 'Sửa thông tin camera' : 'Quy hoạch Thiết Bị Camera Động';
+  if (submitBtn) submitBtn.textContent = isEdit ? 'Lưu thay đổi' : 'Kích hoạt kết nối';
+  if (passwordInput) {
+    passwordInput.required = !isEdit;
+    passwordInput.placeholder = isEdit ? 'Để trống nếu không đổi mật khẩu RTSP' : 'Nhập mật khẩu camera';
+  }
+}
+
+function openAddCamModal() {
+  editingCameraId = null;
+  const form = document.getElementById('addCamForm');
+  if (form) form.reset();
+  document.getElementById('modalCamUser').value = 'admin';
+  setCameraModalMode('add');
+  const modal = document.getElementById('addCamModal');
+  if (modal) modal.style.display = 'flex';
+}
+
+function openEditCamModal(camId) {
+  const cam = ALL_CAMERAS.find(c => c.id === camId);
+  if (!cam) {
+    alert("Không tìm thấy camera cần sửa.");
+    return;
+  }
+  editingCameraId = camId;
+  setCameraModalMode('edit');
+  fillCameraForm(cam);
+  const modal = document.getElementById('addCamModal');
+  if (modal) modal.style.display = 'flex';
+}
+
+function closeAddCamModal() {
+  const modal = document.getElementById('addCamModal');
+  if (modal) modal.style.display = 'none';
+  editingCameraId = null;
+  const form = document.getElementById('addCamForm');
+  if (form) form.reset();
+  setCameraModalMode('add');
+}
 function changeGridLimit(val) { currentGridLimit = parseInt(val); const liveGrid = document.getElementById('liveCamGrid'); if(liveGrid) { liveGrid.style.gridTemplateColumns = (currentGridLimit === 2 || currentGridLimit === 4) ? 'repeat(2, 1fr)' : 'repeat(3, 1fr)'; renderLiveGrid(); } }
 function selectCam(el){ document.querySelectorAll('.live-tile').forEach(t => t.classList.remove('selected')); el.classList.add('selected'); const camId = el.getAttribute('data-id'); const camData = ALL_CAMERAS.find(c => c.id === camId); if (!camData) return; if(document.getElementById('sideCamName')) document.getElementById('sideCamName').textContent = `${camData.index}. ${camData.name}`; if(document.getElementById('sideCamIP')) document.getElementById('sideCamIP').textContent = camData.ip; if(document.getElementById('sideCamModel')) document.getElementById('sideCamModel').textContent = camData.model; if(document.getElementById('sideCamZone')) document.getElementById('sideCamZone').textContent = camData.zone; if(document.getElementById('sideCamLoc')) document.getElementById('sideCamLoc').textContent = camData.loc; const detailContainer = document.getElementById('mainDetailContainer'); if (detailContainer) { detailContainer.innerHTML = `<iframe src="http://127.0.0.1:1984/stream.html?src=${camData.id}&mode=webrtc" frameborder="0" scrolling="no" style="width:100%; aspect-ratio:16/9; pointer-events:none; display:block;"></iframe>`; } }
 function maximizeCam(el) { const mediaElement = el.querySelector('iframe') || el.querySelector('img'); if (mediaElement && mediaElement.requestFullscreen) mediaElement.requestFullscreen(); }
