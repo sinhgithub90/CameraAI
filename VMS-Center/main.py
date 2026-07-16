@@ -18,6 +18,7 @@ from db import (
     create_camera_for_ui,
     list_cameras_for_ui,
     soft_delete_camera_for_ui,
+    update_camera_for_ui,
     update_camera_location_for_ui,
 )
 
@@ -240,6 +241,21 @@ def get_all_cameras():
 class CameraAddInput(BaseModel):
     name: str; ip: str; user: str; password: str; model: str; zone: str; loc: str
 
+class CameraUpdateInput(BaseModel):
+    name: Optional[str] = None
+    ip: Optional[str] = None
+    user: Optional[str] = None
+    password: Optional[str] = None
+    model: Optional[str] = None
+    zone: Optional[str] = None
+    loc: Optional[str] = None
+    resolution: Optional[str] = None
+    fps: Optional[int] = None
+    bitrate: Optional[int] = None
+    codec: Optional[str] = None
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+
 @app.post("/api/vms/camera/add")
 def add_camera_and_sync_media(cam: CameraAddInput):
     try:
@@ -252,6 +268,20 @@ def add_camera_and_sync_media(cam: CameraAddInput):
         )
     restart_go2rtc_process()
     return {"status": "success", "camera": new_cam_obj}
+
+@app.put("/api/vms/camera/{cam_id}")
+def update_camera(cam_id: str, data: CameraUpdateInput):
+    updates = data.model_dump(exclude_unset=True) if hasattr(data, "model_dump") else data.dict(exclude_unset=True)
+    try:
+        updated_camera = update_camera_for_ui(cam_id, updates, sync_go2rtc_stream)
+    except Exception as e:
+        print(f"PostgreSQL camera update error: {e}")
+        raise HTTPException(status_code=500, detail=f"Khong the cap nhat camera trong PostgreSQL: {str(e)}")
+    if not updated_camera:
+        raise HTTPException(status_code=404, detail="Không tìm thấy camera")
+    if any(key in updates for key in ("ip", "user", "password")):
+        restart_go2rtc_process()
+    return {"status": "success", "camera": updated_camera}
 
 @app.delete("/api/vms/camera/{cam_id}")
 def delete_camera(cam_id: str):

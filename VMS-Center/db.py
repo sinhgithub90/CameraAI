@@ -1,5 +1,6 @@
 import os
 import re
+import json
 from contextlib import contextmanager
 
 import psycopg2
@@ -140,6 +141,16 @@ def _find_area_id(cur, zone):
     return row["id"] if row else None
 
 
+def _split_camera_model(model_text):
+    model_text = (model_text or "").strip()
+    if not model_text:
+        return None, None
+    if " " in model_text:
+        manufacturer, model = model_text.split(" ", 1)
+        return manufacturer, model
+    return model_text, model_text
+
+
 def create_camera_for_ui(camera_input, sync_stream_callback=None):
     with db_cursor(commit=True) as cur:
         stream_key = _next_camera_stream_key(cur)
@@ -148,8 +159,7 @@ def create_camera_for_ui(camera_input, sync_stream_callback=None):
             f"rtsp://{camera_input.user}:{camera_input.password}"
             f"@{camera_input.ip}:2004/Streaming/Channels/102"
         )
-        model_text = camera_input.model.strip()
-        manufacturer, model = (model_text.split(" ", 1) + [""])[:2] if " " in model_text else (model_text, model_text)
+        manufacturer, model = _split_camera_model(camera_input.model)
 
         cur.execute(
             """
@@ -269,6 +279,205 @@ def create_camera_for_ui(camera_input, sync_stream_callback=None):
             sync_stream_callback(stream_key, rtsp_url)
 
         return new_camera
+
+
+def update_camera_for_ui(cam_id, updates, sync_stream_callback=None):
+    with db_cursor(commit=True) as cur:
+        cur.execute(
+            """
+            select
+              c.id,
+              c.stream_key,
+              c.ma_camera,
+              c.ten_camera,
+              c.hang_san_xuat,
+              c.model,
+              c.khu_vuc_id,
+              c.trang_thai_hien_tai,
+              host(knc.dia_chi_ip) as dia_chi_ip,
+              knc.cong_rtsp,
+              knc.duong_dan_rtsp,
+              knc.ten_dang_nhap,
+              knc.mat_khau_ma_hoa,
+              tsk.do_phan_giai,
+              tsk.fps,
+              tsk.bitrate_kbps,
+              tsk.codec,
+              ldc.vi_tri_lap_dat,
+              ldc.toa_nha,
+              ldc.tang,
+              ldc.vi_do,
+              ldc.kinh_do
+            from camera c
+            left join ket_noi_camera knc on knc.camera_id = c.id
+            left join thong_so_ky_thuat_camera tsk on tsk.camera_id = c.id
+            left join lap_dat_camera ldc on ldc.camera_id = c.id
+            where c.deleted_at is null
+              and (c.stream_key = %s or c.ma_camera = %s)
+            limit 1
+            """,
+            (cam_id, cam_id),
+        )
+        camera = cur.fetchone()
+        if not camera:
+            return None
+
+        camera_id = camera["id"]
+        stream_key = camera["stream_key"]
+        old_value = {
+            "stream_key": stream_key,
+            "name": camera.get("ten_camera"),
+            "ip": camera.get("dia_chi_ip"),
+            "model": " ".join(
+                part for part in [camera.get("hang_san_xuat"), camera.get("model")] if part
+            ),
+            "zone": camera.get("toa_nha"),
+            "loc": camera.get("vi_tri_lap_dat"),
+            "user": camera.get("ten_dang_nhap"),
+            "rtsp_url": camera.get("duong_dan_rtsp"),
+            "resolution": camera.get("do_phan_giai"),
+            "fps": camera.get("fps"),
+            "bitrate": camera.get("bitrate_kbps"),
+            "codec": camera.get("codec"),
+            "lat": camera.get("vi_do"),
+            "lng": camera.get("kinh_do"),
+        }
+
+        area_id = camera["khu_vuc_id"]
+        if "zone" in updates:
+            area_id = _find_area_id(cur, updates.get("zone")) or area_id
+
+        camera_sets = []
+        camera_params = []
+        if "name" in updates:
+            camera_sets.append("ten_camera = %s")
+            camera_params.append(updates.get("name"))
+        if "model" in updates:
+            manufacturer, model = _split_camera_model(updates.get("model"))
+            camera_sets.extend(["hang_san_xuat = %s", "model = %s"])
+            camera_params.extend([manufacturer, model])
+        if "zone" in updates:
+            camera_sets.append("khu_vuc_id = %s")
+            camera_params.append(area_id)
+        if camera_sets:
+            camera_sets.append("updated_at = now()")
+            cur.execute(
+                f"update camera set {', '.join(camera_sets)} where id = %s",
+                camera_params + [camera_id],
+            )
+
+        ip = updates.get("ip", camera.get("dia_chi_ip"))
+        user = updates.get("user", camera.get("ten_dang_nhap"))
+        password = updates.get("password", camera.get("mat_khau_ma_hoa"))
+        rtsp_changed = any(key in updates for key in ("ip", "user", "password"))
+        rtsp_url = camera.get("duong_dan_rtsp")
+        if rtsp_changed:
+            port = camera.get("cong_rtsp") or 2004
+            rtsp_url = f"rtsp://{user}:{password}@{ip}:{port}/Streaming/Channels/102"
+
+        connection_sets = []
+        connection_params = []
+        if "ip" in updates:
+            connection_sets.append("dia_chi_ip = %s::inet")
+            connection_params.append(ip)
+        if "user" in updates:
+            connection_sets.append("ten_dang_nhap = %s")
+            connection_params.append(user)
+        if "password" in updates:
+            connection_sets.append("mat_khau_ma_hoa = %s")
+            connection_params.append(password)
+        if rtsp_changed:
+            connection_sets.append("duong_dan_rtsp = %s")
+            connection_params.append(rtsp_url)
+        if connection_sets:
+            connection_sets.append("updated_at = now()")
+            cur.execute(
+                f"update ket_noi_camera set {', '.join(connection_sets)} where camera_id = %s",
+                connection_params + [camera_id],
+            )
+
+        tech_sets = []
+        tech_params = []
+        if "resolution" in updates:
+            tech_sets.append("do_phan_giai = %s")
+            tech_params.append(updates.get("resolution"))
+        if "fps" in updates:
+            tech_sets.append("fps = %s")
+            tech_params.append(updates.get("fps"))
+        if "bitrate" in updates:
+            tech_sets.append("bitrate_kbps = %s")
+            tech_params.append(updates.get("bitrate"))
+        if "codec" in updates:
+            tech_sets.append("codec = %s")
+            tech_params.append(updates.get("codec"))
+        if tech_sets:
+            tech_sets.append("updated_at = now()")
+            cur.execute(
+                f"update thong_so_ky_thuat_camera set {', '.join(tech_sets)} where camera_id = %s",
+                tech_params + [camera_id],
+            )
+
+        location_sets = []
+        location_params = []
+        if "zone" in updates:
+            location_sets.extend(["khu_vuc_id = %s", "toa_nha = %s"])
+            location_params.extend([area_id, updates.get("zone")])
+        if "loc" in updates:
+            location_sets.append("vi_tri_lap_dat = %s")
+            location_params.append(updates.get("loc"))
+        if "lat" in updates:
+            location_sets.append("vi_do = %s")
+            location_params.append(updates.get("lat"))
+        if "lng" in updates:
+            location_sets.append("kinh_do = %s")
+            location_params.append(updates.get("lng"))
+        if location_sets:
+            location_sets.append("updated_at = now()")
+            cur.execute(
+                f"update lap_dat_camera set {', '.join(location_sets)} where camera_id = %s",
+                location_params + [camera_id],
+            )
+            if cur.rowcount == 0:
+                cur.execute(
+                    """
+                    insert into lap_dat_camera (
+                      camera_id, khu_vuc_id, vi_tri_lap_dat, toa_nha, vi_do, kinh_do
+                    ) values (%s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        camera_id,
+                        area_id,
+                        updates.get("loc"),
+                        updates.get("zone"),
+                        updates.get("lat"),
+                        updates.get("lng"),
+                    ),
+                )
+
+        if rtsp_changed and sync_stream_callback:
+            sync_stream_callback(stream_key, rtsp_url)
+
+        cur.execute(
+            """
+            insert into nhat_ky_camera (camera_id, hanh_dong, noi_dung, muc_do)
+            values (%s, 'UPDATE', %s, 'INFO')
+            """,
+            (camera_id, f"Cap nhat camera {stream_key} tu API"),
+        )
+        cur.execute(
+            """
+            insert into nhat_ky_he_thong (
+              hanh_dong, ten_bang, ban_ghi_id, gia_tri_cu, gia_tri_moi
+            ) values ('UPDATE', 'camera', %s, %s::jsonb, %s::jsonb)
+            """,
+            (
+                str(camera_id),
+                psycopg2.extras.Json(old_value, dumps=lambda obj: json.dumps(obj, default=str)),
+                psycopg2.extras.Json(updates, dumps=lambda obj: json.dumps(obj, default=str)),
+            ),
+        )
+
+    return next((cam for cam in list_cameras_for_ui() if cam["id"] == stream_key), None)
 
 
 def update_camera_location_for_ui(cam_id, lat, lng):
