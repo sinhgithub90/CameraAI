@@ -1,4 +1,5 @@
 import os
+import re
 from contextlib import contextmanager
 
 import psycopg2
@@ -100,6 +101,174 @@ def list_cameras_for_ui():
             camera["lng"] = float(row["kinh_do"])
         cameras.append(camera)
     return cameras
+
+
+def _next_camera_stream_key(cur):
+    cur.execute(
+        """
+        select stream_key
+        from camera
+        where stream_key ~ '^cam_huyen_[0-9]+$'
+        """
+    )
+    max_number = 0
+    for row in cur.fetchall():
+        match = re.search(r"(\d+)$", row["stream_key"] or "")
+        if match:
+            max_number = max(max_number, int(match.group(1)))
+    return f"cam_huyen_{max_number + 1:02d}"
+
+
+def _find_area_id(cur, zone):
+    if not zone:
+        return None
+    cur.execute(
+        """
+        select id
+        from khu_vuc
+        where deleted_at is null
+          and (
+            lower(ten_khu_vuc) = lower(%s)
+            or lower(ma_khu_vuc) = lower(%s)
+          )
+        order by id
+        limit 1
+        """,
+        (zone, zone),
+    )
+    row = cur.fetchone()
+    return row["id"] if row else None
+
+
+def create_camera_for_ui(camera_input, sync_stream_callback=None):
+    with db_cursor(commit=True) as cur:
+        stream_key = _next_camera_stream_key(cur)
+        area_id = _find_area_id(cur, camera_input.zone)
+        rtsp_url = (
+            f"rtsp://{camera_input.user}:{camera_input.password}"
+            f"@{camera_input.ip}:2004/Streaming/Channels/102"
+        )
+        model_text = camera_input.model.strip()
+        manufacturer, model = (model_text.split(" ", 1) + [""])[:2] if " " in model_text else (model_text, model_text)
+
+        cur.execute(
+            """
+            select coalesce(max(thu_tu_hien_thi), 0) + 1 as next_index
+            from camera
+            where deleted_at is null
+            """
+        )
+        next_index = cur.fetchone()["next_index"] or 1
+
+        cur.execute(
+            """
+            insert into camera (
+              khu_vuc_id, ma_camera, ten_camera, hang_san_xuat, model,
+              loai_nguon, stream_key, thu_tu_hien_thi, trang_thai_hien_tai,
+              bat_ai, bat_ghi_hinh
+            ) values (%s, %s, %s, %s, %s, 'RTSP', %s, %s, 'UNKNOWN', false, true)
+            returning id
+            """,
+            (
+                area_id,
+                stream_key,
+                camera_input.name,
+                manufacturer,
+                model,
+                stream_key,
+                next_index,
+            ),
+        )
+        camera_db_id = cur.fetchone()["id"]
+
+        cur.execute(
+            """
+            insert into ket_noi_camera (
+              camera_id, dia_chi_ip, cong_rtsp, duong_dan_rtsp,
+              ten_dang_nhap, mat_khau_ma_hoa, rtsp_transport,
+              go2rtc_stream_name, trang_thai_ket_noi
+            ) values (%s, %s::inet, 2004, %s, %s, %s, 'tcp', %s, 'UNKNOWN')
+            """,
+            (
+                camera_db_id,
+                camera_input.ip,
+                rtsp_url,
+                camera_input.user,
+                camera_input.password,
+                stream_key,
+            ),
+        )
+
+        cur.execute(
+            """
+            insert into thong_so_ky_thuat_camera (
+              camera_id, do_phan_giai, fps, bitrate_kbps, codec
+            ) values (%s, '1920x1080', 25, 4096, 'H264')
+            """,
+            (camera_db_id,),
+        )
+
+        cur.execute(
+            """
+            insert into lap_dat_camera (
+              camera_id, khu_vuc_id, vi_tri_lap_dat, toa_nha
+            ) values (%s, %s, %s, %s)
+            """,
+            (camera_db_id, area_id, camera_input.loc, camera_input.zone),
+        )
+
+        cur.execute(
+            """
+            insert into nhat_ky_camera (camera_id, hanh_dong, noi_dung, muc_do)
+            values (%s, 'CREATE', %s, 'INFO')
+            """,
+            (camera_db_id, f"Tao camera {camera_input.name} tu API"),
+        )
+
+        cur.execute(
+            """
+            insert into nhat_ky_he_thong (
+              hanh_dong, ten_bang, ban_ghi_id, gia_tri_moi
+            ) values ('CREATE', 'camera', %s, %s::jsonb)
+            """,
+            (
+                str(camera_db_id),
+                psycopg2.extras.Json(
+                    {
+                        "id": stream_key,
+                        "name": camera_input.name,
+                        "ip": camera_input.ip,
+                        "model": camera_input.model,
+                        "zone": camera_input.zone,
+                        "loc": camera_input.loc,
+                    }
+                ),
+            ),
+        )
+
+        new_camera = {
+            "id": stream_key,
+            "db_id": camera_db_id,
+            "index": next_index,
+            "name": camera_input.name,
+            "ip": camera_input.ip,
+            "model": camera_input.model,
+            "zone": camera_input.zone,
+            "loc": camera_input.loc,
+            "type": "video",
+            "src": f"{GO2RTC_BASE_URL}/stream.html?src={stream_key}&mode=webrtc",
+            "tag": "Live",
+            "status": "offline",
+            "resolution": "1920x1080",
+            "fps": 25,
+            "bitrate": 4096,
+            "codec": "H264",
+        }
+
+        if sync_stream_callback:
+            sync_stream_callback(stream_key, rtsp_url)
+
+        return new_camera
 
 
 def upsert_recording_segment(camera, file_path, start_time, end_time, duration_seconds, file_size):

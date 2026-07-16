@@ -14,7 +14,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 
-from db import list_cameras_for_ui
+from db import create_camera_for_ui, list_cameras_for_ui
 
 app = FastAPI(title="VMS Central API Gateway", version="1.0")
 
@@ -130,6 +130,17 @@ def save_users(users):
     with open(USERS_JSON_PATH, "w", encoding="utf-8") as f:
         json.dump(users, f, ensure_ascii=False, indent=2)
 
+def sync_go2rtc_stream(stream_key, rtsp_url):
+    config_data = {}
+    if os.path.exists(GO2RTC_YAML_PATH):
+        with open(GO2RTC_YAML_PATH, "r", encoding="utf-8") as f:
+            config_data = yaml.safe_load(f) or {}
+    if "streams" not in config_data or not isinstance(config_data["streams"], dict):
+        config_data["streams"] = {}
+    config_data["streams"][stream_key] = rtsp_url
+    with open(GO2RTC_YAML_PATH, "w", encoding="utf-8") as f:
+        yaml.dump(config_data, f, allow_unicode=True, default_flow_style=False)
+
 def restart_go2rtc_process():
     try:
         if platform.system() == "Windows":
@@ -215,30 +226,14 @@ class CameraAddInput(BaseModel):
 
 @app.post("/api/vms/camera/add")
 def add_camera_and_sync_media(cam: CameraAddInput):
-    cameras = load_ui_cameras()
-    next_idx = len(cameras) + 1
-    cam_id = f"cam_huyen_{next_idx:02d}"
-    generated_rtsp = f"rtsp://{cam.user}:{cam.password}@{cam.ip}:2004/Streaming/Channels/102"
-    
     try:
-        config_data = {}
-        if os.path.exists(GO2RTC_YAML_PATH):
-            with open(GO2RTC_YAML_PATH, 'r', encoding='utf-8') as f:
-                config_data = yaml.safe_load(f) or {}
-        if 'streams' not in config_data: config_data['streams'] = {}
-        config_data['streams'][cam_id] = generated_rtsp
-        with open(GO2RTC_YAML_PATH, 'w', encoding='utf-8') as f:
-            yaml.dump(config_data, f, allow_unicode=True, default_flow_style=False)
+        new_cam_obj = create_camera_for_ui(cam, sync_go2rtc_stream)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Lỗi ghi cấu hình: {str(e)}")
-        
-    new_cam_obj = {
-        "id": cam_id, "index": next_idx, "name": cam.name, "ip": cam.ip, "model": cam.model,
-        "zone": cam.zone, "loc": cam.loc, "type": "video",
-        "src": f"http://127.0.0.1:1984/stream.html?src={cam_id}&mode=webrtc", "tag": "Live", "status": "online"
-    }
-    cameras.append(new_cam_obj)
-    save_ui_cameras(cameras)
+        print(f"PostgreSQL camera create error: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Khong the tao camera trong PostgreSQL hoac dong bo go2rtc: {str(e)}",
+        )
     restart_go2rtc_process()
     return {"status": "success", "camera": new_cam_obj}
 
