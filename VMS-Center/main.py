@@ -384,12 +384,14 @@ def start_go2rtc_proxy_sync():
             return False
 
     def background_sync():
+        from db import db_cursor
+
         time.sleep(5)
         fail_counter = {}
 
         while True:
             try:
-                cameras = load_ui_cameras()
+                cameras = list_cameras_for_ui()
                 video_cams = [c for c in cameras if c.get("type") == "video"]
                 rtsp_targets = get_rtsp_targets()  # đọc lại mỗi vòng để nhận camera mới thêm
 
@@ -404,24 +406,32 @@ def start_go2rtc_proxy_sync():
                     results = list(pool.map(probe, video_cams))
                 online_map = dict(results)
 
-                is_changed = False
+                status_updates = []
                 for cam in video_cams:
                     cam_id = cam["id"]
                     is_online = online_map.get(cam_id, False)
 
                     if is_online:
                         fail_counter[cam_id] = 0
-                        if cam.get("status") != "online":
-                            cam["status"] = "online"
-                            is_changed = True
+                        status_updates.append(("ONLINE", cam_id))
                     else:
                         fail_counter[cam_id] = fail_counter.get(cam_id, 0) + 1
-                        if fail_counter[cam_id] >= FAIL_THRESHOLD and cam.get("status") != "offline":
-                            cam["status"] = "offline"
-                            is_changed = True
+                        if fail_counter[cam_id] >= FAIL_THRESHOLD:
+                            status_updates.append(("OFFLINE", cam_id))
 
-                if is_changed:
-                    save_ui_cameras(cameras)
+                if status_updates:
+                    with db_cursor(commit=True) as cur:
+                        for status_value, stream_key in status_updates:
+                            cur.execute(
+                                """
+                                update camera
+                                set trang_thai_hien_tai = %s
+                                where stream_key = %s
+                                  and deleted_at is null
+                                  and trang_thai_hien_tai is distinct from %s
+                                """,
+                                (status_value, stream_key, status_value),
+                            )
             except Exception as e:
                 print(f"Lỗi health check: {e}")
             time.sleep(POLL_INTERVAL)
