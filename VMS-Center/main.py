@@ -20,7 +20,10 @@ from db import (
     create_user_for_ui,
     list_cameras_for_ui,
     list_users_for_ui,
+    reset_user_password_for_ui,
     soft_delete_camera_for_ui,
+    soft_delete_user_for_ui,
+    toggle_user_lock_for_ui,
     update_camera_for_ui,
     update_camera_location_for_ui,
     update_user_for_ui,
@@ -375,33 +378,28 @@ def update_user_profile(username: str, data: UserUpdateInput, admin_user: str = 
 
 @app.post("/api/vms/user/{username}/reset-password")
 def reset_password(username: str, admin_user: str = Depends(verify_admin_role)):
-    users = load_users()
-    for u in users:
-        if u["username"] == username:
-            u["password"] = "123456abc"
-            save_users(users)
-            return {"status": "success", "new_password": u["password"]}
-    raise HTTPException(status_code=404, detail="Không tìm thấy người dùng")
+    new_password = "123456abc"
+    result = reset_user_password_for_ui(username, new_password, admin_user)
+    if result.get("status") == "not_found":
+        raise HTTPException(status_code=404, detail="Không tìm thấy người dùng")
+    return {"status": "success", "new_password": new_password}
 
 @app.post("/api/vms/user/{username}/toggle-lock")
 def toggle_lock_user(username: str, admin_user: str = Depends(verify_admin_role)):
-    if username == "admin":
+    result = toggle_user_lock_for_ui(username, admin_user)
+    if result.get("status") == "last_admin":
         raise HTTPException(status_code=400, detail="Không được phép khóa tài khoản Admin tối cao!")
-    users = load_users()
-    for u in users:
-        if u["username"] == username:
-            u["status"] = "Tạm khóa" if u["status"] == "Hoạt động" else "Hoạt động"
-            save_users(users)
-            return {"status": "success", "new_status": u["status"]}
-    raise HTTPException(status_code=404, detail="Không tìm thấy người dùng")
+    if result.get("status") == "not_found":
+        raise HTTPException(status_code=404, detail="Không tìm thấy người dùng")
+    return {"status": "success", "new_status": result["new_status"]}
 
-@app.delete("/api/vms/user/{username}", dependencies=[Depends(verify_admin_role)])
-def delete_user(username: str):
-    if username == "admin":
+@app.delete("/api/vms/user/{username}")
+def delete_user(username: str, admin_user: str = Depends(verify_admin_role)):
+    result = soft_delete_user_for_ui(username, admin_user)
+    if result.get("status") == "last_admin":
         raise HTTPException(status_code=400, detail="Không được phép xóa tài khoản Admin tối cao!")
-    users = load_users()
-    filtered_users = [u for u in users if u["username"] != username]
-    save_users(filtered_users)
+    if result.get("status") == "not_found":
+        raise HTTPException(status_code=404, detail="Không tìm thấy người dùng")
     return {"status": "success"}
 
 # 🌟 LUỒNG QUYÉT NGẦM TRUNG GIAN (PROXY HEALTH CHECK)

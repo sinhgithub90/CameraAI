@@ -469,6 +469,257 @@ def update_user_for_ui(username, data):
     return {"status": "success"}
 
 
+def _get_user_for_admin_action(cur, username):
+    cur.execute(
+        """
+        select
+          nd.id,
+          nd.ten_dang_nhap,
+          nd.ho_ten,
+          nd.trang_thai,
+          nd.deleted_at,
+          bool_or(vt.ma_vai_tro = 'ADMIN') as is_admin
+        from nguoi_dung nd
+        left join vai_tro_nguoi_dung vtnd
+          on vtnd.nguoi_dung_id = nd.id
+         and vtnd.dang_hoat_dong = true
+         and (vtnd.ngay_ket_thuc is null or vtnd.ngay_ket_thuc > now())
+        left join vai_tro vt
+          on vt.id = vtnd.vai_tro_id
+         and vt.deleted_at is null
+         and vt.trang_thai = 'ACTIVE'
+        where nd.deleted_at is null
+          and nd.ten_dang_nhap = %s
+        group by nd.id
+        limit 1
+        """,
+        (username,),
+    )
+    return cur.fetchone()
+
+
+def _active_admin_count(cur):
+    cur.execute(
+        """
+        select count(*) as total
+        from nguoi_dung nd
+        join vai_tro_nguoi_dung vtnd
+          on vtnd.nguoi_dung_id = nd.id
+         and vtnd.dang_hoat_dong = true
+         and (vtnd.ngay_ket_thuc is null or vtnd.ngay_ket_thuc > now())
+        join vai_tro vt
+          on vt.id = vtnd.vai_tro_id
+         and vt.ma_vai_tro = 'ADMIN'
+         and vt.trang_thai = 'ACTIVE'
+         and vt.deleted_at is null
+        where nd.deleted_at is null
+          and nd.trang_thai = 'ACTIVE'
+        """
+    )
+    return cur.fetchone()["total"]
+
+
+def _admin_actor_id(cur, admin_username):
+    if not admin_username:
+        return None
+    cur.execute(
+        """
+        select id
+        from nguoi_dung
+        where deleted_at is null
+          and ten_dang_nhap = %s
+        limit 1
+        """,
+        (admin_username,),
+    )
+    row = cur.fetchone()
+    return row["id"] if row else None
+
+
+def reset_user_password_for_ui(username, new_password, admin_username=None):
+    with db_cursor(commit=True) as cur:
+        user = _get_user_for_admin_action(cur, username)
+        if not user:
+            return {"status": "not_found"}
+
+        actor_id = _admin_actor_id(cur, admin_username)
+        cur.execute(
+            """
+            select password_hash
+            from xac_thuc_nguoi_dung
+            where nguoi_dung_id = %s
+            limit 1
+            """,
+            (user["id"],),
+        )
+        auth = cur.fetchone()
+        if auth:
+            cur.execute(
+                """
+                insert into lich_su_mat_khau_nguoi_dung (
+                  nguoi_dung_id, password_hash, ly_do_thay_doi
+                )
+                values (%s, %s, 'ADMIN_RESET')
+                """,
+                (user["id"], auth["password_hash"]),
+            )
+
+        cur.execute(
+            """
+            update xac_thuc_nguoi_dung
+            set password_hash = crypt(%s, gen_salt('bf', 12)),
+                so_lan_dang_nhap_sai = 0,
+                khoa_den = null,
+                lan_doi_mat_khau_cuoi = now()
+            where nguoi_dung_id = %s
+            """,
+            (new_password, user["id"]),
+        )
+        if cur.rowcount == 0:
+            cur.execute(
+                """
+                insert into xac_thuc_nguoi_dung (
+                  nguoi_dung_id, password_hash, so_lan_dang_nhap_sai,
+                  khoa_den, lan_doi_mat_khau_cuoi
+                )
+                values (%s, crypt(%s, gen_salt('bf', 12)), 0, null, now())
+                """,
+                (user["id"], new_password),
+            )
+
+        cur.execute(
+            """
+            insert into nhat_ky_he_thong (
+              nguoi_dung_id, hanh_dong, ten_bang, ban_ghi_id, gia_tri_moi
+            )
+            values (%s, 'RESET_USER_PASSWORD', 'nguoi_dung', %s, %s::jsonb)
+            """,
+            (actor_id, str(user["id"]), json.dumps({"username": username})),
+        )
+
+    return {"status": "success"}
+
+
+def toggle_user_lock_for_ui(username, admin_username=None):
+    with db_cursor(commit=True) as cur:
+        user = _get_user_for_admin_action(cur, username)
+        if not user:
+            return {"status": "not_found"}
+        if user.get("is_admin") and user.get("trang_thai") == "ACTIVE" and _active_admin_count(cur) <= 1:
+            return {"status": "last_admin"}
+
+        new_status = "LOCKED" if user.get("trang_thai") == "ACTIVE" else "ACTIVE"
+        actor_id = _admin_actor_id(cur, admin_username)
+        cur.execute(
+            """
+            update nguoi_dung
+            set trang_thai = %s
+            where id = %s
+            """,
+            (new_status, user["id"]),
+        )
+        cur.execute(
+            """
+            update xac_thuc_nguoi_dung
+            set khoa_den = case when %s = 'LOCKED' then now() else null end
+            where nguoi_dung_id = %s
+            """,
+            (new_status, user["id"]),
+        )
+        cur.execute(
+            """
+            update phien_dang_nhap
+            set dang_hoat_dong = false,
+                het_han_luc = coalesce(het_han_luc, now())
+            where nguoi_dung_id = %s
+              and %s = 'LOCKED'
+              and dang_hoat_dong = true
+            """,
+            (user["id"], new_status),
+        )
+        cur.execute(
+            """
+            insert into nhat_ky_he_thong (
+              nguoi_dung_id, hanh_dong, ten_bang, ban_ghi_id, gia_tri_cu, gia_tri_moi
+            )
+            values (%s, 'TOGGLE_USER_LOCK', 'nguoi_dung', %s, %s::jsonb, %s::jsonb)
+            """,
+            (
+                actor_id,
+                str(user["id"]),
+                json.dumps({"trang_thai": user.get("trang_thai")}),
+                json.dumps({"trang_thai": new_status}),
+            ),
+        )
+
+    status_label = "Tạm khóa" if new_status == "LOCKED" else "Hoạt động"
+    return {"status": "success", "new_status": status_label}
+
+
+def soft_delete_user_for_ui(username, admin_username=None):
+    with db_cursor(commit=True) as cur:
+        user = _get_user_for_admin_action(cur, username)
+        if not user:
+            return {"status": "not_found"}
+        if user.get("is_admin") and user.get("trang_thai") == "ACTIVE" and _active_admin_count(cur) <= 1:
+            return {"status": "last_admin"}
+
+        actor_id = _admin_actor_id(cur, admin_username)
+        cur.execute(
+            """
+            update nguoi_dung
+            set trang_thai = 'DELETED',
+                deleted_at = now()
+            where id = %s
+            """,
+            (user["id"],),
+        )
+        cur.execute(
+            """
+            update xac_thuc_nguoi_dung
+            set khoa_den = now()
+            where nguoi_dung_id = %s
+            """,
+            (user["id"],),
+        )
+        cur.execute(
+            """
+            update phien_dang_nhap
+            set dang_hoat_dong = false,
+                het_han_luc = coalesce(het_han_luc, now())
+            where nguoi_dung_id = %s
+              and dang_hoat_dong = true
+            """,
+            (user["id"],),
+        )
+        cur.execute(
+            """
+            update vai_tro_nguoi_dung
+            set dang_hoat_dong = false,
+                ngay_ket_thuc = coalesce(ngay_ket_thuc, now())
+            where nguoi_dung_id = %s
+              and dang_hoat_dong = true
+            """,
+            (user["id"],),
+        )
+        cur.execute(
+            """
+            insert into nhat_ky_he_thong (
+              nguoi_dung_id, hanh_dong, ten_bang, ban_ghi_id, gia_tri_cu, gia_tri_moi
+            )
+            values (%s, 'SOFT_DELETE_USER', 'nguoi_dung', %s, %s::jsonb, %s::jsonb)
+            """,
+            (
+                actor_id,
+                str(user["id"]),
+                json.dumps({"trang_thai": user.get("trang_thai"), "deleted_at": None}),
+                json.dumps({"trang_thai": "DELETED", "deleted_at": "now"}),
+            ),
+        )
+
+    return {"status": "success"}
+
+
 def authenticate_user_for_ui(username, password):
     role_label_map = {
         "ADMIN": "Quản trị viên",
