@@ -23,6 +23,7 @@ from db import (
     soft_delete_camera_for_ui,
     update_camera_for_ui,
     update_camera_location_for_ui,
+    update_user_for_ui,
     verify_admin_user_from_db,
 )
 
@@ -352,18 +353,25 @@ def add_new_user(user: UserAddInput, admin_user: str = Depends(verify_admin_role
     return {"status": "success"}
 
 class UserUpdateInput(BaseModel):
-    name: str; role: str; unit: str; email: str; phone: str; permissions: list
+    name: Optional[str] = None
+    role: Optional[str] = None
+    unit: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    permissions: Optional[list] = None
 
 @app.put("/api/vms/user/{username}")
 def update_user_profile(username: str, data: UserUpdateInput, admin_user: str = Depends(verify_admin_role)):
-    users = load_users()
-    for u in users:
-        if u["username"] == username:
-            u["name"] = data.name; u["role"] = data.role; u["unit"] = data.unit
-            u["email"] = data.email; u["phone"] = data.phone; u["permissions"] = data.permissions
-            save_users(users)
-            return {"status": "success"}
-    raise HTTPException(status_code=404, detail="Không tìm thấy người dùng")
+    result = update_user_for_ui(username, data)
+    if result.get("status") == "not_found":
+        raise HTTPException(status_code=404, detail="Không tìm thấy người dùng")
+    if result.get("status") == "duplicate_email":
+        raise HTTPException(status_code=400, detail="Email đã tồn tại!")
+    if result.get("status") == "role_not_found":
+        raise HTTPException(status_code=400, detail="Vai trò người dùng không hợp lệ!")
+    if result.get("status") == "invalid_name":
+        raise HTTPException(status_code=400, detail="Họ tên không hợp lệ!")
+    return {"status": "success"}
 
 @app.post("/api/vms/user/{username}/reset-password")
 def reset_password(username: str, admin_user: str = Depends(verify_admin_role)):

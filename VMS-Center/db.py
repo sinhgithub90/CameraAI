@@ -127,10 +127,13 @@ def list_users_for_ui():
               nd.email,
               nd.so_dien_thoai,
               nd.trang_thai,
+              hsn.phong_ban,
               vt.ma_vai_tro,
               vt.ten_vai_tro,
               array_remove(array_agg(distinct q.ma_quyen order by q.ma_quyen), null) as permissions
             from nguoi_dung nd
+            left join ho_so_nguoi_dung hsn
+              on hsn.nguoi_dung_id = nd.id
             left join vai_tro_nguoi_dung vtnd
               on vtnd.nguoi_dung_id = nd.id
              and vtnd.dang_hoat_dong = true
@@ -146,7 +149,7 @@ def list_users_for_ui():
               on q.id = vtq.quyen_id
              and q.trang_thai = 'ACTIVE'
             where nd.deleted_at is null
-            group by nd.id, vt.id
+            group by nd.id, hsn.id, vt.id
             order by nd.id
             """
         )
@@ -161,7 +164,7 @@ def list_users_for_ui():
                 "username": row.get("ten_dang_nhap"),
                 "name": row.get("ho_ten"),
                 "role": role_label_map.get(role_code, row.get("ten_vai_tro") or role_code or "Nhân viên"),
-                "unit": "",
+                "unit": row.get("phong_ban") or "",
                 "email": row.get("email") or "",
                 "status": status_label_map.get(status_code, "Tạm khóa"),
                 "phone": row.get("so_dien_thoai") or "",
@@ -300,6 +303,168 @@ def create_user_for_ui(user):
             """,
             (user_id, role["id"]),
         )
+
+    return {"status": "success"}
+
+
+def _sent_fields(data):
+    return set(
+        getattr(data, "model_fields_set", None)
+        or getattr(data, "__fields_set__", set())
+    )
+
+
+def _role_code_from_permissions(cur, permissions):
+    requested = sorted(set(permissions or []))
+    if not requested:
+        return None
+
+    cur.execute(
+        """
+        select
+          vt.ma_vai_tro,
+          array_remove(array_agg(distinct q.ma_quyen order by q.ma_quyen), null) as permissions
+        from vai_tro vt
+        left join vai_tro_quyen vtq
+          on vtq.vai_tro_id = vt.id
+         and vtq.duoc_phep = true
+        left join quyen q
+          on q.id = vtq.quyen_id
+         and q.trang_thai = 'ACTIVE'
+        where vt.deleted_at is null
+          and vt.trang_thai = 'ACTIVE'
+        group by vt.id
+        """
+    )
+    best_role = None
+    best_extra_count = None
+    requested_set = set(requested)
+    for row in cur.fetchall():
+        role_permissions = set(row.get("permissions") or [])
+        if requested_set == role_permissions:
+            return row.get("ma_vai_tro")
+        if requested_set.issubset(role_permissions):
+            extra_count = len(role_permissions - requested_set)
+            if best_extra_count is None or extra_count < best_extra_count:
+                best_role = row.get("ma_vai_tro")
+                best_extra_count = extra_count
+    return best_role
+
+
+def update_user_for_ui(username, data):
+    sent_fields = _sent_fields(data)
+    username = (username or "").strip()
+    if not username:
+        return {"status": "not_found"}
+
+    with db_cursor(commit=True) as cur:
+        cur.execute(
+            """
+            select id
+            from nguoi_dung
+            where deleted_at is null
+              and ten_dang_nhap = %s
+            limit 1
+            """,
+            (username,),
+        )
+        user_row = cur.fetchone()
+        if not user_row:
+            return {"status": "not_found"}
+        user_id = user_row["id"]
+
+        if "email" in sent_fields:
+            email = (data.email or "").strip() or None
+            if email:
+                cur.execute(
+                    """
+                    select 1
+                    from nguoi_dung
+                    where deleted_at is null
+                      and lower(email) = lower(%s)
+                      and id <> %s
+                    limit 1
+                    """,
+                    (email, user_id),
+                )
+                if cur.fetchone():
+                    return {"status": "duplicate_email"}
+
+        user_updates = []
+        user_params = []
+        if "name" in sent_fields:
+            name = (data.name or "").strip()
+            if not name:
+                return {"status": "invalid_name"}
+            user_updates.append("ho_ten = %s")
+            user_params.append(name)
+        if "email" in sent_fields:
+            user_updates.append("email = %s")
+            user_params.append((data.email or "").strip() or None)
+        if "phone" in sent_fields:
+            user_updates.append("so_dien_thoai = %s")
+            user_params.append((data.phone or "").strip() or None)
+        if user_updates:
+            user_params.append(user_id)
+            cur.execute(
+                f"""
+                update nguoi_dung
+                set {", ".join(user_updates)}
+                where id = %s
+                """,
+                tuple(user_params),
+            )
+
+        if "unit" in sent_fields:
+            cur.execute(
+                """
+                insert into ho_so_nguoi_dung (nguoi_dung_id, phong_ban)
+                values (%s, %s)
+                on conflict (nguoi_dung_id)
+                do update set phong_ban = excluded.phong_ban
+                """,
+                (user_id, (data.unit or "").strip() or None),
+            )
+
+        role_code = None
+        if "role" in sent_fields:
+            role_code = _role_code_from_ui(data.role)
+        elif "permissions" in sent_fields:
+            role_code = _role_code_from_permissions(cur, data.permissions)
+
+        if role_code:
+            cur.execute(
+                """
+                select id
+                from vai_tro
+                where ma_vai_tro = %s
+                  and trang_thai = 'ACTIVE'
+                  and deleted_at is null
+                limit 1
+                """,
+                (role_code,),
+            )
+            role = cur.fetchone()
+            if not role:
+                return {"status": "role_not_found"}
+
+            cur.execute(
+                """
+                update vai_tro_nguoi_dung
+                set dang_hoat_dong = false,
+                    ngay_ket_thuc = now()
+                where nguoi_dung_id = %s
+                  and dang_hoat_dong = true
+                """,
+                (user_id,),
+            )
+            cur.execute(
+                """
+                insert into vai_tro_nguoi_dung (nguoi_dung_id, vai_tro_id)
+                values (%s, %s)
+                """,
+                (user_id, role["id"]),
+            )
 
     return {"status": "success"}
 
