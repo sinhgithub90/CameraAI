@@ -1,6 +1,7 @@
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
 import jwt
@@ -20,6 +21,7 @@ from db import (
     create_user_for_ui,
     export_backup_from_db,
     get_user_by_email_for_ui,
+    get_recording_file_path,
     list_cameras_for_ui,
     list_users_for_ui,
     reset_user_password_for_ui,
@@ -30,6 +32,7 @@ from db import (
     update_camera_location_for_ui,
     update_user_for_ui,
     restore_backup_to_db,
+    search_recording_segments,
     verify_admin_user_from_db,
 )
 
@@ -456,6 +459,126 @@ def start_go2rtc_proxy_sync():
     t.start()
 
 start_go2rtc_proxy_sync()
+
+
+def _parse_range_header(range_header, file_size):
+    if not range_header:
+        return None
+    unit, _, range_value = range_header.partition("=")
+    if unit.strip().lower() != "bytes" or "-" not in range_value:
+        return None
+
+    start_text, end_text = range_value.split("-", 1)
+    try:
+        if start_text == "":
+            suffix_length = int(end_text)
+            if suffix_length <= 0:
+                return None
+            start = max(file_size - suffix_length, 0)
+            end = file_size - 1
+        else:
+            start = int(start_text)
+            end = int(end_text) if end_text else file_size - 1
+    except ValueError:
+        return None
+
+    if start < 0 or start >= file_size or end < start:
+        return None
+    return start, min(end, file_size - 1)
+
+
+def _iter_file_range(file_path, start, end, chunk_size=1024 * 1024):
+    with open(file_path, "rb") as video_file:
+        video_file.seek(start)
+        remaining = end - start + 1
+        while remaining > 0:
+            chunk = video_file.read(min(chunk_size, remaining))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+            yield chunk
+
+
+@app.get("/api/playback/search")
+def search_playback(
+    camera_id: Optional[str] = None,
+    from_time: Optional[str] = None,
+    to_time: Optional[str] = None,
+    zone: Optional[str] = None,
+    loc: Optional[str] = None,
+):
+    try:
+        segments = search_recording_segments(
+            camera_id=camera_id,
+            zone=zone,
+            loc=loc,
+            from_time=from_time,
+            to_time=to_time,
+        )
+    except Exception as exc:
+        print(f"PostgreSQL playback search error: {exc}")
+        raise HTTPException(status_code=500, detail=f"Khong the truy van video phat lai: {str(exc)}")
+
+    gaps = []
+    previous_by_camera = {}
+    for segment in segments:
+        previous = previous_by_camera.get(segment["camera_id"])
+        if previous:
+            previous_end = datetime.fromisoformat(previous["end_time"])
+            current_start = datetime.fromisoformat(segment["start_time"])
+            gap_seconds = int((current_start - previous_end).total_seconds())
+            if gap_seconds > 10:
+                gaps.append(
+                    {
+                        "camera_id": segment["camera_id"],
+                        "from_time": previous["end_time"],
+                        "to_time": segment["start_time"],
+                        "gap_seconds": gap_seconds,
+                    }
+                )
+        previous_by_camera[segment["camera_id"]] = segment
+
+    return {"segments": segments, "gaps": gaps, "count": len(segments)}
+
+
+@app.get("/api/playback/file/{segment_id}")
+def stream_playback_file(segment_id: int, request: Request):
+    file_path = get_recording_file_path(segment_id)
+    if not file_path or not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Không tìm thấy file video phát lại")
+
+    file_size = os.path.getsize(file_path)
+    if file_size <= 0:
+        raise HTTPException(status_code=404, detail="File video phát lại không hợp lệ")
+
+    range_value = _parse_range_header(request.headers.get("range"), file_size)
+    if range_value:
+        start, end = range_value
+        headers = {
+            "Accept-Ranges": "bytes",
+            "Content-Range": f"bytes {start}-{end}/{file_size}",
+            "Content-Length": str(end - start + 1),
+            "Content-Disposition": f'inline; filename="{os.path.basename(file_path)}"',
+        }
+        return StreamingResponse(
+            _iter_file_range(file_path, start, end),
+            status_code=206,
+            media_type="video/mp4",
+            headers=headers,
+        )
+
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(file_size),
+        "Content-Disposition": f'inline; filename="{os.path.basename(file_path)}"',
+    }
+    return StreamingResponse(
+        _iter_file_range(file_path, 0, file_size - 1),
+        media_type="video/mp4",
+        headers=headers,
+    )
+
+
 @app.get("/api/vms/settings")
 def get_settings():
     return load_settings()

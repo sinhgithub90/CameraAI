@@ -1862,7 +1862,7 @@ def search_recording_segments(camera_id=None, zone=None, loc=None, from_time=Non
         left join khu_vuc kv on kv.id = c.khu_vuc_id
         left join lap_dat_camera ldc on ldc.camera_id = c.id
         where {' and '.join(where)}
-        order by dv.bat_dau_luc desc
+        order by dv.bat_dau_luc asc
         limit 200
     """
     with db_cursor() as cur:
