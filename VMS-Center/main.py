@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from db import (
     create_camera_for_ui,
     list_cameras_for_ui,
+    list_users_for_ui,
     soft_delete_camera_for_ui,
     update_camera_for_ui,
     update_camera_location_for_ui,
@@ -311,7 +312,17 @@ def update_camera_location(cam_id: str, data: CameraLocationInput, admin_user: s
 
 @app.get("/api/vms/users")
 def get_all_users():
-    return load_users()
+    try:
+        return list_users_for_ui()
+    except Exception as exc:
+        print(f"PostgreSQL user query error: {exc}")
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Khong the doc danh sach nguoi dung tu PostgreSQL. "
+                "Kiem tra DATABASE_URL, PostgreSQL server va schema multicamai."
+            ),
+        )
 
 class UserAddInput(BaseModel):
     username: str; name: str; role: str; unit: str; email: str; phone: str; password: str

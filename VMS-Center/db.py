@@ -104,6 +104,73 @@ def list_cameras_for_ui():
     return cameras
 
 
+def list_users_for_ui():
+    role_label_map = {
+        "ADMIN": "Quản trị viên",
+        "SUPERVISOR": "Giám sát",
+        "STAFF": "Nhân viên",
+    }
+    status_label_map = {
+        "ACTIVE": "Hoạt động",
+        "LOCKED": "Tạm khóa",
+        "INACTIVE": "Tạm khóa",
+        "DISABLED": "Tạm khóa",
+    }
+
+    with db_cursor() as cur:
+        cur.execute(
+            """
+            select
+              nd.id,
+              nd.ten_dang_nhap,
+              nd.ho_ten,
+              nd.email,
+              nd.so_dien_thoai,
+              nd.trang_thai,
+              vt.ma_vai_tro,
+              vt.ten_vai_tro,
+              array_remove(array_agg(distinct q.ma_quyen order by q.ma_quyen), null) as permissions
+            from nguoi_dung nd
+            left join vai_tro_nguoi_dung vtnd
+              on vtnd.nguoi_dung_id = nd.id
+             and vtnd.dang_hoat_dong = true
+             and (vtnd.ngay_ket_thuc is null or vtnd.ngay_ket_thuc > now())
+            left join vai_tro vt
+              on vt.id = vtnd.vai_tro_id
+             and vt.deleted_at is null
+             and vt.trang_thai = 'ACTIVE'
+            left join vai_tro_quyen vtq
+              on vtq.vai_tro_id = vt.id
+             and vtq.duoc_phep = true
+            left join quyen q
+              on q.id = vtq.quyen_id
+             and q.trang_thai = 'ACTIVE'
+            where nd.deleted_at is null
+            group by nd.id, vt.id
+            order by nd.id
+            """
+        )
+        rows = cur.fetchall()
+
+    users = []
+    for row in rows:
+        role_code = row.get("ma_vai_tro")
+        status_code = row.get("trang_thai")
+        users.append(
+            {
+                "username": row.get("ten_dang_nhap"),
+                "name": row.get("ho_ten"),
+                "role": role_label_map.get(role_code, row.get("ten_vai_tro") or role_code or "Nhân viên"),
+                "unit": "",
+                "email": row.get("email") or "",
+                "status": status_label_map.get(status_code, "Tạm khóa"),
+                "phone": row.get("so_dien_thoai") or "",
+                "permissions": row.get("permissions") or [],
+            }
+        )
+    return users
+
+
 def _next_camera_stream_key(cur):
     cur.execute(
         """
