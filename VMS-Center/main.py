@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from db import (
     authenticate_user_for_ui,
     create_camera_for_ui,
+    create_user_for_ui,
     list_cameras_for_ui,
     list_users_for_ui,
     soft_delete_camera_for_ui,
@@ -337,15 +338,17 @@ class UserAddInput(BaseModel):
 
 @app.post("/api/vms/user/add")
 def add_new_user(user: UserAddInput, admin_user: str = Depends(verify_admin_role)):
-    users = load_users()
-    if any(u["username"] == user.username for u in users):
+    result = create_user_for_ui(user)
+    if result.get("status") == "duplicate_username":
         raise HTTPException(status_code=400, detail="Tên đăng nhập đã tồn tại!")
-    new_user_obj = {
-        "username": user.username, "password": user.password, "name": user.name, "role": user.role,
-        "unit": user.unit, "email": user.email, "status": "Hoạt động", "phone": user.phone, "permissions": ["live"]
-    }
-    users.append(new_user_obj)
-    save_users(users)
+    if result.get("status") == "duplicate_email":
+        raise HTTPException(status_code=400, detail="Email đã tồn tại!")
+    if result.get("status") == "role_not_found":
+        raise HTTPException(status_code=400, detail="Vai trò người dùng không hợp lệ!")
+    if result.get("status") == "invalid_username":
+        raise HTTPException(status_code=400, detail="Tên đăng nhập không hợp lệ!")
+    if result.get("status") == "invalid_name":
+        raise HTTPException(status_code=400, detail="Họ tên không hợp lệ!")
     return {"status": "success"}
 
 class UserUpdateInput(BaseModel):

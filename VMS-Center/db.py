@@ -171,6 +171,139 @@ def list_users_for_ui():
     return users
 
 
+def _role_code_from_ui(role):
+    normalized = (role or "").strip().lower()
+    role_map = {
+        "admin": "ADMIN",
+        "administrator": "ADMIN",
+        "quan tri vien": "ADMIN",
+        "quản trị viên": "ADMIN",
+        "supervisor": "SUPERVISOR",
+        "giam sat": "SUPERVISOR",
+        "giám sát": "SUPERVISOR",
+        "staff": "STAFF",
+        "nhan vien": "STAFF",
+        "nhân viên": "STAFF",
+    }
+    upper_role = (role or "").strip().upper()
+    if upper_role in {"ADMIN", "SUPERVISOR", "STAFF"}:
+        return upper_role
+    return role_map.get(normalized, "STAFF")
+
+
+def _next_user_code(cur, username):
+    base = re.sub(r"[^A-Za-z0-9]+", "_", username or "").strip("_").upper() or "USER"
+    base = f"U_{base}"[:70]
+    candidate = base
+    suffix = 2
+    while True:
+        cur.execute(
+            "select 1 from nguoi_dung where ma_nguoi_dung = %s limit 1",
+            (candidate,),
+        )
+        if not cur.fetchone():
+            return candidate
+        candidate = f"{base[:70 - len(str(suffix)) - 1]}_{suffix}"
+        suffix += 1
+
+
+def create_user_for_ui(user):
+    username = (user.username or "").strip()
+    email = (user.email or "").strip() or None
+    name = (user.name or "").strip()
+    phone = (user.phone or "").strip() or None
+    unit = (user.unit or "").strip() or None
+    role_code = _role_code_from_ui(user.role)
+
+    if not username:
+        return {"status": "invalid_username"}
+    if not name:
+        return {"status": "invalid_name"}
+
+    with db_cursor(commit=True) as cur:
+        cur.execute(
+            """
+            select 1
+            from nguoi_dung
+            where deleted_at is null
+              and lower(ten_dang_nhap) = lower(%s)
+            limit 1
+            """,
+            (username,),
+        )
+        if cur.fetchone():
+            return {"status": "duplicate_username"}
+
+        if email:
+            cur.execute(
+                """
+                select 1
+                from nguoi_dung
+                where deleted_at is null
+                  and lower(email) = lower(%s)
+                limit 1
+                """,
+                (email,),
+            )
+            if cur.fetchone():
+                return {"status": "duplicate_email"}
+
+        cur.execute(
+            """
+            select id
+            from vai_tro
+            where ma_vai_tro = %s
+              and trang_thai = 'ACTIVE'
+              and deleted_at is null
+            limit 1
+            """,
+            (role_code,),
+        )
+        role = cur.fetchone()
+        if not role:
+            return {"status": "role_not_found"}
+
+        user_code = _next_user_code(cur, username)
+        cur.execute(
+            """
+            insert into nguoi_dung (
+              ma_nguoi_dung, ten_dang_nhap, ho_ten,
+              email, so_dien_thoai, trang_thai
+            )
+            values (%s, %s, %s, %s, %s, 'ACTIVE')
+            returning id
+            """,
+            (user_code, username, name, email, phone),
+        )
+        user_id = cur.fetchone()["id"]
+
+        cur.execute(
+            """
+            insert into ho_so_nguoi_dung (nguoi_dung_id, phong_ban)
+            values (%s, %s)
+            """,
+            (user_id, unit),
+        )
+        cur.execute(
+            """
+            insert into xac_thuc_nguoi_dung (
+              nguoi_dung_id, password_hash, lan_doi_mat_khau_cuoi
+            )
+            values (%s, crypt(%s, gen_salt('bf', 12)), now())
+            """,
+            (user_id, user.password),
+        )
+        cur.execute(
+            """
+            insert into vai_tro_nguoi_dung (nguoi_dung_id, vai_tro_id)
+            values (%s, %s)
+            """,
+            (user_id, role["id"]),
+        )
+
+    return {"status": "success"}
+
+
 def authenticate_user_for_ui(username, password):
     role_label_map = {
         "ADMIN": "Quản trị viên",
