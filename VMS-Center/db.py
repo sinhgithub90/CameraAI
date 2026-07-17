@@ -270,6 +270,25 @@ def _role_code_from_ui(role):
     return role_map.get(normalized, "STAFF")
 
 
+def _status_code_from_ui(status):
+    normalized = (status or "").strip().lower()
+    status_map = {
+        "active": "ACTIVE",
+        "hoat dong": "ACTIVE",
+        "hoạt động": "ACTIVE",
+        "locked": "LOCKED",
+        "tam khoa": "LOCKED",
+        "tạm khóa": "LOCKED",
+        "inactive": "INACTIVE",
+        "disabled": "DISABLED",
+        "deleted": "DELETED",
+    }
+    upper_status = (status or "").strip().upper()
+    if upper_status in {"ACTIVE", "LOCKED", "INACTIVE", "DISABLED", "DELETED"}:
+        return upper_status
+    return status_map.get(normalized, "ACTIVE")
+
+
 def _next_user_code(cur, username):
     base = re.sub(r"[^A-Za-z0-9]+", "_", username or "").strip("_").upper() or "USER"
     base = f"U_{base}"[:70]
@@ -794,6 +813,363 @@ def soft_delete_user_for_ui(username, admin_username=None):
         )
 
     return {"status": "success"}
+
+
+def export_backup_from_db():
+    return {
+        "cameras": list_cameras_for_ui(),
+        "users": list_users_for_ui(),
+    }
+
+
+def _require_dict_list(value, field_name):
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} phai la danh sach")
+    for idx, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise ValueError(f"{field_name}[{idx}] phai la object")
+    return value
+
+
+def _area_id_from_backup(cur, zone):
+    zone = (zone or "").strip()
+    area_id = _find_area_id(cur, zone)
+    if area_id:
+        return area_id
+    if "/" in zone:
+        area_id = _find_area_id(cur, zone.split("/", 1)[0].strip())
+    return area_id
+
+
+def _build_rtsp_url(camera_item):
+    explicit_url = (camera_item.get("rtsp_url") or camera_item.get("rtsp") or "").strip()
+    if explicit_url:
+        return explicit_url
+    ip = (camera_item.get("ip") or "").strip()
+    user = (camera_item.get("user") or camera_item.get("username") or "").strip()
+    password = (camera_item.get("password") or "").strip()
+    if not ip or ip == "-" or not user or not password:
+        return None
+    port = camera_item.get("rtsp_port") or 2004
+    channel = camera_item.get("rtsp_channel") or "102"
+    return f"rtsp://{user}:{password}@{ip}:{port}/Streaming/Channels/{channel}"
+
+
+def _restore_user_item(cur, user_item):
+    username = (user_item.get("username") or "").strip()
+    if not username:
+        raise ValueError("User backup thieu username")
+    name = (user_item.get("name") or "").strip()
+    if not name:
+        raise ValueError(f"User {username} thieu name")
+    email = (user_item.get("email") or "").strip() or None
+    phone = (user_item.get("phone") or "").strip() or None
+    unit = (user_item.get("unit") or "").strip() or None
+    role_code = _role_code_from_ui(user_item.get("role"))
+    status_code = _status_code_from_ui(user_item.get("status"))
+
+    cur.execute(
+        """
+        select id
+        from vai_tro
+        where ma_vai_tro = %s
+          and trang_thai = 'ACTIVE'
+          and deleted_at is null
+        limit 1
+        """,
+        (role_code,),
+    )
+    role = cur.fetchone()
+    if not role:
+        raise ValueError(f"User {username} co role khong hop le")
+
+    if email:
+        cur.execute(
+            """
+            select ten_dang_nhap
+            from nguoi_dung
+            where lower(email) = lower(%s)
+              and ten_dang_nhap <> %s
+              and deleted_at is null
+            limit 1
+            """,
+            (email, username),
+        )
+        if cur.fetchone():
+            raise ValueError(f"Email {email} da ton tai o user khac")
+
+    cur.execute(
+        "select id from nguoi_dung where ten_dang_nhap = %s limit 1",
+        (username,),
+    )
+    existing = cur.fetchone()
+    if existing:
+        user_id = existing["id"]
+        cur.execute(
+            """
+            update nguoi_dung
+            set ho_ten = %s,
+                email = %s,
+                so_dien_thoai = %s,
+                trang_thai = %s,
+                deleted_at = null
+            where id = %s
+            """,
+            (name, email, phone, status_code, user_id),
+        )
+    else:
+        password = user_item.get("password")
+        if not password:
+            raise ValueError(f"User moi {username} thieu password")
+        user_code = _next_user_code(cur, username)
+        cur.execute(
+            """
+            insert into nguoi_dung (
+              ma_nguoi_dung, ten_dang_nhap, ho_ten,
+              email, so_dien_thoai, trang_thai
+            )
+            values (%s, %s, %s, %s, %s, %s)
+            returning id
+            """,
+            (user_code, username, name, email, phone, status_code),
+        )
+        user_id = cur.fetchone()["id"]
+
+    cur.execute(
+        """
+        insert into ho_so_nguoi_dung (nguoi_dung_id, phong_ban)
+        values (%s, %s)
+        on conflict (nguoi_dung_id)
+        do update set phong_ban = excluded.phong_ban
+        """,
+        (user_id, unit),
+    )
+    password = user_item.get("password")
+    if password:
+        cur.execute(
+            """
+            insert into xac_thuc_nguoi_dung (
+              nguoi_dung_id, password_hash, so_lan_dang_nhap_sai, khoa_den,
+              lan_doi_mat_khau_cuoi
+            )
+            values (
+              %s, crypt(%s, gen_salt('bf', 12)), 0,
+              case when %s = 'ACTIVE' then null else now() end,
+              now()
+            )
+            on conflict (nguoi_dung_id)
+            do update set
+              password_hash = excluded.password_hash,
+              so_lan_dang_nhap_sai = 0,
+              khoa_den = excluded.khoa_den,
+              lan_doi_mat_khau_cuoi = now()
+            """,
+            (user_id, password, status_code),
+        )
+    else:
+        cur.execute(
+            "select 1 from xac_thuc_nguoi_dung where nguoi_dung_id = %s limit 1",
+            (user_id,),
+        )
+        if not cur.fetchone():
+            raise ValueError(f"User {username} thieu password de tao xac thuc")
+
+    cur.execute(
+        """
+        update vai_tro_nguoi_dung
+        set dang_hoat_dong = false,
+            ngay_ket_thuc = coalesce(ngay_ket_thuc, now())
+        where nguoi_dung_id = %s
+          and dang_hoat_dong = true
+        """,
+        (user_id,),
+    )
+    cur.execute(
+        "insert into vai_tro_nguoi_dung (nguoi_dung_id, vai_tro_id) values (%s, %s)",
+        (user_id, role["id"]),
+    )
+
+
+def _restore_camera_item(cur, camera_item):
+    stream_key = (camera_item.get("id") or camera_item.get("stream_key") or "").strip()
+    if not stream_key:
+        raise ValueError("Camera backup thieu id")
+    name = (camera_item.get("name") or "").strip()
+    if not name:
+        raise ValueError(f"Camera {stream_key} thieu name")
+    ip = (camera_item.get("ip") or "").strip()
+    if ip == "-":
+        ip = ""
+    manufacturer, model = _split_camera_model(camera_item.get("model"))
+    area_id = _area_id_from_backup(cur, camera_item.get("zone"))
+    rtsp_url = _build_rtsp_url(camera_item)
+    status_code = "ONLINE" if camera_item.get("status") == "online" else "OFFLINE"
+    order_index = camera_item.get("index") or 0
+
+    cur.execute(
+        """
+        select c.id, knc.duong_dan_rtsp
+        from camera c
+        left join ket_noi_camera knc on knc.camera_id = c.id
+        where c.stream_key = %s
+           or c.ma_camera = %s
+        limit 1
+        """,
+        (stream_key, stream_key),
+    )
+    existing = cur.fetchone()
+    if existing:
+        camera_id = existing["id"]
+        rtsp_url = rtsp_url or existing.get("duong_dan_rtsp")
+        cur.execute(
+            """
+            update camera
+            set khu_vuc_id = %s,
+                ma_camera = %s,
+                ten_camera = %s,
+                hang_san_xuat = %s,
+                model = %s,
+                stream_key = %s,
+                thu_tu_hien_thi = %s,
+                trang_thai_hien_tai = %s,
+                deleted_at = null,
+                bat_ghi_hinh = true
+            where id = %s
+            """,
+            (
+                area_id,
+                stream_key,
+                name,
+                manufacturer,
+                model,
+                stream_key,
+                order_index,
+                status_code,
+                camera_id,
+            ),
+        )
+    else:
+        if not ip or not rtsp_url:
+            raise ValueError(f"Camera moi {stream_key} thieu ip hoac thong tin RTSP")
+        cur.execute(
+            """
+            insert into camera (
+              khu_vuc_id, ma_camera, ten_camera, hang_san_xuat, model,
+              loai_nguon, stream_key, thu_tu_hien_thi, trang_thai_hien_tai,
+              bat_ai, bat_ghi_hinh
+            )
+            values (%s, %s, %s, %s, %s, 'RTSP', %s, %s, %s, false, true)
+            returning id
+            """,
+            (
+                area_id,
+                stream_key,
+                name,
+                manufacturer,
+                model,
+                stream_key,
+                order_index,
+                status_code,
+            ),
+        )
+        camera_id = cur.fetchone()["id"]
+
+    if not rtsp_url:
+        raise ValueError(f"Camera {stream_key} thieu RTSP")
+
+    cur.execute(
+        """
+        insert into ket_noi_camera (
+          camera_id, dia_chi_ip, cong_rtsp, duong_dan_rtsp,
+          ten_dang_nhap, mat_khau_ma_hoa, rtsp_transport,
+          go2rtc_stream_name, trang_thai_ket_noi
+        )
+        values (%s, nullif(%s, '')::inet, %s, %s, %s, %s, 'tcp', %s, 'UNKNOWN')
+        on conflict (camera_id)
+        do update set
+          dia_chi_ip = excluded.dia_chi_ip,
+          cong_rtsp = excluded.cong_rtsp,
+          duong_dan_rtsp = excluded.duong_dan_rtsp,
+          ten_dang_nhap = excluded.ten_dang_nhap,
+          mat_khau_ma_hoa = coalesce(excluded.mat_khau_ma_hoa, ket_noi_camera.mat_khau_ma_hoa),
+          go2rtc_stream_name = excluded.go2rtc_stream_name,
+          updated_at = now()
+        """,
+        (
+            camera_id,
+            ip,
+            camera_item.get("rtsp_port") or 2004,
+            rtsp_url,
+            camera_item.get("user") or camera_item.get("username"),
+            camera_item.get("password"),
+            stream_key,
+        ),
+    )
+    cur.execute(
+        """
+        insert into thong_so_ky_thuat_camera (
+          camera_id, do_phan_giai, fps, bitrate_kbps, codec
+        )
+        values (%s, %s, %s, %s, %s)
+        on conflict (camera_id)
+        do update set
+          do_phan_giai = excluded.do_phan_giai,
+          fps = excluded.fps,
+          bitrate_kbps = excluded.bitrate_kbps,
+          codec = excluded.codec,
+          updated_at = now()
+        """,
+        (
+            camera_id,
+            camera_item.get("resolution") or "1920x1080",
+            camera_item.get("fps") or 25,
+            camera_item.get("bitrate") or 4096,
+            camera_item.get("codec") or "H264",
+        ),
+    )
+    cur.execute(
+        """
+        insert into lap_dat_camera (
+          camera_id, khu_vuc_id, vi_tri_lap_dat, toa_nha, tang, vi_do, kinh_do
+        )
+        values (%s, %s, %s, %s, %s, %s, %s)
+        on conflict (camera_id)
+        do update set
+          khu_vuc_id = excluded.khu_vuc_id,
+          vi_tri_lap_dat = excluded.vi_tri_lap_dat,
+          toa_nha = excluded.toa_nha,
+          tang = excluded.tang,
+          vi_do = excluded.vi_do,
+          kinh_do = excluded.kinh_do,
+          updated_at = now()
+        """,
+        (
+            camera_id,
+            area_id,
+            camera_item.get("loc"),
+            camera_item.get("building"),
+            camera_item.get("floor"),
+            camera_item.get("lat"),
+            camera_item.get("lng"),
+        ),
+    )
+    return stream_key, rtsp_url
+
+
+def restore_backup_to_db(cameras=None, users=None):
+    camera_items = _require_dict_list(cameras, "cameras")
+    user_items = _require_dict_list(users, "users")
+    streams_to_sync = []
+
+    with db_cursor(commit=True) as cur:
+        for user_item in user_items:
+            _restore_user_item(cur, user_item)
+        for camera_item in camera_items:
+            streams_to_sync.append(_restore_camera_item(cur, camera_item))
+
+    return {"status": "success", "streams_to_sync": streams_to_sync}
 
 
 def authenticate_user_for_ui(username, password):

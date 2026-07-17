@@ -18,6 +18,7 @@ from db import (
     authenticate_user_for_ui,
     create_camera_for_ui,
     create_user_for_ui,
+    export_backup_from_db,
     get_user_by_email_for_ui,
     list_cameras_for_ui,
     list_users_for_ui,
@@ -28,6 +29,7 @@ from db import (
     update_camera_for_ui,
     update_camera_location_for_ui,
     update_user_for_ui,
+    restore_backup_to_db,
     verify_admin_user_from_db,
 )
 
@@ -559,10 +561,11 @@ def restart_media_server():
 @app.get("/api/vms/backup/export", dependencies=[Depends(verify_admin_role)])
 def export_backup():
     """Xuất toàn bộ cấu hình hệ thống (camera, người dùng, cài đặt) thành 1 gói JSON duy nhất"""
+    db_backup = export_backup_from_db()
     return {
         "exported_at": datetime.utcnow().isoformat(),
-        "cameras": load_ui_cameras(),
-        "users": load_users(),
+        "cameras": db_backup["cameras"],
+        "users": db_backup["users"],
         "settings": load_settings()
     }
 
@@ -574,10 +577,19 @@ class BackupRestoreInput(BaseModel):
 @app.post("/api/vms/backup/restore", dependencies=[Depends(verify_admin_role)])
 def restore_backup(data: BackupRestoreInput):
     """Phục hồi cấu hình từ gói backup đã xuất trước đó"""
-    if data.cameras is not None:
-        save_ui_cameras(data.cameras)
-    if data.users is not None:
-        save_users(data.users)
+    try:
+        restore_result = restore_backup_to_db(data.cameras, data.users)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        print(f"PostgreSQL backup restore error: {exc}")
+        raise HTTPException(status_code=500, detail=f"Khong the phuc hoi backup vao PostgreSQL: {str(exc)}")
+
+    for stream_key, rtsp_url in restore_result.get("streams_to_sync", []):
+        sync_go2rtc_stream(stream_key, rtsp_url)
+    if restore_result.get("streams_to_sync"):
+        restart_go2rtc_process()
+
     if data.settings is not None:
         save_settings(data.settings)
     return {"status": "success"}
