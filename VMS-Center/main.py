@@ -35,6 +35,7 @@ from db import (
     search_recording_segments,
     verify_admin_user_from_db,
 )
+from recording_manager import recording_manager
 
 app = FastAPI(title="VMS Central API Gateway", version="1.0")
 
@@ -461,6 +462,19 @@ def start_go2rtc_proxy_sync():
 start_go2rtc_proxy_sync()
 
 
+@app.on_event("startup")
+def startup_recording_manager():
+    try:
+        recording_manager.start()
+    except Exception as exc:
+        print(f"Recording manager startup error: {exc}")
+
+
+@app.on_event("shutdown")
+def shutdown_recording_manager():
+    recording_manager.shutdown()
+
+
 def _parse_range_header(range_header, file_size):
     if not range_header:
         return None
@@ -577,6 +591,29 @@ def stream_playback_file(segment_id: int, request: Request):
         media_type="video/mp4",
         headers=headers,
     )
+
+
+@app.get("/api/recording/status")
+def get_recording_status():
+    return recording_manager.status()
+
+
+@app.post("/api/recording/{camera_id}/start")
+def start_recording_camera(camera_id: str):
+    result = recording_manager.start_camera(camera_id)
+    if result.get("status") == "not_found":
+        raise HTTPException(status_code=404, detail="Khong tim thay camera bat ghi hinh")
+    return result
+
+
+@app.post("/api/recording/{camera_id}/stop")
+def stop_recording_camera(camera_id: str):
+    return recording_manager.stop_camera(camera_id)
+
+
+@app.post("/api/recording/reload")
+def reload_recording_manager():
+    return recording_manager.reload()
 
 
 @app.get("/api/vms/settings")

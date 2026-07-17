@@ -1825,6 +1825,32 @@ def upsert_recording_segment(camera, file_path, start_time, end_time, duration_s
         return cur.fetchone()["id"]
 
 
+def list_recording_enabled_cameras():
+    with db_cursor() as cur:
+        cur.execute(
+            """
+            select
+              c.id as db_id,
+              c.stream_key,
+              c.ten_camera as name,
+              c.bat_ghi_hinh,
+              knc.duong_dan_rtsp as rtsp_url,
+              tsk.codec,
+              tsk.do_phan_giai as resolution,
+              tsk.fps
+            from camera c
+            join ket_noi_camera knc on knc.camera_id = c.id
+            left join thong_so_ky_thuat_camera tsk on tsk.camera_id = c.id
+            where c.deleted_at is null
+              and c.bat_ghi_hinh = true
+              and knc.duong_dan_rtsp is not null
+              and trim(knc.duong_dan_rtsp) <> ''
+            order by c.stream_key
+            """
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+
 def search_recording_segments(camera_id=None, zone=None, loc=None, from_time=None, to_time=None):
     where = ["dv.deleted_at is null", "dv.dung_luong >= 1048576"]
     params = []
