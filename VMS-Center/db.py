@@ -171,6 +171,101 @@ def list_users_for_ui():
     return users
 
 
+def authenticate_user_for_ui(username, password):
+    role_label_map = {
+        "ADMIN": "Quản trị viên",
+        "SUPERVISOR": "Giám sát",
+        "STAFF": "Nhân viên",
+    }
+    status_label_map = {
+        "ACTIVE": "Hoạt động",
+        "LOCKED": "Tạm khóa",
+        "INACTIVE": "Tạm khóa",
+        "DISABLED": "Tạm khóa",
+    }
+
+    with db_cursor(commit=True) as cur:
+        cur.execute(
+            """
+            select
+              nd.id,
+              nd.ten_dang_nhap,
+              nd.ho_ten,
+              nd.email,
+              nd.so_dien_thoai,
+              nd.trang_thai,
+              xt.khoa_den,
+              xt.password_hash = crypt(%s, xt.password_hash) as password_ok,
+              vt.ma_vai_tro,
+              vt.ten_vai_tro,
+              array_remove(array_agg(distinct q.ma_quyen order by q.ma_quyen), null) as permissions
+            from nguoi_dung nd
+            join xac_thuc_nguoi_dung xt on xt.nguoi_dung_id = nd.id
+            left join vai_tro_nguoi_dung vtnd
+              on vtnd.nguoi_dung_id = nd.id
+             and vtnd.dang_hoat_dong = true
+             and (vtnd.ngay_ket_thuc is null or vtnd.ngay_ket_thuc > now())
+            left join vai_tro vt
+              on vt.id = vtnd.vai_tro_id
+             and vt.deleted_at is null
+             and vt.trang_thai = 'ACTIVE'
+            left join vai_tro_quyen vtq
+              on vtq.vai_tro_id = vt.id
+             and vtq.duoc_phep = true
+            left join quyen q
+              on q.id = vtq.quyen_id
+             and q.trang_thai = 'ACTIVE'
+            where nd.deleted_at is null
+              and nd.ten_dang_nhap = %s
+            group by nd.id, xt.id, vt.id
+            limit 1
+            """,
+            (password, username),
+        )
+        row = cur.fetchone()
+        if not row:
+            return {"auth_status": "not_found"}
+
+        if row.get("trang_thai") != "ACTIVE" or row.get("khoa_den") is not None:
+            return {"auth_status": "inactive"}
+
+        if not row.get("password_ok"):
+            return {"auth_status": "bad_password"}
+
+        cur.execute(
+            """
+            update nguoi_dung
+            set lan_dang_nhap_cuoi = now(),
+                updated_at = now()
+            where id = %s
+            """,
+            (row["id"],),
+        )
+        cur.execute(
+            """
+            update xac_thuc_nguoi_dung
+            set so_lan_dang_nhap_sai = 0,
+                updated_at = now()
+            where nguoi_dung_id = %s
+            """,
+            (row["id"],),
+        )
+
+    role_code = row.get("ma_vai_tro")
+    status_code = row.get("trang_thai")
+    return {
+        "auth_status": "ok",
+        "username": row.get("ten_dang_nhap"),
+        "name": row.get("ho_ten"),
+        "role": role_label_map.get(role_code, row.get("ten_vai_tro") or role_code or "Nhân viên"),
+        "unit": "",
+        "email": row.get("email") or "",
+        "status": status_label_map.get(status_code, "Tạm khóa"),
+        "phone": row.get("so_dien_thoai") or "",
+        "permissions": row.get("permissions") or [],
+    }
+
+
 def _next_camera_stream_key(cur):
     cur.execute(
         """

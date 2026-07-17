@@ -15,6 +15,7 @@ import time
 from datetime import datetime, timedelta
 
 from db import (
+    authenticate_user_for_ui,
     create_camera_for_ui,
     list_cameras_for_ui,
     list_users_for_ui,
@@ -187,13 +188,12 @@ def login(user: str, text_pass: str):
         token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
         return {"access_token": token, "token_type": "bearer", "user": {"name": "AI Agent Engine", "role": "AI"}}
 
-    users = load_users()
-    current_user = next((u for u in users if u["username"] == user and u["password"] == text_pass), None)
-    
-    if current_user:
-        if current_user["status"] != "Hoạt động":
-            raise HTTPException(status_code=403, detail="Tài khoản hiện đang bị tạm khóa!")
-            
+    current_user = authenticate_user_for_ui(user, text_pass)
+
+    if current_user.get("auth_status") == "inactive":
+        raise HTTPException(status_code=403, detail="Tài khoản hiện đang bị tạm khóa!")
+
+    if current_user.get("auth_status") == "ok":
         payload = {"sub": user, "exp": datetime.utcnow() + timedelta(hours=8), "role": current_user["role"]}
         token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
         return {
