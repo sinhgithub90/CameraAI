@@ -22,6 +22,7 @@ from db import (
     soft_delete_camera_for_ui,
     update_camera_for_ui,
     update_camera_location_for_ui,
+    verify_admin_user_from_db,
 )
 
 app = FastAPI(title="VMS Central API Gateway", version="1.0")
@@ -175,11 +176,18 @@ def verify_admin_role(credentials: HTTPAuthorizationCredentials = Depends(securi
     token = credentials.credentials
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-        if payload.get("role") != "Quản trị viên":
-            raise HTTPException(status_code=403, detail="TỪ CHỐI TRUY CẬP: Thao tác cấu hình quyền chỉ dành riêng cho Quản trị viên!")
-        return payload.get("sub")
+        username = payload.get("sub")
     except jwt.PyJWTError:
         raise HTTPException(status_code=401, detail="Phiên đăng nhập hết hạn hoặc Token xác thực không hợp lệ!")
+
+    admin_check = verify_admin_user_from_db(username)
+    if admin_check.get("status") == "not_found":
+        raise HTTPException(status_code=401, detail="Phiên đăng nhập hết hạn hoặc Token xác thực không hợp lệ!")
+    if admin_check.get("status") == "inactive":
+        raise HTTPException(status_code=403, detail="Tài khoản hiện đang bị tạm khóa!")
+    if admin_check.get("status") != "ok":
+        raise HTTPException(status_code=403, detail="TỪ CHỐI TRUY CẬP: Thao tác cấu hình quyền chỉ dành riêng cho Quản trị viên!")
+    return admin_check["username"]
 
 @app.post("/api/auth/token")
 def login(user: str, text_pass: str):

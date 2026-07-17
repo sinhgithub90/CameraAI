@@ -266,6 +266,52 @@ def authenticate_user_for_ui(username, password):
     }
 
 
+def verify_admin_user_from_db(username):
+    if not username:
+        return {"status": "not_found"}
+
+    with db_cursor() as cur:
+        cur.execute(
+            """
+            select
+              nd.id,
+              nd.ten_dang_nhap,
+              nd.trang_thai,
+              bool_or(vt.ma_vai_tro = 'ADMIN') as has_admin_role,
+              bool_or(q.ma_quyen = 'usermgmt') as has_admin_permission
+            from nguoi_dung nd
+            left join vai_tro_nguoi_dung vtnd
+              on vtnd.nguoi_dung_id = nd.id
+             and vtnd.dang_hoat_dong = true
+             and (vtnd.ngay_ket_thuc is null or vtnd.ngay_ket_thuc > now())
+            left join vai_tro vt
+              on vt.id = vtnd.vai_tro_id
+             and vt.deleted_at is null
+             and vt.trang_thai = 'ACTIVE'
+            left join vai_tro_quyen vtq
+              on vtq.vai_tro_id = vt.id
+             and vtq.duoc_phep = true
+            left join quyen q
+              on q.id = vtq.quyen_id
+             and q.trang_thai = 'ACTIVE'
+            where nd.deleted_at is null
+              and nd.ten_dang_nhap = %s
+            group by nd.id
+            limit 1
+            """,
+            (username,),
+        )
+        row = cur.fetchone()
+
+    if not row:
+        return {"status": "not_found"}
+    if row.get("trang_thai") != "ACTIVE":
+        return {"status": "inactive"}
+    if row.get("has_admin_role") or row.get("has_admin_permission"):
+        return {"status": "ok", "username": row.get("ten_dang_nhap")}
+    return {"status": "forbidden"}
+
+
 def _next_camera_stream_key(cur):
     cur.execute(
         """
