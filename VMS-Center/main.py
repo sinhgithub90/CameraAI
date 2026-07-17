@@ -18,6 +18,7 @@ from db import (
     authenticate_user_for_ui,
     create_camera_for_ui,
     create_user_for_ui,
+    get_user_by_email_for_ui,
     list_cameras_for_ui,
     list_users_for_ui,
     reset_user_password_for_ui,
@@ -221,11 +222,10 @@ def login(user: str, text_pass: str):
 
 @app.post("/api/auth/google-mock")
 def google_mock_login(email: str):
-    users = load_users()
-    current_user = next((u for u in users if u["email"].lower() == email.strip().lower()), None)
-    if current_user:
-        if current_user["status"] != "Hoạt động":
-            raise HTTPException(status_code=403, detail="Tài khoản liên kết với Email này hiện đang bị tạm khóa!")
+    current_user = get_user_by_email_for_ui(email)
+    if current_user.get("auth_status") == "inactive":
+        raise HTTPException(status_code=403, detail="Tài khoản liên kết với Email này hiện đang bị tạm khóa!")
+    if current_user.get("auth_status") == "ok":
         payload = {"sub": current_user["username"], "exp": datetime.utcnow() + timedelta(hours=8), "role": current_user["role"]}
         token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
         return {
@@ -498,9 +498,6 @@ def start_go2rtc_proxy_sync():
     t.start()
 
 start_go2rtc_proxy_sync()
-load_users()
-
-
 @app.get("/api/vms/settings")
 def get_settings():
     return load_settings()
