@@ -50,33 +50,12 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 GO2RTC_YAML_PATH = os.path.join(BASE_DIR, "go2rtc.yaml")
 GO2RTC_EXE_PATH = os.path.join(BASE_DIR, "go2rtc.exe")
 
-CAMERAS_JSON_PATH = os.path.join(BASE_DIR, "cameras.json")
-USERS_JSON_PATH = os.path.join(BASE_DIR, "users.json")
 SETTINGS_JSON_PATH = os.path.join(BASE_DIR, "settings.json")
 
 CAMERA_DB = {
     "cam_huyen_01": {"name": "Camera Ngã tư Huyện 1", "vlan": "VLAN_10", "status": "active"},
     "cam_huyen_02": {"name": "Camera Cổng Ủy Ban Huyện 2", "vlan": "VLAN_10", "status": "active"}
 }
-
-DEFAULT_UI_CAMERAS = [
-  { "id": "cam_huyen_01", "index": 1, "name": "Hành lang tầng 2", "ip": "10.10.10.12", "model": "Hikvision DS-2CD2143G2", "zone": "Tòa nhà A / Huyện 1", "loc": "Hành lang T2", "type": "video", "src": "http://127.0.0.1:1984/stream.html?src=cam_huyen_01&mode=webrtc", "tag": "Live", "status": "online" },
-  { "id": "cam_huyen_02", "index": 2, "name": "Cổng chính cơ quan", "ip": "10.10.10.11", "model": "Hikvision DS-2CD1123G0", "zone": "Khu ngoại vi / Huyện 2", "loc": "Cổng kiểm soát", "type": "video", "src": "http://127.0.0.1:1984/stream.html?src=cam_huyen_02&mode=webrtc", "tag": "Live", "status": "online" }
-]
-
-DEFAULT_USERS = [
-    {
-        "username": "admin",
-        "password": "admin1",
-        "name": "Trần Văn Minh",
-        "role": "Quản trị viên",
-        "unit": "Phòng CNTT",
-        "email": "minh.tran@demo.com",
-        "status": "Hoạt động",
-        "phone": "0909 123 456",
-        "permissions": ["live", "playback", "cammgmt", "usermgmt", "alertmgmt", "reports", "sysconfig", "export"]
-    }
-]
 
 DEFAULT_SETTINGS = {
     "notifications": {
@@ -123,29 +102,6 @@ def load_settings():
 def save_settings(settings):
     with open(SETTINGS_JSON_PATH, "w", encoding="utf-8") as f:
         json.dump(settings, f, ensure_ascii=False, indent=2)
-
-def load_ui_cameras():
-    if os.path.exists(CAMERAS_JSON_PATH):
-        with open(CAMERAS_JSON_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return DEFAULT_UI_CAMERAS
-
-def save_ui_cameras(cameras):
-    with open(CAMERAS_JSON_PATH, "w", encoding="utf-8") as f:
-        json.dump(cameras, f, ensure_ascii=False, indent=2)
-
-def load_users():
-    if os.path.exists(USERS_JSON_PATH):
-        with open(USERS_JSON_PATH, "r", encoding="utf-8") as f:
-            try: return json.load(f)
-            except: pass
-    with open(USERS_JSON_PATH, "w", encoding="utf-8") as f:
-        json.dump(DEFAULT_USERS, f, ensure_ascii=False, indent=2)
-    return DEFAULT_USERS
-
-def save_users(users):
-    with open(USERS_JSON_PATH, "w", encoding="utf-8") as f:
-        json.dump(users, f, ensure_ascii=False, indent=2)
 
 def sync_go2rtc_stream(stream_key, rtsp_url):
     config_data = {}
