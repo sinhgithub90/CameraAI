@@ -4,6 +4,9 @@ let ALL_USERS = [];
 let selectedUsername = null;
 let editingCameraId = null;
 let currentGridLimit = 6;
+let selectedLiveCameraId = null;
+let PLAYBACK_SEGMENTS = [];
+let PLAYBACK_GAPS = [];
 
 // 1. Hàm gọi API lấy danh sách camera tập trung từ Backend FastAPI
 async function fetchCamerasFromBackend() {
@@ -361,8 +364,237 @@ function closeAddCamModal() {
   setCameraModalMode('add');
 }
 function changeGridLimit(val) { currentGridLimit = parseInt(val); const liveGrid = document.getElementById('liveCamGrid'); if(liveGrid) { liveGrid.style.gridTemplateColumns = (currentGridLimit === 2 || currentGridLimit === 4) ? 'repeat(2, 1fr)' : 'repeat(3, 1fr)'; renderLiveGrid(); } }
-function selectCam(el){ document.querySelectorAll('.live-tile').forEach(t => t.classList.remove('selected')); el.classList.add('selected'); const camId = el.getAttribute('data-id'); const camData = ALL_CAMERAS.find(c => c.id === camId); if (!camData) return; if(document.getElementById('sideCamName')) document.getElementById('sideCamName').textContent = `${camData.index}. ${camData.name}`; if(document.getElementById('sideCamIP')) document.getElementById('sideCamIP').textContent = camData.ip; if(document.getElementById('sideCamModel')) document.getElementById('sideCamModel').textContent = camData.model; if(document.getElementById('sideCamZone')) document.getElementById('sideCamZone').textContent = camData.zone; if(document.getElementById('sideCamLoc')) document.getElementById('sideCamLoc').textContent = camData.loc; const detailContainer = document.getElementById('mainDetailContainer'); if (detailContainer) { detailContainer.innerHTML = `<iframe src="http://127.0.0.1:1984/stream.html?src=${camData.id}&mode=webrtc" frameborder="0" scrolling="no" style="width:100%; aspect-ratio:16/9; pointer-events:none; display:block;"></iframe>`; } }
+function selectCam(el) {
+  document.querySelectorAll('.live-tile').forEach(t => t.classList.remove('selected'));
+  el.classList.add('selected');
+  const camId = el.getAttribute('data-id');
+  const camData = ALL_CAMERAS.find(c => c.id === camId);
+  if (!camData) return;
+  selectedLiveCameraId = camId;
+  if(document.getElementById('sideCamName')) document.getElementById('sideCamName').textContent = `${camData.index}. ${camData.name}`;
+  if(document.getElementById('sideCamIP')) document.getElementById('sideCamIP').textContent = camData.ip;
+  if(document.getElementById('sideCamModel')) document.getElementById('sideCamModel').textContent = camData.model;
+  if(document.getElementById('sideCamZone')) document.getElementById('sideCamZone').textContent = camData.zone;
+  if(document.getElementById('sideCamLoc')) document.getElementById('sideCamLoc').textContent = camData.loc;
+  const detailContainer = document.getElementById('mainDetailContainer');
+  if (detailContainer) {
+    detailContainer.innerHTML = `<iframe src="http://127.0.0.1:1984/stream.html?src=${camData.id}&mode=webrtc" frameborder="0" scrolling="no" style="width:100%; aspect-ratio:16/9; pointer-events:none; display:block;"></iframe>`;
+  }
+}
 function maximizeCam(el) { const mediaElement = el.querySelector('iframe') || el.querySelector('img'); if (mediaElement && mediaElement.requestFullscreen) mediaElement.requestFullscreen(); }
+
+function formatDateTimeLocal(date) {
+  const pad = (value) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function formatPlaybackTime(value) {
+  if (!value) return '-';
+  return new Date(value).toLocaleString('vi-VN', { hour12: false });
+}
+
+function formatPlaybackBytes(value) {
+  const bytes = Number(value || 0);
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
+}
+
+function setPlaybackStatus(message, color = 'var(--slate-500)') {
+  const status = document.getElementById('playbackStatus');
+  if (status) {
+    status.textContent = message;
+    status.style.color = color;
+  }
+}
+
+function populatePlaybackCameraSelect() {
+  const select = document.getElementById('playbackCameraSelect');
+  if (!select) return;
+  select.innerHTML = '';
+  ALL_CAMERAS.forEach(cam => {
+    const option = document.createElement('option');
+    option.value = cam.id;
+    option.textContent = `${cam.index || ''}. ${cam.name || cam.id}`.trim();
+    select.appendChild(option);
+  });
+  if (selectedLiveCameraId && ALL_CAMERAS.some(cam => cam.id === selectedLiveCameraId)) {
+    select.value = selectedLiveCameraId;
+  }
+}
+
+function openPlaybackModal() {
+  const modal = document.getElementById('playbackModal');
+  if (!modal) return;
+  populatePlaybackCameraSelect();
+  const now = new Date();
+  const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+  const fromInput = document.getElementById('playbackFromTime');
+  const toInput = document.getElementById('playbackToTime');
+  if (fromInput && !fromInput.value) fromInput.value = formatDateTimeLocal(oneHourAgo);
+  if (toInput && !toInput.value) toInput.value = formatDateTimeLocal(now);
+  modal.style.display = 'flex';
+  setPlaybackStatus('Chọn khoảng thời gian để tìm video đã lưu.');
+}
+
+function closePlaybackModal() {
+  const modal = document.getElementById('playbackModal');
+  const video = document.getElementById('playbackVideo');
+  if (video) {
+    video.pause();
+    video.removeAttribute('src');
+    video.load();
+  }
+  if (modal) modal.style.display = 'none';
+}
+
+async function searchPlaybackSegments() {
+  const cameraSelect = document.getElementById('playbackCameraSelect');
+  const fromInput = document.getElementById('playbackFromTime');
+  const toInput = document.getElementById('playbackToTime');
+  const cameraId = cameraSelect?.value;
+  if (!cameraId) {
+    setPlaybackStatus('Chưa có camera để tìm phát lại.', '#dc2626');
+    return;
+  }
+  if (!fromInput?.value || !toInput?.value) {
+    setPlaybackStatus('Vui lòng chọn đủ từ thời gian và đến thời gian.', '#dc2626');
+    return;
+  }
+  const fromDate = new Date(fromInput.value);
+  const toDate = new Date(toInput.value);
+  if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime()) || fromDate >= toDate) {
+    setPlaybackStatus('Khoảng thời gian không hợp lệ.', '#dc2626');
+    return;
+  }
+
+  setPlaybackStatus('Đang tìm video phát lại...', 'var(--blue-600)');
+  const params = new URLSearchParams({
+    camera_id: cameraId,
+    from_time: fromDate.toISOString(),
+    to_time: toDate.toISOString()
+  });
+
+  try {
+    const response = await fetch(`http://127.0.0.1:8000/api/playback/search?${params.toString()}`);
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.detail || 'Không thể tìm video phát lại.');
+    }
+    const data = await response.json();
+    PLAYBACK_SEGMENTS = data.segments || [];
+    PLAYBACK_GAPS = data.gaps || [];
+    renderPlaybackTimeline(PLAYBACK_SEGMENTS, PLAYBACK_GAPS);
+    renderPlaybackSegmentList(PLAYBACK_SEGMENTS);
+    if (PLAYBACK_SEGMENTS.length > 0) {
+      setPlaybackStatus(`Tìm thấy ${PLAYBACK_SEGMENTS.length} segment, ${PLAYBACK_GAPS.length} khoảng trống.`);
+    } else {
+      setPlaybackStatus('Không có video trong khoảng thời gian đã chọn.', 'var(--slate-500)');
+    }
+  } catch (error) {
+    PLAYBACK_SEGMENTS = [];
+    PLAYBACK_GAPS = [];
+    renderPlaybackTimeline([], []);
+    renderPlaybackSegmentList([]);
+    setPlaybackStatus(error.message || 'Lỗi kết nối API phát lại.', '#dc2626');
+  }
+}
+
+function renderPlaybackTimeline(segments, gaps) {
+  const timeline = document.getElementById('playbackTimeline');
+  if (!timeline) return;
+  timeline.innerHTML = '';
+  if (!segments.length) {
+    timeline.innerHTML = '<div style="height:100%; display:flex; align-items:center; justify-content:center; color:var(--slate-400); font-size:13px;">Không có dữ liệu timeline</div>';
+    return;
+  }
+
+  const times = [];
+  segments.forEach(seg => {
+    times.push(new Date(seg.start_time).getTime(), new Date(seg.end_time).getTime());
+  });
+  gaps.forEach(gap => {
+    const gapStart = gap.start_time || gap.from_time;
+    const gapEnd = gap.end_time || gap.to_time;
+    times.push(new Date(gapStart).getTime(), new Date(gapEnd).getTime());
+  });
+  const minTime = Math.min(...times);
+  const maxTime = Math.max(...times);
+  const total = Math.max(maxTime - minTime, 1000);
+  const pct = (value) => Math.max(0, Math.min(100, ((new Date(value).getTime() - minTime) / total) * 100));
+
+  gaps.forEach(gap => {
+    const gapStart = gap.start_time || gap.from_time;
+    const gapEnd = gap.end_time || gap.to_time;
+    const left = pct(gapStart);
+    const width = Math.max(0.5, pct(gapEnd) - left);
+    const bar = document.createElement('div');
+    bar.title = `Gap: ${formatPlaybackTime(gapStart)} - ${formatPlaybackTime(gapEnd)}`;
+    bar.style.cssText = `position:absolute; top:12px; left:${left}%; width:${width}%; height:38px; background:#ef4444; opacity:0.28; border-radius:6px;`;
+    timeline.appendChild(bar);
+  });
+
+  segments.forEach(seg => {
+    const left = pct(seg.start_time);
+    const width = Math.max(0.55, pct(seg.end_time) - left);
+    const bar = document.createElement('button');
+    bar.type = 'button';
+    bar.className = 'playback-timeline-segment';
+    bar.dataset.segmentId = seg.id;
+    bar.title = `${formatPlaybackTime(seg.start_time)} - ${formatPlaybackTime(seg.end_time)}`;
+    bar.style.cssText = `position:absolute; top:18px; left:${left}%; width:${width}%; height:26px; border:0; background:#16a34a; border-radius:5px; cursor:pointer; box-shadow:0 1px 2px rgba(15,23,42,0.12);`;
+    bar.onclick = () => playPlaybackSegment(seg.id);
+    timeline.appendChild(bar);
+  });
+}
+
+function renderPlaybackSegmentList(segments) {
+  const list = document.getElementById('playbackSegmentList');
+  if (!list) return;
+  list.innerHTML = '';
+  if (!segments.length) {
+    list.innerHTML = '<div style="height:100%; display:flex; align-items:center; justify-content:center; padding:16px; text-align:center; color:var(--slate-400); font-size:13px;">Không có segment phù hợp.</div>';
+    return;
+  }
+  segments.forEach(seg => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'playback-segment-item';
+    item.dataset.segmentId = seg.id;
+    item.style.cssText = 'width:100%; border:0; border-bottom:1px solid var(--slate-100); background:#fff; padding:10px 12px; text-align:left; cursor:pointer; display:block;';
+    item.innerHTML = `
+      <div style="display:flex; justify-content:space-between; gap:10px; align-items:center;">
+        <strong style="font-size:13px; color:var(--slate-900);">Segment #${seg.id}</strong>
+        <span style="font-size:11px; color:var(--slate-500);">${Math.round(Number(seg.duration_seconds || 0))}s</span>
+      </div>
+      <div style="font-size:12px; color:var(--slate-500); margin-top:5px; line-height:1.45;">
+        ${formatPlaybackTime(seg.start_time)}<br>
+        ${formatPlaybackTime(seg.end_time)}
+      </div>
+      <div style="font-size:11px; color:var(--slate-400); margin-top:5px;">${formatPlaybackBytes(seg.size_bytes)} · ${seg.status || 'READY'}</div>
+    `;
+    item.onclick = () => playPlaybackSegment(seg.id);
+    list.appendChild(item);
+  });
+}
+
+function playPlaybackSegment(segmentId) {
+  const video = document.getElementById('playbackVideo');
+  if (!video) return;
+  document.querySelectorAll('.playback-segment-item').forEach(item => {
+    const active = item.dataset.segmentId === String(segmentId);
+    item.style.background = active ? 'var(--blue-50)' : '#fff';
+    item.style.boxShadow = active ? 'inset 3px 0 0 var(--blue-600)' : 'none';
+  });
+  document.querySelectorAll('.playback-timeline-segment').forEach(item => {
+    item.style.background = item.dataset.segmentId === String(segmentId) ? '#2563eb' : '#16a34a';
+  });
+  video.src = `http://127.0.0.1:8000/api/playback/file/${segmentId}`;
+  video.load();
+  video.play().catch(() => {});
+  setPlaybackStatus(`Đang phát segment #${segmentId}.`);
+}
 
 function renderUserTable() {
   const userBody = document.getElementById('userTableBody');
