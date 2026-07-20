@@ -30,6 +30,7 @@ from db import (
     get_alert_detail_for_ui,
     get_dashboard_activity_from_db,
     get_dashboard_summary_from_db,
+    get_reports_summary_from_db,
     list_cameras_for_ui,
     list_alerts_for_ui,
     list_users_for_ui,
@@ -685,6 +686,15 @@ def get_dashboard_system():
         "disk": disk,
         "recording_manager": recording_status,
     }
+
+
+@app.get("/api/reports/summary")
+def get_reports_summary(from_time: Optional[str] = None, to_time: Optional[str] = None):
+    try:
+        return get_reports_summary_from_db(from_time=from_time, to_time=to_time)
+    except Exception as exc:
+        print(f"PostgreSQL reports summary error: {exc}")
+        raise HTTPException(status_code=500, detail=f"Khong the doc bao cao tu PostgreSQL: {str(exc)}")
 
 
 @app.get("/api/vms/settings")

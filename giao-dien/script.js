@@ -496,6 +496,109 @@ async function updateAlertStatus(alertId, status) {
   }
 }
 
+function renderNoData(host, message = 'Chưa có dữ liệu') {
+  if (!host) return;
+  host.innerHTML = `<div style="height:100%;min-height:120px;display:flex;align-items:center;justify-content:center;color:var(--slate-400);font-size:13px;text-align:center;">${escapeHtml(message)}</div>`;
+}
+
+function renderReportBars(hostId, rows, labelKey, valueKey, color = '#3b82f6') {
+  const host = document.getElementById(hostId);
+  if (!host) return;
+  const data = rows || [];
+  const max = Math.max(...data.map(row => Number(row[valueKey] || 0)), 0);
+  if (!data.length || max <= 0) {
+    renderNoData(host);
+    return;
+  }
+  host.innerHTML = data.map(row => {
+    const value = Number(row[valueKey] || 0);
+    const width = Math.max(4, Math.round((value / max) * 100));
+    return `
+      <div style="margin-bottom:10px;">
+        <div style="display:flex;justify-content:space-between;gap:10px;font-size:12px;color:var(--slate-600);margin-bottom:4px;">
+          <span>${escapeHtml(row[labelKey] || '-')}</span><b>${value}</b>
+        </div>
+        <div style="height:9px;background:var(--slate-100);border-radius:999px;overflow:hidden;"><div style="width:${width}%;height:100%;background:${color};border-radius:999px;"></div></div>
+      </div>
+    `;
+  }).join('');
+}
+
+function renderReportCameraChart(camera = {}) {
+  const host = document.getElementById('reportCameraChart');
+  if (!host) return;
+  const total = Number(camera.total || 0);
+  if (!total) {
+    renderNoData(host);
+    return;
+  }
+  const online = Number(camera.online || 0);
+  const offline = Number(camera.offline || 0);
+  host.innerHTML = `
+    <div style="display:grid;gap:12px;padding-top:14px;">
+      <div><b style="color:#16a34a;">Online</b><div style="height:12px;background:var(--slate-100);border-radius:999px;overflow:hidden;margin-top:6px;"><div style="width:${Math.round((online / total) * 100)}%;height:100%;background:#16a34a;"></div></div><div style="font-size:12px;color:var(--slate-500);margin-top:4px;">${online}/${total}</div></div>
+      <div><b style="color:#dc2626;">Offline</b><div style="height:12px;background:var(--slate-100);border-radius:999px;overflow:hidden;margin-top:6px;"><div style="width:${Math.round((offline / total) * 100)}%;height:100%;background:#dc2626;"></div></div><div style="font-size:12px;color:var(--slate-500);margin-top:4px;">${offline}/${total}</div></div>
+    </div>
+  `;
+}
+
+function renderReportTables(data) {
+  const areaTable = document.getElementById('reportAreaTable');
+  if (areaTable) {
+    const areas = data.areas || [];
+    areaTable.innerHTML = areas.length
+      ? `<tr><th>Khu vực</th><th>Camera</th><th>Online</th><th>Offline</th><th>Cảnh báo</th></tr>${areas.map(area => `<tr><td>${escapeHtml(area.name)}</td><td>${Number(area.cameras || 0)}</td><td>${Number(area.online || 0)}</td><td>${Number(area.offline || 0)}</td><td>${Number(area.alerts || 0)}</td></tr>`).join('')}`
+      : '<tr><td style="text-align:center;color:var(--slate-400);padding:24px;">Chưa có dữ liệu</td></tr>';
+  }
+
+  const camTable = document.getElementById('reportCameraRecordingTable');
+  if (camTable) {
+    const rows = data.recording_by_camera || [];
+    const usefulRows = rows.filter(row => Number(row.segments || 0) > 0 || Number(row.size || 0) > 0);
+    camTable.innerHTML = usefulRows.length
+      ? `<tr><th>Camera</th><th>Segment</th><th>Dung lượng</th></tr>${usefulRows.map(row => `<tr><td>${escapeHtml(row.camera_name)}</td><td>${Number(row.segments || 0)}</td><td>${formatDashboardBytes(row.size)}</td></tr>`).join('')}`
+      : '<tr><td style="text-align:center;color:var(--slate-400);padding:24px;">Chưa có dữ liệu</td></tr>';
+  }
+}
+
+async function loadReports() {
+  if (!document.getElementById('reportCameraOnline')) return;
+  const params = new URLSearchParams();
+  const fromTime = document.getElementById('reportFromTime')?.value;
+  const toTime = document.getElementById('reportToTime')?.value;
+  if (fromTime) params.set('from_time', new Date(fromTime).toISOString());
+  if (toTime) params.set('to_time', new Date(toTime).toISOString());
+
+  try {
+    const response = await fetch(`http://127.0.0.1:8000/api/reports/summary?${params.toString()}`);
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.detail || 'Không thể tải báo cáo.');
+    }
+    const data = await response.json();
+    const camera = data.camera || {};
+    const recording = data.recording || {};
+    const alerts = data.alerts || {};
+    setText('reportCameraOnline', Number(camera.online || 0));
+    setText('reportCameraSub', `Offline ${Number(camera.offline || 0)} / Tổng ${Number(camera.total || 0)}`);
+    setText('reportRecordingSegments', Number(recording.total || 0));
+    setText('reportRecordingDuration', `Thời lượng TB ${Math.round(Number(recording.avg_duration_seconds || 0))}s`);
+    setText('reportRecordingSize', formatDashboardBytes(recording.total_size));
+    setText('reportAlertTotal', Number(alerts.total || 0));
+    setText('reportAlertSub', Number(alerts.total || 0) ? `Mới ${Number(alerts.new || 0)} · Đang xử lý ${Number(alerts.processing || 0)} · Đã đóng ${Number(alerts.closed || 0)}` : 'Chưa có dữ liệu');
+    setText('reportAreaTotal', (data.areas || []).length);
+
+    renderReportBars('reportRecordingChart', data.recording_by_day || [], 'day', 'segments', '#3b82f6');
+    renderReportBars('reportAlertStatusChart', data.alerts_by_status || [], 'status', 'total', '#ef4444');
+    renderReportCameraChart(camera);
+    renderReportTables(data);
+  } catch (error) {
+    ['reportRecordingChart', 'reportAlertStatusChart', 'reportCameraChart'].forEach(id => renderNoData(document.getElementById(id), error.message || 'Lỗi tải báo cáo'));
+    const areaTable = document.getElementById('reportAreaTable');
+    if (areaTable) areaTable.innerHTML = `<tr><td style="text-align:center;color:#dc2626;padding:24px;">${escapeHtml(error.message || 'Lỗi tải báo cáo')}</td></tr>`;
+  }
+}
+
 function renderOverviewGrid() {
   const overviewGrid = document.getElementById('overviewCamGrid');
   if (!overviewGrid) return;
@@ -1465,6 +1568,7 @@ document.addEventListener("DOMContentLoaded", async () => {
    }
    if(document.getElementById('overviewCamGrid')) renderOverviewGrid();
    if(document.getElementById('alertList')) await loadAlerts();
+   if(document.getElementById('reportCameraOnline')) await loadReports();
    if(document.getElementById('statTotalCameras')) {
      renderDashboardStats();
      await refreshDashboard();

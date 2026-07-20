@@ -2163,6 +2163,149 @@ def update_alert_status_for_ui(alert_id, new_status, note=None, username=None):
     return get_alert_detail_for_ui(alert_id)
 
 
+def get_reports_summary_from_db(from_time=None, to_time=None):
+    recording_where = ["dv.deleted_at is null"]
+    recording_params = []
+    alert_where = ["cb.deleted_at is null"]
+    alert_params = []
+    if from_time:
+        recording_where.append("dv.bat_dau_luc >= %s")
+        recording_params.append(from_time)
+        alert_where.append("cb.phat_sinh_luc >= %s")
+        alert_params.append(from_time)
+    if to_time:
+        recording_where.append("dv.bat_dau_luc <= %s")
+        recording_params.append(to_time)
+        alert_where.append("cb.phat_sinh_luc <= %s")
+        alert_params.append(to_time)
+
+    with db_cursor() as cur:
+        cur.execute(
+            """
+            select
+              count(*) as total,
+              count(*) filter (where trang_thai_hien_tai = 'ONLINE') as online,
+              count(*) filter (where trang_thai_hien_tai <> 'ONLINE') as offline,
+              count(*) filter (where bat_ghi_hinh = true) as recording_enabled
+            from camera
+            where deleted_at is null
+            """
+        )
+        camera = dict(cur.fetchone())
+
+        cur.execute(
+            """
+            select
+              count(*) as total,
+              coalesce(sum(dung_luong), 0) as total_size,
+              coalesce(avg(thoi_luong_giay), 0) as avg_duration_seconds
+            from doan_video dv
+            where {}
+            """.format(" and ".join(recording_where)),
+            recording_params,
+        )
+        recording = dict(cur.fetchone())
+
+        cur.execute(
+            """
+            select
+              dv.bat_dau_luc::date as day,
+              count(*) as segments,
+              coalesce(sum(dv.dung_luong), 0) as size
+            from doan_video dv
+            where {}
+            group by dv.bat_dau_luc::date
+            order by day asc
+            """.format(" and ".join(recording_where)),
+            recording_params,
+        )
+        recording_by_day = [dict(row) for row in cur.fetchall()]
+
+        cur.execute(
+            """
+            select
+              upper(coalesce(cb.trang_thai_hien_tai, 'UNKNOWN')) as status,
+              count(*) as total
+            from canh_bao cb
+            where {}
+            group by upper(coalesce(cb.trang_thai_hien_tai, 'UNKNOWN'))
+            order by status asc
+            """.format(" and ".join(alert_where)),
+            alert_params,
+        )
+        alerts_by_status = [dict(row) for row in cur.fetchall()]
+
+        cur.execute(
+            """
+            select
+              count(*) as total,
+              count(*) filter (where upper(trang_thai_hien_tai) = 'NEW') as new,
+              count(*) filter (where upper(trang_thai_hien_tai) in ('PROCESSING', 'ACKNOWLEDGED')) as processing,
+              count(*) filter (where upper(trang_thai_hien_tai) in ('CLOSED', 'RESOLVED')) as closed
+            from canh_bao cb
+            where {}
+            """.format(" and ".join(alert_where)),
+            alert_params,
+        )
+        alerts = dict(cur.fetchone())
+
+        cur.execute(
+            """
+            select
+              kv.id,
+              kv.ma_khu_vuc as code,
+              kv.ten_khu_vuc as name,
+              count(distinct c.id) filter (where c.deleted_at is null) as cameras,
+              count(distinct c.id) filter (where c.deleted_at is null and c.trang_thai_hien_tai = 'ONLINE') as online,
+              count(distinct c.id) filter (where c.deleted_at is null and c.trang_thai_hien_tai <> 'ONLINE') as offline,
+              count(distinct cb.id) filter (where cb.deleted_at is null) as alerts
+            from khu_vuc kv
+            left join camera c on c.khu_vuc_id = kv.id and c.deleted_at is null
+            left join canh_bao cb on cb.khu_vuc_id = kv.id and {}
+            where kv.deleted_at is null
+            group by kv.id, kv.ma_khu_vuc, kv.ten_khu_vuc
+            order by kv.ten_khu_vuc asc
+            """.format(" and ".join(alert_where)),
+            alert_params,
+        )
+        areas = [dict(row) for row in cur.fetchall()]
+
+        cur.execute(
+            """
+            select
+              c.stream_key as camera_id,
+              c.ten_camera as camera_name,
+              count(dv.id) as segments,
+              coalesce(sum(dv.dung_luong), 0) as size
+            from camera c
+            left join doan_video dv on dv.camera_id = c.id and {}
+            where c.deleted_at is null
+            group by c.stream_key, c.ten_camera
+            order by size desc, segments desc, camera_name asc
+            limit 10
+            """.format(" and ".join(recording_where)),
+            recording_params,
+        )
+        recording_by_camera = [dict(row) for row in cur.fetchall()]
+
+    for row in recording_by_day:
+        row["day"] = row["day"].isoformat() if row.get("day") else None
+
+    return {
+        "filters": {
+            "from_time": from_time.isoformat() if hasattr(from_time, "isoformat") else from_time,
+            "to_time": to_time.isoformat() if hasattr(to_time, "isoformat") else to_time,
+        },
+        "camera": camera,
+        "recording": recording,
+        "recording_by_day": recording_by_day,
+        "recording_by_camera": recording_by_camera,
+        "alerts": alerts,
+        "alerts_by_status": alerts_by_status,
+        "areas": areas,
+    }
+
+
 def get_dashboard_summary_from_db():
     with db_cursor() as cur:
         cur.execute(
