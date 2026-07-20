@@ -13,7 +13,12 @@ import json
 import platform
 import threading
 import time
+import shutil
 from datetime import datetime, timedelta
+try:
+    import psutil
+except ImportError:
+    psutil = None
 
 from db import (
     authenticate_user_for_ui,
@@ -22,6 +27,8 @@ from db import (
     export_backup_from_db,
     get_user_by_email_for_ui,
     get_recording_file_path,
+    get_dashboard_activity_from_db,
+    get_dashboard_summary_from_db,
     list_cameras_for_ui,
     list_users_for_ui,
     reset_user_password_for_ui,
@@ -55,6 +62,7 @@ GO2RTC_YAML_PATH = os.path.join(BASE_DIR, "go2rtc.yaml")
 GO2RTC_EXE_PATH = os.path.join(BASE_DIR, "go2rtc.exe")
 
 SETTINGS_JSON_PATH = os.path.join(BASE_DIR, "settings.json")
+RECORDINGS_DIR = os.getenv("RECORDINGS_DIR", os.path.join(BASE_DIR, "..", "recordings"))
 
 CAMERA_DB = {
     "cam_huyen_01": {"name": "Camera Ngã tư Huyện 1", "vlan": "VLAN_10", "status": "active"},
@@ -614,6 +622,66 @@ def stop_recording_camera(camera_id: str):
 @app.post("/api/recording/reload")
 def reload_recording_manager():
     return recording_manager.reload()
+
+
+def _disk_usage(path):
+    target = path if os.path.exists(path) else os.path.dirname(path) or "."
+    usage = shutil.disk_usage(target)
+    return {
+        "path": path,
+        "total": usage.total,
+        "used": usage.used,
+        "free": usage.free,
+        "percent": round((usage.used / usage.total) * 100, 2) if usage.total else 0,
+        "exists": os.path.exists(path),
+    }
+
+
+@app.get("/api/dashboard/summary")
+def get_dashboard_summary():
+    try:
+        summary = get_dashboard_summary_from_db()
+    except Exception as exc:
+        print(f"PostgreSQL dashboard summary error: {exc}")
+        raise HTTPException(status_code=500, detail=f"Khong the doc du lieu dashboard: {str(exc)}")
+    summary["disk"] = _disk_usage(RECORDINGS_DIR)
+    return summary
+
+
+@app.get("/api/dashboard/activity")
+def get_dashboard_activity(limit: int = 20):
+    try:
+        return {"items": get_dashboard_activity_from_db(limit)}
+    except Exception as exc:
+        print(f"PostgreSQL dashboard activity error: {exc}")
+        raise HTTPException(status_code=500, detail=f"Khong the doc nhat ky dashboard: {str(exc)}")
+
+
+@app.get("/api/dashboard/system")
+def get_dashboard_system():
+    disk = _disk_usage(RECORDINGS_DIR)
+    recording_status = recording_manager.status()
+    if psutil is None:
+        return {
+            "psutil_available": False,
+            "cpu": None,
+            "ram": None,
+            "disk": disk,
+            "recording_manager": recording_status,
+        }
+    memory = psutil.virtual_memory()
+    return {
+        "psutil_available": True,
+        "cpu": {"percent": psutil.cpu_percent(interval=0.1)},
+        "ram": {
+            "total": memory.total,
+            "used": memory.used,
+            "free": memory.available,
+            "percent": memory.percent,
+        },
+        "disk": disk,
+        "recording_manager": recording_status,
+    }
 
 
 @app.get("/api/vms/settings")

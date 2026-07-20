@@ -7,6 +7,7 @@ let currentGridLimit = 6;
 let selectedLiveCameraId = null;
 let PLAYBACK_SEGMENTS = [];
 let PLAYBACK_GAPS = [];
+let DASHBOARD_REFRESH_TIMER = null;
 
 // 1. Hàm gọi API lấy danh sách camera tập trung từ Backend FastAPI
 async function fetchCamerasFromBackend() {
@@ -142,6 +143,7 @@ function renderLiveGrid() {
 function renderDashboardStats() {
   const totalEl = document.getElementById('statTotalCameras');
   if (!totalEl) return; // Không ở trang index.html thì bỏ qua
+  if (document.getElementById('statAlertsToday')) return; // Dashboard mới dùng API /api/dashboard/summary
 
   const total = ALL_CAMERAS.length;
   const onlineCount = ALL_CAMERAS.filter(c => c.status === 'online').length;
@@ -157,6 +159,137 @@ function renderDashboardStats() {
 
   const zoneCountEl = document.getElementById('statZoneCount');
   if (zoneCountEl) zoneCountEl.textContent = zoneSet.size;
+}
+
+function formatDashboardBytes(value) {
+  const bytes = Number(value || 0);
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+function setText(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = value;
+}
+
+async function fetchDashboardJson(path) {
+  const response = await fetch(`http://127.0.0.1:8000${path}`);
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.detail || `Không thể tải ${path}`);
+  }
+  return response.json();
+}
+
+async function refreshDashboard() {
+  if (!document.getElementById('statTotalCameras')) return;
+  try {
+    const [summary, activity, system] = await Promise.all([
+      fetchDashboardJson('/api/dashboard/summary'),
+      fetchDashboardJson('/api/dashboard/activity?limit=8'),
+      fetchDashboardJson('/api/dashboard/system')
+    ]);
+    renderDashboardSummary(summary, system);
+    renderDashboardActivity(activity.items || []);
+  } catch (error) {
+    console.error('Lỗi tải Dashboard:', error);
+  }
+}
+
+function renderDashboardSummary(summary, system) {
+  const camera = summary.camera || {};
+  const recording = summary.recording || {};
+  const users = summary.users || {};
+  const disk = (system && system.disk) || summary.disk || {};
+  const alertsToday = Number(summary.alerts?.today || 0);
+  const aiToday = Number(summary.ai_events?.today || 0);
+  const totalCamera = Number(camera.total || 0);
+  const onlineCamera = Number(camera.online || 0);
+  const offlineCamera = Number(camera.offline || 0);
+  const onlinePercent = totalCamera ? Math.round((onlineCamera / totalCamera) * 100) : 0;
+
+  setText('statTotalCameras', totalCamera);
+  setText('statTotalCamerasSub', `Online ${onlineCamera} · Offline ${offlineCamera}`);
+  setText('statOnlineCameras', onlineCamera);
+  setText('statOnlinePercent', `${onlinePercent}%`);
+  setText('statAlertsToday', alertsToday);
+  setText('statAlertsSub', alertsToday ? 'Dữ liệu từ PostgreSQL' : 'Chưa có dữ liệu');
+  setText('statAiToday', aiToday);
+  setText('statAiSub', aiToday ? 'Dữ liệu từ PostgreSQL' : 'Chưa có dữ liệu');
+  setText('statZoneCount', Number(summary.areas?.total || 0));
+  setText('statZoneSub', 'Khu vực trong PostgreSQL');
+  setText('statRecordingEnabled', Number(camera.recording_enabled || 0));
+  setText('statRecordingEnabledSub', 'Camera bat_ghi_hinh=true');
+  setText('statRecordingToday', Number(recording.today_segments || 0));
+  setText('statRecordingTodaySub', `${formatDashboardBytes(recording.today_size)} hôm nay`);
+  setText('statRecordingSize', formatDashboardBytes(recording.total_size));
+  setText('statRecordingSizeSub', `${Number(recording.total_segments || 0)} segment`);
+  setText('statUsersOnline', Number(users.online || 0));
+  setText('statUsersSub', `${Number(users.total || 0)} người dùng · ${Number(users.online || 0) ? 'Đang hoạt động' : 'Chưa có dữ liệu phiên'}`);
+  setText('statDiskUsage', `${Math.round(Number(disk.percent || 0))}%`);
+  setText('statDiskSub', `${formatDashboardBytes(disk.used)} / ${formatDashboardBytes(disk.total)}`);
+  setText('quickAlertToday', alertsToday);
+  setText('quickAiToday', aiToday);
+  setText('quickRecordingToday', Number(recording.today_segments || 0));
+  setText('quickUserOnline', Number(users.online || 0));
+
+  renderEmptyAiTable(aiToday);
+  renderLineChart('alertChartHost', summary.charts?.alerts_7_days || [], '#3b82f6');
+  renderLineChart('aiChartHost', summary.charts?.ai_events_7_days || [], '#8b5cf6');
+}
+
+function renderEmptyAiTable(aiToday) {
+  const table = document.getElementById('recentAiTable');
+  if (!table) return;
+  if (!aiToday) {
+    table.innerHTML = '<tr><th>Thời gian</th><th>Camera</th><th>Sự kiện</th><th>Mức độ</th><th>Trạng thái</th></tr><tr><td colspan="5" style="text-align:center;color:var(--slate-400);padding:24px;">Chưa có dữ liệu</td></tr>';
+  }
+}
+
+function renderLineChart(hostId, rows, color) {
+  const host = document.getElementById(hostId);
+  if (!host) return;
+  const values = (rows || []).map(row => Number(row.total || 0));
+  const hasData = values.some(value => value > 0);
+  if (!hasData) {
+    host.innerHTML = 'Chưa có dữ liệu';
+    host.style.display = 'flex';
+    return;
+  }
+  const max = Math.max(...values, 1);
+  const width = 560;
+  const height = 190;
+  const points = values.map((value, index) => {
+    const x = 20 + index * ((width - 40) / Math.max(values.length - 1, 1));
+    const y = 20 + (height - 40) * (1 - value / max);
+    return `${x},${y}`;
+  }).join(' ');
+  const labels = (rows || []).map((row, index) => {
+    const x = 20 + index * ((width - 40) / Math.max(values.length - 1, 1));
+    const label = String(row.day || '').slice(5);
+    return `<text x="${x - 16}" y="184" font-size="11" fill="#94a3b8">${label}</text>`;
+  }).join('');
+  host.style.display = 'block';
+  host.innerHTML = `<svg viewBox="0 0 ${width} ${height}" style="width:100%;height:220px;padding:10px 0;"><polyline points="${points}" fill="none" stroke="${color}" stroke-width="2.5"/>${labels}</svg>`;
+}
+
+function renderDashboardActivity(items) {
+  const host = document.getElementById('dashboardActivityList');
+  if (!host) return;
+  if (!items.length) {
+    host.style.display = 'flex';
+    host.innerHTML = 'Chưa có dữ liệu';
+    return;
+  }
+  host.style.display = 'block';
+  host.innerHTML = '';
+  items.forEach(item => {
+    const time = item.occurred_at ? new Date(item.occurred_at).toLocaleTimeString('vi-VN', { hour12: false }) : '-';
+    const html = `<div class="activity-item"><div class="act-time">${time}</div><div class="act-icon" style="background:var(--blue-50);color:var(--blue-600)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg></div><div class="act-body"><div class="t">${item.title || item.action || '-'}</div><div class="s">${item.source || 'log'} · ${item.subtitle || ''}</div></div><div class="act-loc">${item.target || '-'}</div></div>`;
+    host.insertAdjacentHTML('beforeend', html);
+  });
 }
 
 function renderOverviewGrid() {
@@ -1096,7 +1229,12 @@ document.addEventListener("DOMContentLoaded", async () => {
    if (document.getElementById('userTableBody')) { await fetchUsersFromBackend(); renderUserTable(); }
    if(document.getElementById('liveCamGrid')) renderLiveGrid();
    if(document.getElementById('overviewCamGrid')) renderOverviewGrid();
-   if(document.getElementById('statTotalCameras')) renderDashboardStats();
+   if(document.getElementById('statTotalCameras')) {
+     renderDashboardStats();
+     await refreshDashboard();
+     if (DASHBOARD_REFRESH_TIMER) clearInterval(DASHBOARD_REFRESH_TIMER);
+     DASHBOARD_REFRESH_TIMER = setInterval(refreshDashboard, 10000);
+   }
    if(document.getElementById('camManagementTableBody')) renderCamManagementTable();
    if(document.getElementById('settingsPanelHost')) {
      const settings = await fetchSettingsFromBackend();

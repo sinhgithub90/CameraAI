@@ -1911,3 +1911,157 @@ def get_recording_file_path(segment_id):
         )
         row = cur.fetchone()
     return row["duong_dan_video"] if row else None
+
+
+def get_dashboard_summary_from_db():
+    with db_cursor() as cur:
+        cur.execute(
+            """
+            select
+              count(*) as total,
+              count(*) filter (where trang_thai_hien_tai = 'ONLINE') as online,
+              count(*) filter (where trang_thai_hien_tai <> 'ONLINE') as offline,
+              count(*) filter (where bat_ghi_hinh = true) as recording_enabled
+            from camera
+            where deleted_at is null
+            """
+        )
+        camera = dict(cur.fetchone())
+
+        cur.execute("select count(*) as total from khu_vuc where deleted_at is null")
+        areas = dict(cur.fetchone())
+
+        cur.execute("select count(*) as total from nguoi_dung where deleted_at is null")
+        users = dict(cur.fetchone())
+
+        cur.execute(
+            """
+            select count(*) as online
+            from phien_dang_nhap
+            where dang_hoat_dong = true
+              and (het_han_luc is null or het_han_luc > now())
+            """
+        )
+        users_online = dict(cur.fetchone())
+
+        cur.execute(
+            """
+            select
+              count(*) as total_segments,
+              coalesce(sum(dung_luong), 0) as total_size,
+              count(*) filter (where bat_dau_luc::date = current_date) as today_segments,
+              coalesce(sum(dung_luong) filter (where bat_dau_luc::date = current_date), 0) as today_size
+            from doan_video
+            where deleted_at is null
+            """
+        )
+        recording = dict(cur.fetchone())
+
+        cur.execute(
+            """
+            select count(*) as today
+            from canh_bao
+            where deleted_at is null
+              and phat_sinh_luc::date = current_date
+            """
+        )
+        alerts = dict(cur.fetchone())
+
+        cur.execute(
+            """
+            select count(*) as today
+            from su_kien_phat_hien
+            where phat_hien_luc::date = current_date
+            """
+        )
+        ai_events = dict(cur.fetchone())
+
+        cur.execute(
+            """
+            with days as (
+              select generate_series(current_date - interval '6 day', current_date, interval '1 day')::date as day
+            )
+            select
+              days.day,
+              coalesce(count(cb.id), 0) as total
+            from days
+            left join canh_bao cb
+              on cb.deleted_at is null
+             and cb.phat_sinh_luc::date = days.day
+            group by days.day
+            order by days.day
+            """
+        )
+        alert_chart = [dict(row) for row in cur.fetchall()]
+
+        cur.execute(
+            """
+            with days as (
+              select generate_series(current_date - interval '6 day', current_date, interval '1 day')::date as day
+            )
+            select
+              days.day,
+              coalesce(count(sk.id), 0) as total
+            from days
+            left join su_kien_phat_hien sk
+              on sk.phat_hien_luc::date = days.day
+            group by days.day
+            order by days.day
+            """
+        )
+        ai_chart = [dict(row) for row in cur.fetchall()]
+
+    return {
+        "camera": camera,
+        "areas": areas,
+        "users": {"total": users["total"], "online": users_online["online"]},
+        "recording": recording,
+        "alerts": alerts,
+        "ai_events": ai_events,
+        "charts": {
+            "alerts_7_days": alert_chart,
+            "ai_events_7_days": ai_chart,
+        },
+    }
+
+
+def get_dashboard_activity_from_db(limit=20):
+    limit = max(1, min(int(limit or 20), 100))
+    with db_cursor() as cur:
+        cur.execute(
+            """
+            select *
+            from (
+              select
+                'system' as source,
+                nh.hanh_dong as action,
+                coalesce(nh.ten_bang, 'he_thong') as target,
+                nh.ban_ghi_id as record_id,
+                nh.thoi_diem as occurred_at,
+                'INFO' as level,
+                concat(nh.hanh_dong, ' ', coalesce(nh.ten_bang, 'he_thong')) as title,
+                coalesce(nh.ban_ghi_id, '') as subtitle
+              from nhat_ky_he_thong nh
+              union all
+              select
+                'camera' as source,
+                nk.hanh_dong as action,
+                coalesce(c.stream_key, 'camera') as target,
+                c.stream_key as record_id,
+                nk.thoi_diem as occurred_at,
+                coalesce(nk.muc_do, 'INFO') as level,
+                coalesce(nk.noi_dung, nk.hanh_dong) as title,
+                coalesce(c.ten_camera, '') as subtitle
+              from nhat_ky_camera nk
+              left join camera c on c.id = nk.camera_id
+            ) activity
+            order by occurred_at desc
+            limit %s
+            """,
+            (limit,),
+        )
+        rows = [dict(row) for row in cur.fetchall()]
+
+    for row in rows:
+        row["occurred_at"] = row["occurred_at"].isoformat()
+    return rows

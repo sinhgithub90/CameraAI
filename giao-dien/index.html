@@ -62,9 +62,17 @@
         <div class="stats-row">
           <div class="card stat-card"><div class="stat-top"><div class="stat-icon" style="background:var(--blue-50);color:var(--blue-600)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="14" rx="2"/><path d="M8 21h8M12 18v3"/></svg></div><div><div class="stat-label">Tổng camera</div></div></div><div class="stat-value" id="statTotalCameras">-</div><div class="stat-sub" id="statTotalCamerasSub">Đang tải...</div></div>
           <div class="card stat-card"><div class="stat-top"><div class="stat-icon" style="background:var(--green-50);color:var(--green-600)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg></div><div><div class="stat-label">Camera online</div></div></div><div class="stat-value" id="statOnlineCameras">-</div><div class="stat-sub upgreen" id="statOnlinePercent">-</div></div>
-          <div class="card stat-card"><div class="stat-top"><div class="stat-icon" style="background:var(--red-50);color:var(--red-500)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/></svg></div><div><div class="stat-label">Cảnh báo hôm nay</div></div></div><div class="stat-value">12</div><div class="stat-sub up">↑ 20% so với hôm qua</div></div>
-          <div class="card stat-card"><div class="stat-top"><div class="stat-icon" style="background:#f3e8ff;color:var(--purple-500)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/></svg></div><div><div class="stat-label">Sự kiện AI (hôm nay)</div></div></div><div class="stat-value">156</div><div class="stat-sub upgreen">↑ 18% so với hôm qua</div></div>
+          <div class="card stat-card"><div class="stat-top"><div class="stat-icon" style="background:var(--red-50);color:var(--red-500)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/></svg></div><div><div class="stat-label">Cảnh báo hôm nay</div></div></div><div class="stat-value" id="statAlertsToday">-</div><div class="stat-sub" id="statAlertsSub">Đang tải...</div></div>
+          <div class="card stat-card"><div class="stat-top"><div class="stat-icon" style="background:#f3e8ff;color:var(--purple-500)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/></svg></div><div><div class="stat-label">Sự kiện AI (hôm nay)</div></div></div><div class="stat-value" id="statAiToday">-</div><div class="stat-sub" id="statAiSub">Đang tải...</div></div>
           <div class="card stat-card"><div class="stat-top"><div class="stat-icon" style="background:var(--blue-50);color:var(--blue-600)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18M5 21V7l8-4v18M19 21V11l-6-4"/></svg></div><div><div class="stat-label">Khu vực giám sát</div></div></div><div class="stat-value" id="statZoneCount">-</div><div class="stat-sub" id="statZoneSub">Tòa nhà / Khu vực</div></div>
+        </div>
+
+        <div class="stats-row" style="margin-top:14px;">
+          <div class="card stat-card"><div class="stat-top"><div class="stat-icon" style="background:#ecfdf5;color:#059669"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div><div><div class="stat-label">Camera bật ghi hình</div></div></div><div class="stat-value" id="statRecordingEnabled">-</div><div class="stat-sub" id="statRecordingEnabledSub">Đang tải...</div></div>
+          <div class="card stat-card"><div class="stat-top"><div class="stat-icon" style="background:#eff6ff;color:#2563eb"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8"/></svg></div><div><div class="stat-label">Recording hôm nay</div></div></div><div class="stat-value" id="statRecordingToday">-</div><div class="stat-sub" id="statRecordingTodaySub">Đang tải...</div></div>
+          <div class="card stat-card"><div class="stat-top"><div class="stat-icon" style="background:#f8fafc;color:#475569"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.7 4 3 9 3s9-1.3 9-3V5"/><path d="M3 12c0 1.7 4 3 9 3s9-1.3 9-3"/></svg></div><div><div class="stat-label">Dung lượng recording</div></div></div><div class="stat-value" id="statRecordingSize">-</div><div class="stat-sub" id="statRecordingSizeSub">Đang tải...</div></div>
+          <div class="card stat-card"><div class="stat-top"><div class="stat-icon" style="background:#fef3c7;color:#d97706"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></div><div><div class="stat-label">Người dùng online</div></div></div><div class="stat-value" id="statUsersOnline">-</div><div class="stat-sub" id="statUsersSub">Đang tải...</div></div>
+          <div class="card stat-card"><div class="stat-top"><div class="stat-icon" style="background:#fee2e2;color:#dc2626"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v8"/><path d="M7 20h10"/></svg></div><div><div class="stat-label">Ổ lưu trữ</div></div></div><div class="stat-value" id="statDiskUsage">-</div><div class="stat-sub" id="statDiskSub">Đang tải...</div></div>
         </div>
 
         <div class="grid-2">
@@ -77,10 +85,10 @@
           <div class="card">
             <div class="card-head"><h3>Cảnh báo nhanh</h3><a class="link" href="alerts.html">Xem tất cả ›</a></div>
             <div class="quick-alert-grid">
-              <div class="qa-item"><div class="n" style="color:#dc2626">6</div><div class="l">Phát hiện xâm nhập</div></div>
-              <div class="qa-item"><div class="n" style="color:#2563eb">3</div><div class="l">Vật thể bị bỏ rơi</div></div>
-              <div class="qa-item"><div class="n" style="color:#d97706">2</div><div class="l">Vật thể khả nghi</div></div>
-              <div class="qa-item"><div class="n" style="color:#7c3aed">1</div><div class="l">Đi qua hàng rào ảo</div></div>
+              <div class="qa-item"><div class="n" id="quickAlertToday" style="color:#dc2626">-</div><div class="l">Cảnh báo hôm nay</div></div>
+              <div class="qa-item"><div class="n" id="quickAiToday" style="color:#7c3aed">-</div><div class="l">Sự kiện AI hôm nay</div></div>
+              <div class="qa-item"><div class="n" id="quickRecordingToday" style="color:#2563eb">-</div><div class="l">Segment hôm nay</div></div>
+              <div class="qa-item"><div class="n" id="quickUserOnline" style="color:#d97706">-</div><div class="l">Người dùng online</div></div>
             </div>
           </div>
         </div>
@@ -88,57 +96,25 @@
         <div class="grid-2">
           <div class="card">
             <div class="card-head"><h3>Sự kiện AI gần đây</h3><a class="link" href="ai.html">Xem tất cả ›</a></div>
-            <table>
+            <table id="recentAiTable">
               <tr><th>Thời gian</th><th>Camera</th><th>Sự kiện</th><th>Mức độ</th><th>Trạng thái</th></tr>
-              <tr><td>09:23:48</td><td>Cổng chính</td><td>Phát hiện xâm nhập</td><td><span class="pill cao">Cao</span></td><td><span class="status daxuly"><span class="d"></span>Đã xử lý</span></td></tr>
-              <tr><td>09:21:17</td><td>Bãi xe</td><td>Đi qua hàng rào ảo</td><td><span class="pill trungbinh">Trung bình</span></td><td><span class="status dangxuly"><span class="d"></span>Đang xử lý</span></td></tr>
-              <tr><td>09:19:05</td><td>Hành lang tầng 2</td><td>Vật thể bị bỏ rơi</td><td><span class="pill trungbinh">Trung bình</span></td><td><span class="status daxuly"><span class="d"></span>Đã xử lý</span></td></tr>
-              <tr><td>09:15:32</td><td>Cổng chính</td><td>Nhận diện khuôn mặt</td><td><span class="pill thap">Thấp</span></td><td><span class="status daxuly"><span class="d"></span>Đã xử lý</span></td></tr>
-              <tr><td>09:12:09</td><td>Bãi xe</td><td>Xe đi vào</td><td><span class="pill thap">Thấp</span></td><td><span class="status daxuly"><span class="d"></span>Đã xử lý</span></td></tr>
-              <tr><td>09:07:56</td><td>Kho hàng</td><td>Phát hiện tụ tập</td><td><span class="pill trungbinh">Trung bình</span></td><td><span class="status dangxuly"><span class="d"></span>Đang xử lý</span></td></tr>
+              <tr><td colspan="5" style="text-align:center;color:var(--slate-400);padding:24px;">Chưa có dữ liệu</td></tr>
             </table>
           </div>
           <div class="card">
             <div class="card-head"><h3>Hoạt động gần đây</h3><a class="link" href="#">Xem tất cả ›</a></div>
-            <div class="activity-item"><div class="act-time">09:23:48</div><div class="act-icon" style="background:var(--red-50);color:var(--red-500)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 4l-9 9h6l-1 7 9-9h-6l1-7z"/></svg></div><div class="act-body"><div class="t">Phát hiện xâm nhập</div><div class="s">Bởi AI Engine</div></div><div class="act-loc">Cổng chính</div></div>
-            <div class="activity-item"><div class="act-time">09:21:17</div><div class="act-icon" style="background:#dbeafe;color:#2563eb"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg></div><div class="act-body"><div class="t">Đi qua hàng rào ảo</div><div class="s">Bởi AI Engine</div></div><div class="act-loc">Bãi xe</div></div>
-            <div class="activity-item"><div class="act-time">09:19:05</div><div class="act-icon" style="background:#fef3c7;color:#d97706"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg></div><div class="act-body"><div class="t">Vật thể bị bỏ rơi</div><div class="s">Bởi AI Engine</div></div><div class="act-loc">Hành lang tầng 2</div></div>
-            <div class="activity-item"><div class="act-time">09:15:32</div><div class="act-icon" style="background:#dcfce7;color:#16a34a"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg></div><div class="act-body"><div class="t">Nhận diện khuôn mặt</div><div class="s">Khớp: Nhân viên</div></div><div class="act-loc">Cổng chính</div></div>
-            <div class="activity-item"><div class="act-time">09:12:09</div><div class="act-icon" style="background:#dbeafe;color:#2563eb"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg></div><div class="act-body"><div class="t">Xe đi vào</div><div class="s">Bởi AI Engine</div></div><div class="act-loc">Bãi xe</div></div>
+            <div id="dashboardActivityList" style="min-height:220px; display:flex; align-items:center; justify-content:center; color:var(--slate-400); font-size:13px;">Chưa có dữ liệu</div>
           </div>
         </div>
 
         <div class="charts-row">
           <div class="card">
             <div class="card-head"><h3>Số cảnh báo theo ngày</h3><select style="border:1px solid var(--slate-200);border-radius:6px;font-size:12px;padding:4px 8px;">7 ngày qua</select></div>
-            <svg viewBox="0 0 600 220" style="width:100%;height:220px;padding:10px 0;">
-              <polyline points="20,170 100,190 180,150 260,80 340,60 420,110 500,140" fill="none" stroke="#3b82f6" stroke-width="2.5"/>
-              <polygon points="20,170 100,190 180,150 260,80 340,60 420,110 500,140 500,210 20,210" fill="url(#g1)" opacity="0.25"/>
-              <defs><linearGradient id="g1" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#3b82f6"/><stop offset="100%" stop-color="#3b82f6" stop-opacity="0"/></linearGradient></defs>
-              <text x="10" y="20" font-size="11" fill="#94a3b8">14/05</text>
-              <text x="90" y="20" font-size="11" fill="#94a3b8">15/05</text>
-            </svg>
+            <div id="alertChartHost" style="height:220px; display:flex; align-items:center; justify-content:center; color:var(--slate-400); font-size:13px;">Chưa có dữ liệu</div>
           </div>
           <div class="card">
             <div class="card-head"><h3>Sự kiện AI theo loại</h3><select style="border:1px solid var(--slate-200);border-radius:6px;font-size:12px;padding:4px 8px;">7 ngày qua</select></div>
-            <div class="donut-wrap">
-              <svg width="120" height="120" viewBox="0 0 36 36">
-                <circle cx="18" cy="18" r="15.9" fill="none" stroke="#ef4444" stroke-width="5" stroke-dasharray="24.4 75.6" stroke-dashoffset="25"/>
-                <circle cx="18" cy="18" r="15.9" fill="none" stroke="#3b82f6" stroke-width="5" stroke-dasharray="17.9 82.1" stroke-dashoffset="0.6"/>
-                <circle cx="18" cy="18" r="15.9" fill="none" stroke="#f59e0b" stroke-width="5" stroke-dasharray="15.4 84.6" stroke-dashoffset="-17.3"/>
-                <circle cx="18" cy="18" r="15.9" fill="none" stroke="#22c55e" stroke-width="5" stroke-dasharray="22.4 77.6" stroke-dashoffset="-32.7"/>
-                <circle cx="18" cy="18" r="15.9" fill="none" stroke="#8b5cf6" stroke-width="5" stroke-dasharray="19.9 80.1" stroke-dashoffset="-55.1"/>
-                <text x="18" y="17" text-anchor="middle" font-size="3.6" fill="#94a3b8">Tổng</text>
-                <text x="18" y="21.5" text-anchor="middle" font-size="4.5" fill="#0f172a" font-weight="700">156</text>
-              </svg>
-              <div>
-                <div class="legend-item"><span class="legend-dot" style="background:#ef4444"></span>Phát hiện xâm nhập 38 (24.4%)</div>
-                <div class="legend-item"><span class="legend-dot" style="background:#3b82f6"></span>Đi qua hàng rào ảo 28 (17.9%)</div>
-                <div class="legend-item"><span class="legend-dot" style="background:#f59e0b"></span>Vật thể bị bỏ rơi 24 (15.4%)</div>
-                <div class="legend-item"><span class="legend-dot" style="background:#22c55e"></span>Nhận diện khuôn mặt 35 (22.4%)</div>
-                <div class="legend-item"><span class="legend-dot" style="background:#8b5cf6"></span>Khác 31 (19.9%)</div>
-              </div>
-            </div>
+            <div id="aiChartHost" style="height:220px; display:flex; align-items:center; justify-content:center; color:var(--slate-400); font-size:13px;">Chưa có dữ liệu</div>
           </div>
         </div>
     </div>
