@@ -7,6 +7,8 @@ let currentGridLimit = 6;
 let selectedLiveCameraId = null;
 let PLAYBACK_SEGMENTS = [];
 let PLAYBACK_GAPS = [];
+let ALL_ALERTS = [];
+let selectedAlertId = null;
 let DASHBOARD_REFRESH_TIMER = null;
 
 // 1. Hàm gọi API lấy danh sách camera tập trung từ Backend FastAPI
@@ -290,6 +292,208 @@ function renderDashboardActivity(items) {
     const html = `<div class="activity-item"><div class="act-time">${time}</div><div class="act-icon" style="background:var(--blue-50);color:var(--blue-600)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg></div><div class="act-body"><div class="t">${item.title || item.action || '-'}</div><div class="s">${item.source || 'log'} · ${item.subtitle || ''}</div></div><div class="act-loc">${item.target || '-'}</div></div>`;
     host.insertAdjacentHTML('beforeend', html);
   });
+}
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, char => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#039;'
+  }[char]));
+}
+
+function alertSeverityClass(severity) {
+  const value = String(severity || '').toUpperCase();
+  if (value === 'HIGH' || value === 'CRITICAL') return 'cao';
+  if (value === 'MEDIUM') return 'trungbinh';
+  return 'thap';
+}
+
+function alertStatusColor(status) {
+  const value = String(status || '').toUpperCase();
+  if (value === 'NEW') return '#3b82f6';
+  if (value === 'CLOSED' || value === 'RESOLVED') return '#16a34a';
+  if (value === 'IGNORED') return 'var(--slate-400)';
+  return '#d97706';
+}
+
+function formatAlertDateTime(value) {
+  if (!value) return '-';
+  return new Date(value).toLocaleString('vi-VN', { hour12: false });
+}
+
+function formatAlertTime(value) {
+  if (!value) return '-';
+  return new Date(value).toLocaleTimeString('vi-VN', { hour12: false });
+}
+
+function updateAlertStats(summary = {}) {
+  setText('alertStatNew', Number(summary.new || 0));
+  setText('alertStatProcessing', Number(summary.processing || 0));
+  setText('alertStatHigh', Number(summary.high || 0));
+  setText('alertStatClosed', Number(summary.closed || 0));
+  setText('alertStatTotal', `Tổng: ${Number(summary.total || 0)}`);
+  setText('alertMenuBadge', Number(summary.new || 0));
+  setText('alertTopBadge', Number(summary.new || 0));
+}
+
+function populateAlertCameraFilter() {
+  const select = document.getElementById('alertCameraFilter');
+  if (!select) return;
+  const current = select.value || 'all';
+  select.innerHTML = '<option value="all">Tất cả camera</option>';
+  ALL_CAMERAS.forEach(cam => {
+    const option = document.createElement('option');
+    option.value = cam.id;
+    option.textContent = `${cam.index || ''}. ${cam.name || cam.id}`.trim();
+    select.appendChild(option);
+  });
+  if (current === 'all' || ALL_CAMERAS.some(cam => cam.id === current)) {
+    select.value = current;
+  }
+}
+
+async function loadAlerts() {
+  const list = document.getElementById('alertList');
+  if (!list) return;
+  list.innerHTML = '<div style="padding:28px;text-align:center;color:var(--slate-400);">Đang tải cảnh báo...</div>';
+  populateAlertCameraFilter();
+
+  const params = new URLSearchParams();
+  const severity = document.getElementById('alertSeverityFilter')?.value;
+  const status = document.getElementById('alertStatusFilter')?.value;
+  const cameraId = document.getElementById('alertCameraFilter')?.value;
+  const fromTime = document.getElementById('alertFromFilter')?.value;
+  const toTime = document.getElementById('alertToFilter')?.value;
+  if (severity && severity !== 'all') params.set('severity', severity);
+  if (status && status !== 'all') params.set('status', status);
+  if (cameraId && cameraId !== 'all') params.set('camera_id', cameraId);
+  if (fromTime) params.set('from_time', new Date(fromTime).toISOString());
+  if (toTime) params.set('to_time', new Date(toTime).toISOString());
+
+  try {
+    const response = await fetch(`http://127.0.0.1:8000/api/vms/alerts?${params.toString()}`);
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.detail || 'Không thể tải cảnh báo.');
+    }
+    const data = await response.json();
+    ALL_ALERTS = data.items || [];
+    updateAlertStats(data.summary || {});
+    renderAlertList(ALL_ALERTS);
+    if (ALL_ALERTS.length) {
+      await selectAlertById(ALL_ALERTS[0].id);
+    } else {
+      selectedAlertId = null;
+      renderAlertEmptyDetail();
+    }
+  } catch (error) {
+    list.innerHTML = `<div style="padding:28px;text-align:center;color:#dc2626;">${escapeHtml(error.message || 'Lỗi tải cảnh báo.')}</div>`;
+    renderAlertEmptyDetail();
+  }
+}
+
+function renderAlertList(alerts) {
+  const list = document.getElementById('alertList');
+  const title = document.getElementById('alertListTitle');
+  const pageText = document.getElementById('alertPaginationText');
+  if (!list) return;
+  if (title) title.textContent = `Danh sách cảnh báo (${alerts.length})`;
+  if (pageText) pageText.textContent = alerts.length ? `Hiển thị ${alerts.length} cảnh báo` : 'Chưa có cảnh báo';
+
+  if (!alerts.length) {
+    list.innerHTML = '<div style="padding:34px;text-align:center;color:var(--slate-400);">Chưa có cảnh báo</div>';
+    return;
+  }
+
+  list.innerHTML = '';
+  alerts.forEach(alertItem => {
+    const row = document.createElement('div');
+    row.className = `alert-row${alertItem.id === selectedAlertId ? ' selected' : ''}`;
+    row.onclick = () => selectAlertById(alertItem.id);
+    row.innerHTML = `
+      <div class="time"><b>${escapeHtml(formatAlertTime(alertItem.occurred_at))}</b><br><span style="color:var(--slate-400);">${escapeHtml(formatAlertDateTime(alertItem.occurred_at).split(' ')[0] || '')}</span></div>
+      <div class="alert-icon" style="background:var(--red-50);color:var(--red-500)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/></svg></div>
+      <div class="alert-mid"><div class="t">${escapeHtml(alertItem.title)} <span class="pill ${alertSeverityClass(alertItem.severity)}">${escapeHtml(alertItem.severity_label)}</span></div><div class="s">${escapeHtml(alertItem.location)} · ${escapeHtml(alertItem.camera_name)}</div></div>
+      <div style="font-size:11.5px;color:${alertStatusColor(alertItem.status)};">● ${escapeHtml(alertItem.status_label)}</div>
+    `;
+    list.appendChild(row);
+  });
+}
+
+function renderAlertEmptyDetail() {
+  const detail = document.getElementById('alertDetailPanel');
+  if (detail) detail.innerHTML = '<div style="color:var(--slate-400);">Chưa có cảnh báo để hiển thị.</div>';
+}
+
+async function selectAlertById(alertId) {
+  selectedAlertId = alertId;
+  renderAlertList(ALL_ALERTS);
+  const detail = document.getElementById('alertDetailPanel');
+  if (!detail) return;
+  detail.innerHTML = '<div style="color:var(--slate-400);">Đang tải chi tiết...</div>';
+  try {
+    const response = await fetch(`http://127.0.0.1:8000/api/vms/alerts/${alertId}`);
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.detail || 'Không thể tải chi tiết cảnh báo.');
+    }
+    renderAlertDetail(await response.json());
+  } catch (error) {
+    detail.innerHTML = `<div style="color:#dc2626;">${escapeHtml(error.message || 'Lỗi tải chi tiết cảnh báo.')}</div>`;
+  }
+}
+
+function renderAlertDetail(alertItem) {
+  const detail = document.getElementById('alertDetailPanel');
+  if (!detail) return;
+  const timeline = alertItem.timeline || [];
+  const evidence = alertItem.evidence || [];
+  detail.innerHTML = `
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+      <span class="pill ${alertSeverityClass(alertItem.severity)}">${escapeHtml(alertItem.severity_label)}</span>
+      <b>${escapeHtml(alertItem.title)}</b>
+      <span style="margin-left:auto;font-size:11px;color:var(--slate-400);">ID: #${escapeHtml(alertItem.code)}</span>
+    </div>
+    <div style="font-size:12px;color:var(--slate-500);margin-bottom:14px;">
+      ${escapeHtml(formatAlertDateTime(alertItem.occurred_at))}<br>
+      Camera: ${escapeHtml(alertItem.camera_name)} (${escapeHtml(alertItem.camera_id)})<br>
+      Khu vực: ${escapeHtml(alertItem.zone)} · Vị trí: ${escapeHtml(alertItem.location)}
+    </div>
+    <h4 style="font-size:12px;color:var(--slate-400);margin-bottom:8px;">MÔ TẢ</h4>
+    <div class="ai-summary">${escapeHtml(alertItem.description || 'Chưa có mô tả.')}</div>
+    <h4 style="font-size:12px;color:var(--slate-400);margin:14px 0 8px;">BẰNG CHỨNG</h4>
+    <div style="font-size:12px;color:var(--slate-500);">${evidence.length ? evidence.map(item => escapeHtml(item.file_name || item.path)).join('<br>') : 'Chưa có bằng chứng.'}</div>
+    <h4 style="font-size:12px;color:var(--slate-400);margin:14px 0 8px;">TIMELINE TRẠNG THÁI</h4>
+    <div style="display:grid;gap:8px;font-size:12px;color:var(--slate-600);">
+      ${timeline.length ? timeline.map(item => `<div class="reco-item">● ${escapeHtml(formatAlertDateTime(item.occurred_at))} · ${escapeHtml(item.status_label || item.status)}${item.note ? ` · ${escapeHtml(item.note)}` : ''}</div>`).join('') : '<div class="reco-item">Chưa có lịch sử trạng thái.</div>'}
+    </div>
+    <div class="btn-row">
+      <button class="btn-sm primary" onclick="updateAlertStatus('${alertItem.id}', 'PROCESSING')">Tiếp nhận</button>
+      <button class="btn-sm green" onclick="updateAlertStatus('${alertItem.id}', 'CLOSED')">Đóng cảnh báo</button>
+    </div>
+  `;
+}
+
+async function updateAlertStatus(alertId, status) {
+  const token = localStorage.getItem('token');
+  if (!token) return alert('Phiên làm việc hết hạn, vui lòng đăng nhập lại.');
+  try {
+    const response = await fetch(`http://127.0.0.1:8000/api/vms/alerts/${alertId}/status`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ status })
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.detail || 'Không thể cập nhật trạng thái cảnh báo.');
+    }
+    await loadAlerts();
+  } catch (error) {
+    alert(error.message || 'Lỗi cập nhật trạng thái cảnh báo.');
+  }
 }
 
 function renderOverviewGrid() {
@@ -1260,6 +1464,7 @@ document.addEventListener("DOMContentLoaded", async () => {
      handleLiveQueryAction();
    }
    if(document.getElementById('overviewCamGrid')) renderOverviewGrid();
+   if(document.getElementById('alertList')) await loadAlerts();
    if(document.getElementById('statTotalCameras')) {
      renderDashboardStats();
      await refreshDashboard();

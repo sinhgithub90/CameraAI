@@ -27,9 +27,11 @@ from db import (
     export_backup_from_db,
     get_user_by_email_for_ui,
     get_recording_file_path,
+    get_alert_detail_for_ui,
     get_dashboard_activity_from_db,
     get_dashboard_summary_from_db,
     list_cameras_for_ui,
+    list_alerts_for_ui,
     list_users_for_ui,
     reset_user_password_for_ui,
     soft_delete_camera_for_ui,
@@ -37,6 +39,7 @@ from db import (
     toggle_user_lock_for_ui,
     update_camera_for_ui,
     update_camera_location_for_ui,
+    update_alert_status_for_ui,
     update_user_for_ui,
     restore_backup_to_db,
     search_recording_segments,
@@ -694,6 +697,59 @@ class NotificationSettingsInput(BaseModel):
     sms_enabled: bool
     sms_phone: str
     min_alert_level: str
+
+
+class AlertStatusInput(BaseModel):
+    status: str
+    note: Optional[str] = None
+
+
+@app.get("/api/vms/alerts")
+def get_alerts(
+    status: Optional[str] = None,
+    severity: Optional[str] = None,
+    camera_id: Optional[str] = None,
+    from_time: Optional[str] = None,
+    to_time: Optional[str] = None,
+):
+    try:
+        return list_alerts_for_ui(
+            status=status,
+            severity=severity,
+            camera_id=camera_id,
+            from_time=from_time,
+            to_time=to_time,
+        )
+    except Exception as exc:
+        print(f"PostgreSQL alerts list error: {exc}")
+        raise HTTPException(status_code=500, detail=f"Khong the doc canh bao tu PostgreSQL: {str(exc)}")
+
+
+@app.get("/api/vms/alerts/{alert_id}")
+def get_alert_detail(alert_id: int):
+    try:
+        alert = get_alert_detail_for_ui(alert_id)
+    except Exception as exc:
+        print(f"PostgreSQL alert detail error: {exc}")
+        raise HTTPException(status_code=500, detail=f"Khong the doc chi tiet canh bao: {str(exc)}")
+    if not alert:
+        raise HTTPException(status_code=404, detail="Khong tim thay canh bao")
+    return alert
+
+
+@app.put("/api/vms/alerts/{alert_id}/status")
+def update_alert_status(alert_id: int, data: AlertStatusInput, admin_user: str = Depends(verify_admin_role)):
+    try:
+        alert = update_alert_status_for_ui(alert_id, data.status, data.note, admin_user)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        print(f"PostgreSQL alert status error: {exc}")
+        raise HTTPException(status_code=500, detail=f"Khong the cap nhat trang thai canh bao: {str(exc)}")
+    if not alert:
+        raise HTTPException(status_code=404, detail="Khong tim thay canh bao")
+    return {"success": True, "alert": alert}
+
 
 @app.put("/api/vms/settings/notifications", dependencies=[Depends(verify_admin_role)])
 def update_notification_settings(data: NotificationSettingsInput):

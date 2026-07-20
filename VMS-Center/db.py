@@ -1913,6 +1913,256 @@ def get_recording_file_path(segment_id):
     return row["duong_dan_video"] if row else None
 
 
+def _alert_severity_label(value):
+    labels = {
+        "LOW": "Thap",
+        "MEDIUM": "Trung binh",
+        "HIGH": "Cao",
+        "CRITICAL": "Khan cap",
+    }
+    return labels.get(str(value or "").upper(), value or "-")
+
+
+def _alert_status_label(value):
+    labels = {
+        "NEW": "Moi",
+        "PROCESSING": "Dang xu ly",
+        "ACKNOWLEDGED": "Da tiep nhan",
+        "CLOSED": "Da dong",
+        "RESOLVED": "Da xu ly",
+        "IGNORED": "Bo qua",
+    }
+    return labels.get(str(value or "").upper(), value or "-")
+
+
+def _normalize_alert_row(row):
+    if not row:
+        return None
+    data = dict(row)
+    severity = str(data.get("severity") or "").upper()
+    status = str(data.get("status") or "").upper()
+    occurred_at = data.get("occurred_at")
+    updated_at = data.get("updated_at")
+    return {
+        "id": data["id"],
+        "code": f"AL-{int(data['id']):06d}",
+        "title": data.get("title") or f"Canh bao #{data['id']}",
+        "description": data.get("description") or "",
+        "severity": severity,
+        "severity_label": _alert_severity_label(severity),
+        "status": status,
+        "status_label": _alert_status_label(status),
+        "camera_id": data.get("camera_id"),
+        "camera_db_id": data.get("camera_db_id"),
+        "camera_name": data.get("camera_name") or "-",
+        "zone": data.get("zone") or "-",
+        "location": data.get("location") or "-",
+        "occurred_at": occurred_at.isoformat() if occurred_at else None,
+        "updated_at": updated_at.isoformat() if updated_at else None,
+    }
+
+
+def list_alerts_for_ui(status=None, severity=None, camera_id=None, from_time=None, to_time=None):
+    where = ["cb.deleted_at is null"]
+    params = []
+    if status and status != "all":
+        where.append("upper(cb.trang_thai_hien_tai) = %s")
+        params.append(str(status).upper())
+    if severity and severity != "all":
+        where.append("upper(cb.muc_do) = %s")
+        params.append(str(severity).upper())
+    if camera_id and camera_id != "all":
+        where.append("(c.stream_key = %s or c.ma_camera = %s)")
+        params.extend([camera_id, camera_id])
+    if from_time:
+        where.append("cb.phat_sinh_luc >= %s")
+        params.append(from_time)
+    if to_time:
+        where.append("cb.phat_sinh_luc <= %s")
+        params.append(to_time)
+
+    sql = f"""
+        select
+          cb.id,
+          cb.muc_do as severity,
+          cb.trang_thai_hien_tai as status,
+          cb.mo_ta as description,
+          coalesce(lsk.ten_loai_su_kien, cb.mo_ta, 'Canh bao') as title,
+          cb.phat_sinh_luc as occurred_at,
+          cb.updated_at,
+          c.id as camera_db_id,
+          c.stream_key as camera_id,
+          c.ten_camera as camera_name,
+          coalesce(kv.ten_khu_vuc, ldc.toa_nha, '-') as zone,
+          coalesce(ldc.vi_tri_lap_dat, '-') as location
+        from canh_bao cb
+        join camera c on c.id = cb.camera_id
+        left join khu_vuc kv on kv.id = cb.khu_vuc_id
+        left join lap_dat_camera ldc on ldc.camera_id = c.id
+        left join su_kien_phat_hien sk on sk.id = cb.su_kien_phat_hien_id
+        left join loai_su_kien lsk on lsk.id = sk.loai_su_kien_id
+        where {' and '.join(where)}
+        order by cb.phat_sinh_luc desc
+        limit 200
+    """
+    with db_cursor() as cur:
+        cur.execute(sql, params)
+        items = [_normalize_alert_row(row) for row in cur.fetchall()]
+        cur.execute(
+            """
+            select
+              count(*) as total,
+              count(*) filter (where upper(trang_thai_hien_tai) = 'NEW') as new,
+              count(*) filter (where upper(trang_thai_hien_tai) in ('PROCESSING', 'ACKNOWLEDGED')) as processing,
+              count(*) filter (where upper(trang_thai_hien_tai) in ('CLOSED', 'RESOLVED')) as closed,
+              count(*) filter (where upper(muc_do) in ('HIGH', 'CRITICAL')) as high
+            from canh_bao
+            where deleted_at is null
+            """
+        )
+        summary = dict(cur.fetchone())
+    return {"items": items, "summary": summary}
+
+
+def get_alert_detail_for_ui(alert_id):
+    with db_cursor() as cur:
+        cur.execute(
+            """
+            select
+              cb.id,
+              cb.muc_do as severity,
+              cb.trang_thai_hien_tai as status,
+              cb.mo_ta as description,
+              coalesce(lsk.ten_loai_su_kien, cb.mo_ta, 'Canh bao') as title,
+              cb.phat_sinh_luc as occurred_at,
+              cb.updated_at,
+              c.id as camera_db_id,
+              c.stream_key as camera_id,
+              c.ten_camera as camera_name,
+              coalesce(kv.ten_khu_vuc, ldc.toa_nha, '-') as zone,
+              coalesce(ldc.vi_tri_lap_dat, '-') as location
+            from canh_bao cb
+            join camera c on c.id = cb.camera_id
+            left join khu_vuc kv on kv.id = cb.khu_vuc_id
+            left join lap_dat_camera ldc on ldc.camera_id = c.id
+            left join su_kien_phat_hien sk on sk.id = cb.su_kien_phat_hien_id
+            left join loai_su_kien lsk on lsk.id = sk.loai_su_kien_id
+            where cb.id = %s and cb.deleted_at is null
+            """,
+            (alert_id,),
+        )
+        alert = _normalize_alert_row(cur.fetchone())
+        if not alert:
+            return None
+
+        cur.execute(
+            """
+            select
+              lstt.id,
+              'status' as type,
+              lstt.trang_thai as status,
+              lstt.ghi_chu as note,
+              nd.ten_dang_nhap as username,
+              lstt.bat_dau_luc as occurred_at
+            from lich_su_trang_thai_canh_bao lstt
+            left join nguoi_dung nd on nd.id = lstt.nguoi_thuc_hien_id
+            where lstt.canh_bao_id = %s
+            union all
+            select
+              ttxl.id,
+              'action' as type,
+              ttxl.hanh_dong as status,
+              ttxl.noi_dung as note,
+              nd.ten_dang_nhap as username,
+              ttxl.thoi_diem as occurred_at
+            from tien_trinh_xu_ly_canh_bao ttxl
+            left join nguoi_dung nd on nd.id = ttxl.nguoi_thuc_hien_id
+            where ttxl.canh_bao_id = %s
+            order by occurred_at asc
+            """,
+            (alert_id, alert_id),
+        )
+        timeline = []
+        for row in cur.fetchall():
+            item = dict(row)
+            item["occurred_at"] = item["occurred_at"].isoformat() if item.get("occurred_at") else None
+            item["status_label"] = _alert_status_label(item.get("status"))
+            timeline.append(item)
+
+        cur.execute(
+            """
+            select tbc.id, tbc.loai_tep as file_type, tbc.ten_tep as file_name,
+                   tbc.duong_dan as path, tbc.mime_type, tbc.dung_luong as size
+            from bang_chung bc
+            join tep_bang_chung tbc on tbc.bang_chung_id = bc.id
+            where bc.canh_bao_id = %s
+            order by tbc.created_at desc
+            limit 20
+            """,
+            (alert_id,),
+        )
+        evidence = [dict(row) for row in cur.fetchall()]
+
+    alert["timeline"] = timeline
+    alert["evidence"] = evidence
+    return alert
+
+
+def update_alert_status_for_ui(alert_id, new_status, note=None, username=None):
+    allowed = {"NEW", "PROCESSING", "ACKNOWLEDGED", "CLOSED", "RESOLVED", "IGNORED"}
+    status_value = str(new_status or "").upper()
+    if status_value not in allowed:
+        raise ValueError("Trang thai canh bao khong hop le")
+
+    with db_cursor(commit=True) as cur:
+        cur.execute(
+            """
+            select id, trang_thai_hien_tai
+            from canh_bao
+            where id = %s and deleted_at is null
+            for update
+            """,
+            (alert_id,),
+        )
+        alert = cur.fetchone()
+        if not alert:
+            return None
+
+        actor_id = _admin_actor_id(cur, username) if username else None
+        old_status = alert["trang_thai_hien_tai"]
+        cur.execute(
+            "update canh_bao set trang_thai_hien_tai = %s, updated_at = now() where id = %s",
+            (status_value, alert_id),
+        )
+        cur.execute(
+            """
+            update lich_su_trang_thai_canh_bao
+            set ket_thuc_luc = now()
+            where canh_bao_id = %s and ket_thuc_luc is null
+            """,
+            (alert_id,),
+        )
+        cur.execute(
+            """
+            insert into lich_su_trang_thai_canh_bao (
+              canh_bao_id, trang_thai, bat_dau_luc, nguoi_thuc_hien_id, ghi_chu
+            )
+            values (%s, %s, now(), %s, %s)
+            """,
+            (alert_id, status_value, actor_id, note),
+        )
+        cur.execute(
+            """
+            insert into tien_trinh_xu_ly_canh_bao (
+              canh_bao_id, hanh_dong, noi_dung, nguoi_thuc_hien_id
+            )
+            values (%s, %s, %s, %s)
+            """,
+            (alert_id, "UPDATE_STATUS", f"{old_status} -> {status_value}", actor_id),
+        )
+    return get_alert_detail_for_ui(alert_id)
+
+
 def get_dashboard_summary_from_db():
     with db_cursor() as cur:
         cur.execute(
