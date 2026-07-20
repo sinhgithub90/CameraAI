@@ -264,14 +264,11 @@ function getFilteredMapCameras() {
 }
 
 function openMapLive(cameraId) {
-    localStorage.setItem('mapSelectedCamera', cameraId);
-    window.location.href = 'live.html';
+    window.location.href = `live.html?camera_id=${encodeURIComponent(cameraId)}&action=live`;
 }
 
 function openMapPlayback(cameraId) {
-    localStorage.setItem('mapSelectedCamera', cameraId);
-    localStorage.setItem('openPlaybackCamera', cameraId);
-    window.location.href = 'live.html';
+    window.location.href = `live.html?camera_id=${encodeURIComponent(cameraId)}&action=playback`;
 }
 
 function focusMapCamera(cameraId) {

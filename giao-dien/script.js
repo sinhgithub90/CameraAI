@@ -516,6 +516,34 @@ function selectCam(el) {
 }
 function maximizeCam(el) { const mediaElement = el.querySelector('iframe') || el.querySelector('img'); if (mediaElement && mediaElement.requestFullscreen) mediaElement.requestFullscreen(); }
 
+function handleLiveQueryAction() {
+  if (!document.getElementById('liveCamGrid')) return;
+  const params = new URLSearchParams(window.location.search);
+  const cameraId = params.get('camera_id');
+  const action = params.get('action') || 'live';
+  if (!cameraId) return;
+
+  let tile = Array.from(document.querySelectorAll('.live-tile')).find(item => item.dataset.id === cameraId);
+  if (!tile && ALL_CAMERAS.some(cam => cam.id === cameraId)) {
+    currentGridLimit = ALL_CAMERAS.length;
+    const gridSelect = document.getElementById('gridLimitSelect');
+    if (gridSelect) gridSelect.value = String(currentGridLimit);
+    renderLiveGrid();
+    tile = Array.from(document.querySelectorAll('.live-tile')).find(item => item.dataset.id === cameraId);
+  }
+  if (!tile) return;
+  selectCam(tile);
+  tile.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+
+  if (action === 'playback') {
+    openPlaybackModal();
+    const playbackSelect = document.getElementById('playbackCameraSelect');
+    if (playbackSelect && ALL_CAMERAS.some(cam => cam.id === cameraId)) {
+      playbackSelect.value = cameraId;
+    }
+  }
+}
+
 function formatDateTimeLocal(date) {
   const pad = (value) => String(value).padStart(2, '0');
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
@@ -1227,7 +1255,10 @@ document.addEventListener("DOMContentLoaded", async () => {
 
    await fetchCamerasFromBackend();
    if (document.getElementById('userTableBody')) { await fetchUsersFromBackend(); renderUserTable(); }
-   if(document.getElementById('liveCamGrid')) renderLiveGrid();
+   if(document.getElementById('liveCamGrid')) {
+     renderLiveGrid();
+     handleLiveQueryAction();
+   }
    if(document.getElementById('overviewCamGrid')) renderOverviewGrid();
    if(document.getElementById('statTotalCameras')) {
      renderDashboardStats();
