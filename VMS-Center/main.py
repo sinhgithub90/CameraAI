@@ -9,7 +9,6 @@ import requests
 import yaml
 import subprocess
 import os
-import json  
 import platform
 import threading
 import time
@@ -31,9 +30,11 @@ from db import (
     get_dashboard_activity_from_db,
     get_dashboard_summary_from_db,
     get_reports_summary_from_db,
+    get_system_settings,
     list_cameras_for_ui,
     list_alerts_for_ui,
     list_users_for_ui,
+    replace_system_settings,
     reset_user_password_for_ui,
     soft_delete_camera_for_ui,
     soft_delete_user_for_ui,
@@ -41,6 +42,7 @@ from db import (
     update_camera_for_ui,
     update_camera_location_for_ui,
     update_alert_status_for_ui,
+    update_system_settings_section,
     update_user_for_ui,
     restore_backup_to_db,
     search_recording_segments,
@@ -65,7 +67,6 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 GO2RTC_YAML_PATH = os.path.join(BASE_DIR, "go2rtc.yaml")
 GO2RTC_EXE_PATH = os.path.join(BASE_DIR, "go2rtc.exe")
 
-SETTINGS_JSON_PATH = os.path.join(BASE_DIR, "settings.json")
 RECORDINGS_DIR = os.getenv("RECORDINGS_DIR", os.path.join(BASE_DIR, "..", "recordings"))
 
 CAMERA_DB = {
@@ -98,26 +99,10 @@ DEFAULT_SETTINGS = {
 }
 
 def load_settings():
-    if os.path.exists(SETTINGS_JSON_PATH):
-        with open(SETTINGS_JSON_PATH, "r", encoding="utf-8") as f:
-            try:
-                data = json.load(f)
-                # Đảm bảo đủ field mặc định nếu file cũ thiếu key mới thêm sau này
-                merged = json.loads(json.dumps(DEFAULT_SETTINGS))
-                for section, values in data.items():
-                    if section in merged and isinstance(values, dict):
-                        merged[section].update(values)
-                    else:
-                        merged[section] = values
-                return merged
-            except Exception:
-                pass
-    save_settings(DEFAULT_SETTINGS)
-    return DEFAULT_SETTINGS
+    return get_system_settings(DEFAULT_SETTINGS)
 
 def save_settings(settings):
-    with open(SETTINGS_JSON_PATH, "w", encoding="utf-8") as f:
-        json.dump(settings, f, ensure_ascii=False, indent=2)
+    return replace_system_settings(settings, DEFAULT_SETTINGS)
 
 def sync_go2rtc_stream(stream_key, rtsp_url):
     config_data = {}
@@ -763,9 +748,7 @@ def update_alert_status(alert_id: int, data: AlertStatusInput, admin_user: str =
 
 @app.put("/api/vms/settings/notifications", dependencies=[Depends(verify_admin_role)])
 def update_notification_settings(data: NotificationSettingsInput):
-    settings = load_settings()
-    settings["notifications"] = data.dict()
-    save_settings(settings)
+    update_system_settings_section("notifications", data.dict(), DEFAULT_SETTINGS)
     return {"status": "success"}
 
 class IntegrationSettingsInput(BaseModel):
@@ -775,9 +758,7 @@ class IntegrationSettingsInput(BaseModel):
 
 @app.put("/api/vms/settings/integration", dependencies=[Depends(verify_admin_role)])
 def update_integration_settings(data: IntegrationSettingsInput):
-    settings = load_settings()
-    settings["integration"] = data.dict()
-    save_settings(settings)
+    update_system_settings_section("integration", data.dict(), DEFAULT_SETTINGS)
     return {"status": "success"}
 
 class SecuritySettingsInput(BaseModel):
@@ -787,9 +768,7 @@ class SecuritySettingsInput(BaseModel):
 
 @app.put("/api/vms/settings/security", dependencies=[Depends(verify_admin_role)])
 def update_security_settings(data: SecuritySettingsInput):
-    settings = load_settings()
-    settings["security"] = data.dict()
-    save_settings(settings)
+    update_system_settings_section("security", data.dict(), DEFAULT_SETTINGS)
     return {"status": "success"}
 
 class BackupSettingsInput(BaseModel):
@@ -798,9 +777,7 @@ class BackupSettingsInput(BaseModel):
 
 @app.put("/api/vms/settings/backup", dependencies=[Depends(verify_admin_role)])
 def update_backup_settings(data: BackupSettingsInput):
-    settings = load_settings()
-    settings["backup"] = data.dict()
-    save_settings(settings)
+    update_system_settings_section("backup", data.dict(), DEFAULT_SETTINGS)
     return {"status": "success"}
 
 @app.post("/api/vms/system/restart-media", dependencies=[Depends(verify_admin_role)])

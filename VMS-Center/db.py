@@ -34,6 +34,79 @@ def db_cursor(commit=False):
         conn.close()
 
 
+def _deepcopy_json(value):
+    return json.loads(json.dumps(value))
+
+
+def _merge_settings(default_settings, db_settings):
+    merged = _deepcopy_json(default_settings)
+    for section, values in (db_settings or {}).items():
+        if section in merged and isinstance(merged[section], dict) and isinstance(values, dict):
+            merged[section].update(values)
+        else:
+            merged[section] = values
+    return merged
+
+
+def get_system_settings(default_settings):
+    with db_cursor() as cur:
+        cur.execute(
+            """
+            select section, cau_hinh
+            from cau_hinh_he_thong
+            order by section
+            """
+        )
+        rows = cur.fetchall()
+
+    db_settings = {row["section"]: row["cau_hinh"] for row in rows}
+    return _merge_settings(default_settings, db_settings)
+
+
+def update_system_settings_section(section, values, default_settings):
+    if section not in default_settings:
+        raise ValueError(f"Unknown settings section: {section}")
+    if not isinstance(values, dict):
+        raise ValueError("Settings section value must be an object")
+
+    section_settings = _deepcopy_json(default_settings[section])
+    if isinstance(section_settings, dict):
+        section_settings.update(values)
+    else:
+        section_settings = values
+
+    with db_cursor(commit=True) as cur:
+        cur.execute(
+            """
+            insert into cau_hinh_he_thong (section, cau_hinh)
+            values (%s, %s)
+            on conflict (section) do update
+              set cau_hinh = excluded.cau_hinh
+            """,
+            (section, psycopg2.extras.Json(section_settings)),
+        )
+    return get_system_settings(default_settings)
+
+
+def replace_system_settings(settings, default_settings):
+    if not isinstance(settings, dict):
+        raise ValueError("Settings payload must be an object")
+
+    normalized = _merge_settings(default_settings, settings)
+    with db_cursor(commit=True) as cur:
+        for section, values in normalized.items():
+            cur.execute(
+                """
+                insert into cau_hinh_he_thong (section, cau_hinh)
+                values (%s, %s)
+                on conflict (section) do update
+                  set cau_hinh = excluded.cau_hinh
+                """,
+                (section, psycopg2.extras.Json(values)),
+            )
+    return get_system_settings(default_settings)
+
+
 def list_cameras_for_ui():
     with db_cursor() as cur:
         cur.execute(
