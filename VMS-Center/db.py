@@ -1924,6 +1924,195 @@ def list_recording_enabled_cameras():
         return [dict(row) for row in cur.fetchall()]
 
 
+def list_camera_health_targets():
+    with db_cursor() as cur:
+        cur.execute(
+            """
+            select
+              c.id as db_id,
+              c.stream_key,
+              c.ten_camera as name,
+              c.trang_thai_hien_tai,
+              c.bat_ghi_hinh,
+              host(knc.dia_chi_ip) as ip,
+              knc.cong_rtsp,
+              knc.duong_dan_rtsp as rtsp_url,
+              kv.ten_khu_vuc as zone,
+              ldc.vi_tri_lap_dat as loc
+            from camera c
+            left join ket_noi_camera knc on knc.camera_id = c.id
+            left join khu_vuc kv on kv.id = c.khu_vuc_id
+            left join lap_dat_camera ldc on ldc.camera_id = c.id
+            where c.deleted_at is null
+            order by c.thu_tu_hien_thi, c.id
+            """
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+
+def record_camera_health_result(camera_id, status_value, online, latency_ms=None, reason=None):
+    allowed_statuses = {"ONLINE", "DEGRADED", "OFFLINE", "RECORDING_ERROR"}
+    status_value = status_value if status_value in allowed_statuses else "OFFLINE"
+    with db_cursor(commit=True) as cur:
+        cur.execute(
+            """
+            select id, stream_key, trang_thai_hien_tai
+            from camera
+            where id = %s
+              and deleted_at is null
+            for update
+            """,
+            (camera_id,),
+        )
+        camera = cur.fetchone()
+        if not camera:
+            return {"status": "not_found", "changed": False}
+
+        old_status = camera.get("trang_thai_hien_tai")
+        changed = old_status != status_value
+
+        cur.execute(
+            """
+            insert into tinh_trang_camera (
+              camera_id, do_tre_mang_ms, online, ghi_nhan_luc
+            )
+            values (%s, %s, %s, now())
+            """,
+            (camera_id, latency_ms, online),
+        )
+
+        if changed:
+            cur.execute(
+                """
+                update camera
+                set trang_thai_hien_tai = %s
+                where id = %s
+                """,
+                (status_value, camera_id),
+            )
+            cur.execute(
+                """
+                update lich_su_trang_thai_camera
+                set ket_thuc_luc = now(),
+                    thoi_luong_giay = greatest(0, extract(epoch from (now() - bat_dau_luc))::int)
+                where camera_id = %s
+                  and ket_thuc_luc is null
+                """,
+                (camera_id,),
+            )
+            cur.execute(
+                """
+                insert into lich_su_trang_thai_camera (
+                  camera_id, trang_thai, bat_dau_luc, ly_do
+                )
+                values (%s, %s, now(), %s)
+                """,
+                (camera_id, status_value, reason),
+            )
+            cur.execute(
+                """
+                insert into nhat_ky_camera (camera_id, hanh_dong, noi_dung, muc_do)
+                values (%s, %s, %s, %s)
+                """,
+                (
+                    camera_id,
+                    "HEALTH_STATUS_CHANGED",
+                    f"Camera {camera['stream_key']} changed from {old_status} to {status_value}",
+                    "WARNING" if status_value == "OFFLINE" else "INFO",
+                ),
+            )
+
+    return {"status": "success", "changed": changed}
+
+
+def get_camera_health_for_ui():
+    with db_cursor() as cur:
+        cur.execute(
+            """
+            select
+              c.id as db_id,
+              c.stream_key as camera_id,
+              c.ten_camera as camera_name,
+              c.trang_thai_hien_tai as status,
+              c.bat_ghi_hinh,
+              host(knc.dia_chi_ip) as ip,
+              kv.ten_khu_vuc as zone,
+              ldc.vi_tri_lap_dat as loc,
+              ttc.online,
+              ttc.do_tre_mang_ms as latency_ms,
+              ttc.fps_hien_tai,
+              ttc.mat_goi_tin,
+              ttc.nhiet_do,
+              ttc.ghi_nhan_luc as last_checked_at
+            from camera c
+            left join ket_noi_camera knc on knc.camera_id = c.id
+            left join khu_vuc kv on kv.id = c.khu_vuc_id
+            left join lap_dat_camera ldc on ldc.camera_id = c.id
+            left join lateral (
+              select *
+              from tinh_trang_camera t
+              where t.camera_id = c.id
+              order by t.ghi_nhan_luc desc
+              limit 1
+            ) ttc on true
+            where c.deleted_at is null
+            order by c.thu_tu_hien_thi, c.id
+            """
+        )
+        rows = [dict(row) for row in cur.fetchall()]
+
+    for row in rows:
+        if row.get("last_checked_at"):
+            row["last_checked_at"] = row["last_checked_at"].isoformat()
+    return rows
+
+
+def get_health_summary_from_db():
+    with db_cursor() as cur:
+        cur.execute(
+            """
+            select
+              count(*) as total,
+              count(*) filter (where trang_thai_hien_tai = 'ONLINE') as online,
+              count(*) filter (where trang_thai_hien_tai = 'DEGRADED') as degraded,
+              count(*) filter (where trang_thai_hien_tai = 'RECORDING_ERROR') as recording_error,
+              count(*) filter (where trang_thai_hien_tai = 'OFFLINE') as offline,
+              count(*) filter (where bat_ghi_hinh = true) as recording_enabled
+            from camera
+            where deleted_at is null
+            """
+        )
+        camera = dict(cur.fetchone())
+
+        cur.execute(
+            """
+            select
+              count(*) as snapshots,
+              max(ghi_nhan_luc) as last_snapshot_at
+            from tinh_trang_camera
+            """
+        )
+        camera_health = dict(cur.fetchone())
+
+        cur.execute(
+            """
+            select count(*) as open_incidents
+            from lich_su_trang_thai_camera
+            where ket_thuc_luc is null
+              and trang_thai = 'OFFLINE'
+            """
+        )
+        camera_history = dict(cur.fetchone())
+
+    if camera_health.get("last_snapshot_at"):
+        camera_health["last_snapshot_at"] = camera_health["last_snapshot_at"].isoformat()
+    return {
+        "camera": camera,
+        "camera_health": camera_health,
+        "camera_history": camera_history,
+    }
+
+
 def search_recording_segments(camera_id=None, zone=None, loc=None, from_time=None, to_time=None):
     where = ["dv.deleted_at is null", "dv.dung_luong >= 1048576"]
     params = []
