@@ -13,6 +13,7 @@ import requests
 from dotenv import load_dotenv
 
 from alert_service import alert_service
+from audit_service import audit_service
 
 try:
     import psutil
@@ -237,6 +238,20 @@ class HealthManager:
             reason=reason,
         )
         alert_result = None
+        if write_result.get("changed"):
+            audit_service.record(
+                action="HEALTH_STATUS_CHANGE",
+                entity_type="CAMERA",
+                entity_id=stream_key,
+                before={"status": camera.get("trang_thai_hien_tai")},
+                after={
+                    "status": status_value,
+                    "camera_reachable": camera_reachable,
+                    "live_available": live_available,
+                    "recording_available": recording_available,
+                    "reason": reason,
+                },
+            )
         if status_value == "OFFLINE" and self.fail_counter.get(stream_key, 0) >= self.fail_threshold:
             alert_result = alert_service.create_alert(
                 source="HEALTH",

@@ -51,6 +51,7 @@ from health_manager import health_manager
 from recording_manager import recording_manager
 from alert_service import AlertTransitionError
 from notification_service import notification_service
+from audit_service import audit_service
 from runtime.startup_manager import StartupManager
 
 health_manager.set_recording_status_provider(recording_manager.status)
@@ -74,6 +75,28 @@ GO2RTC_YAML_PATH = os.path.join(BASE_DIR, "go2rtc.yaml")
 GO2RTC_EXE_PATH = os.path.join(BASE_DIR, "go2rtc.exe")
 
 RECORDINGS_DIR = os.getenv("RECORDINGS_DIR", os.path.join(BASE_DIR, "..", "recordings"))
+
+
+def write_audit(request, actor_username, action, entity_type, entity_id=None, before=None, after=None):
+    meta = audit_service.request_meta(request)
+    audit_service.record(
+        actor_username=actor_username,
+        action=action,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        before=before,
+        after=after,
+        ip=meta.get("ip"),
+        user_agent=meta.get("user_agent"),
+    )
+
+
+def find_camera_snapshot(camera_id):
+    return next((item for item in list_cameras_for_ui() if item.get("id") == camera_id), None)
+
+
+def find_user_snapshot(username):
+    return next((item for item in list_users_for_ui() if item.get("username") == username), None)
 
 CAMERA_DB = {
     "cam_huyen_01": {"name": "Camera Ngã tư Huyện 1", "vlan": "VLAN_10", "status": "active"},
@@ -176,20 +199,33 @@ def verify_current_user(credentials: HTTPAuthorizationCredentials = Depends(secu
     return user_check["username"]
 
 @app.post("/api/auth/token")
-def login(user: str, text_pass: str):
+def login(user: str, text_pass: str, request: Request):
     if user == "ai_system" and text_pass == "secure_pass_2026":
         payload = {"sub": user, "exp": datetime.utcnow() + timedelta(hours=8), "role": "ai_reader"}
         token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+        write_audit(request, user, "LOGIN_SUCCESS", "AUTH", user, after={"username": user, "role": "AI"})
         return {"access_token": token, "token_type": "bearer", "user": {"name": "AI Agent Engine", "role": "AI"}}
 
     current_user = authenticate_user_for_ui(user, text_pass)
 
     if current_user.get("auth_status") == "inactive":
+        write_audit(request, user, "LOGIN_FAILED", "AUTH", user, after={"username": user, "reason": "inactive"})
         raise HTTPException(status_code=403, detail="Tài khoản hiện đang bị tạm khóa!")
+
+    if current_user.get("auth_status") != "ok":
+        write_audit(request, user, "LOGIN_FAILED", "AUTH", user, after={"username": user, "reason": "bad_credentials"})
 
     if current_user.get("auth_status") == "ok":
         payload = {"sub": user, "exp": datetime.utcnow() + timedelta(hours=8), "role": current_user["role"]}
         token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+        write_audit(
+            request,
+            current_user["username"],
+            "LOGIN_SUCCESS",
+            "AUTH",
+            current_user["username"],
+            after={"username": current_user["username"], "role": current_user["role"]},
+        )
         return {
             "access_token": token,
             "token_type": "bearer",
@@ -251,7 +287,7 @@ class CameraUpdateInput(BaseModel):
     lng: Optional[float] = None
 
 @app.post("/api/vms/camera/add")
-def add_camera_and_sync_media(cam: CameraAddInput):
+def add_camera_and_sync_media(cam: CameraAddInput, request: Request):
     try:
         new_cam_obj = create_camera_for_ui(cam, sync_go2rtc_stream)
     except Exception as e:
@@ -261,11 +297,13 @@ def add_camera_and_sync_media(cam: CameraAddInput):
             detail=f"Khong the tao camera trong PostgreSQL hoac dong bo go2rtc: {str(e)}",
         )
     restart_go2rtc_process()
+    write_audit(request, None, "CAMERA_CREATE", "CAMERA", new_cam_obj.get("id"), after=new_cam_obj)
     return {"status": "success", "camera": new_cam_obj}
 
 @app.put("/api/vms/camera/{cam_id}")
-def update_camera(cam_id: str, data: CameraUpdateInput):
+def update_camera(cam_id: str, data: CameraUpdateInput, request: Request):
     updates = data.model_dump(exclude_unset=True) if hasattr(data, "model_dump") else data.dict(exclude_unset=True)
+    before_camera = find_camera_snapshot(cam_id)
     try:
         updated_camera = update_camera_for_ui(cam_id, updates, sync_go2rtc_stream)
     except Exception as e:
@@ -275,10 +313,12 @@ def update_camera(cam_id: str, data: CameraUpdateInput):
         raise HTTPException(status_code=404, detail="Không tìm thấy camera")
     if any(key in updates for key in ("ip", "user", "password")):
         restart_go2rtc_process()
+    write_audit(request, None, "CAMERA_UPDATE", "CAMERA", cam_id, before=before_camera, after=updated_camera)
     return {"status": "success", "camera": updated_camera}
 
 @app.delete("/api/vms/camera/{cam_id}")
-def delete_camera(cam_id: str):
+def delete_camera(cam_id: str, request: Request):
+    before_camera = find_camera_snapshot(cam_id)
     try:
         stream_key = soft_delete_camera_for_ui(cam_id, remove_go2rtc_stream)
     except Exception as e:
@@ -287,6 +327,7 @@ def delete_camera(cam_id: str):
     if not stream_key:
         raise HTTPException(status_code=404, detail="Không tìm thấy camera")
     restart_go2rtc_process()
+    write_audit(request, None, "CAMERA_DELETE", "CAMERA", cam_id, before=before_camera)
     return {"status": "success"}
 
 # THÊM ĐOẠN NÀY VÀO TRONG FILE main.py
@@ -296,9 +337,19 @@ class CameraLocationInput(BaseModel):
 
 
 @app.put("/api/vms/camera/{cam_id}/location")
-def update_camera_location(cam_id: str, data: CameraLocationInput, admin_user: str = Depends(verify_admin_role)):
+def update_camera_location(cam_id: str, data: CameraLocationInput, request: Request, admin_user: str = Depends(verify_admin_role)):
+    before_camera = find_camera_snapshot(cam_id)
     if update_camera_location_for_ui(cam_id, data.lat, data.lng):
         print(f"GIS: Da gan toa do ({data.lat}, {data.lng}) cho camera {cam_id}")
+        write_audit(
+            request,
+            admin_user,
+            "CAMERA_UPDATE_LOCATION",
+            "CAMERA",
+            cam_id,
+            before=before_camera,
+            after={"lat": data.lat, "lng": data.lng},
+        )
         return {"status": "success"}
 
     raise HTTPException(status_code=404, detail="Không tìm thấy camera")
@@ -321,7 +372,7 @@ class UserAddInput(BaseModel):
     username: str; name: str; role: str; unit: str; email: str; phone: str; password: str
 
 @app.post("/api/vms/user/add")
-def add_new_user(user: UserAddInput, admin_user: str = Depends(verify_admin_role)):
+def add_new_user(user: UserAddInput, request: Request, admin_user: str = Depends(verify_admin_role)):
     result = create_user_for_ui(user)
     if result.get("status") == "duplicate_username":
         raise HTTPException(status_code=400, detail="Tên đăng nhập đã tồn tại!")
@@ -333,6 +384,8 @@ def add_new_user(user: UserAddInput, admin_user: str = Depends(verify_admin_role
         raise HTTPException(status_code=400, detail="Tên đăng nhập không hợp lệ!")
     if result.get("status") == "invalid_name":
         raise HTTPException(status_code=400, detail="Họ tên không hợp lệ!")
+    payload = user.model_dump() if hasattr(user, "model_dump") else user.dict()
+    write_audit(request, admin_user, "USER_CREATE", "USER", user.username, after=payload)
     return {"status": "success"}
 
 class UserUpdateInput(BaseModel):
@@ -344,7 +397,8 @@ class UserUpdateInput(BaseModel):
     permissions: Optional[list] = None
 
 @app.put("/api/vms/user/{username}")
-def update_user_profile(username: str, data: UserUpdateInput, admin_user: str = Depends(verify_admin_role)):
+def update_user_profile(username: str, data: UserUpdateInput, request: Request, admin_user: str = Depends(verify_admin_role)):
+    before_user = find_user_snapshot(username)
     result = update_user_for_ui(username, data)
     if result.get("status") == "not_found":
         raise HTTPException(status_code=404, detail="Không tìm thấy người dùng")
@@ -354,32 +408,40 @@ def update_user_profile(username: str, data: UserUpdateInput, admin_user: str = 
         raise HTTPException(status_code=400, detail="Vai trò người dùng không hợp lệ!")
     if result.get("status") == "invalid_name":
         raise HTTPException(status_code=400, detail="Họ tên không hợp lệ!")
+    payload = data.model_dump(exclude_unset=True) if hasattr(data, "model_dump") else data.dict(exclude_unset=True)
+    write_audit(request, admin_user, "USER_UPDATE", "USER", username, before=before_user, after=payload)
     return {"status": "success"}
 
 @app.post("/api/vms/user/{username}/reset-password")
-def reset_password(username: str, admin_user: str = Depends(verify_admin_role)):
+def reset_password(username: str, request: Request, admin_user: str = Depends(verify_admin_role)):
     new_password = "123456abc"
+    before_user = find_user_snapshot(username)
     result = reset_user_password_for_ui(username, new_password, admin_user)
     if result.get("status") == "not_found":
         raise HTTPException(status_code=404, detail="Không tìm thấy người dùng")
+    write_audit(request, admin_user, "USER_RESET_PASSWORD", "USER", username, before=before_user, after={"username": username})
     return {"status": "success", "new_password": new_password}
 
 @app.post("/api/vms/user/{username}/toggle-lock")
-def toggle_lock_user(username: str, admin_user: str = Depends(verify_admin_role)):
+def toggle_lock_user(username: str, request: Request, admin_user: str = Depends(verify_admin_role)):
+    before_user = find_user_snapshot(username)
     result = toggle_user_lock_for_ui(username, admin_user)
     if result.get("status") == "last_admin":
         raise HTTPException(status_code=400, detail="Không được phép khóa tài khoản Admin tối cao!")
     if result.get("status") == "not_found":
         raise HTTPException(status_code=404, detail="Không tìm thấy người dùng")
+    write_audit(request, admin_user, "USER_TOGGLE_LOCK", "USER", username, before=before_user, after={"new_status": result["new_status"]})
     return {"status": "success", "new_status": result["new_status"]}
 
 @app.delete("/api/vms/user/{username}")
-def delete_user(username: str, admin_user: str = Depends(verify_admin_role)):
+def delete_user(username: str, request: Request, admin_user: str = Depends(verify_admin_role)):
+    before_user = find_user_snapshot(username)
     result = soft_delete_user_for_ui(username, admin_user)
     if result.get("status") == "last_admin":
         raise HTTPException(status_code=400, detail="Không được phép xóa tài khoản Admin tối cao!")
     if result.get("status") == "not_found":
         raise HTTPException(status_code=404, detail="Không tìm thấy người dùng")
+    write_audit(request, admin_user, "USER_DELETE", "USER", username, before=before_user)
     return {"status": "success"}
 
 # 🌟 LUỒNG QUYÉT NGẦM TRUNG GIAN (PROXY HEALTH CHECK)
@@ -390,6 +452,7 @@ def start_go2rtc_proxy_sync():
 
 @app.on_event("startup")
 def startup_recording_manager():
+    audit_service.start()
     try:
         runtime_manager.start()
     except Exception as exc:
@@ -399,6 +462,7 @@ def startup_recording_manager():
 @app.on_event("shutdown")
 def shutdown_recording_manager():
     runtime_manager.shutdown()
+    audit_service.shutdown()
 
 
 def _parse_range_header(range_header, file_size):
@@ -525,21 +589,26 @@ def get_recording_status():
 
 
 @app.post("/api/recording/{camera_id}/start")
-def start_recording_camera(camera_id: str):
+def start_recording_camera(camera_id: str, request: Request):
     result = recording_manager.start_camera(camera_id)
     if result.get("status") == "not_found":
         raise HTTPException(status_code=404, detail="Khong tim thay camera bat ghi hinh")
+    write_audit(request, None, "RECORDING_START", "RECORDING", camera_id, after=result)
     return result
 
 
 @app.post("/api/recording/{camera_id}/stop")
-def stop_recording_camera(camera_id: str):
-    return recording_manager.stop_camera(camera_id)
+def stop_recording_camera(camera_id: str, request: Request):
+    result = recording_manager.stop_camera(camera_id)
+    write_audit(request, None, "RECORDING_STOP", "RECORDING", camera_id, after=result)
+    return result
 
 
 @app.post("/api/recording/reload")
-def reload_recording_manager():
-    return recording_manager.reload()
+def reload_recording_manager(request: Request):
+    result = recording_manager.reload()
+    write_audit(request, None, "RECORDING_RELOAD", "RECORDING", "manager", after={"status": result.get("status")})
+    return result
 
 
 @app.get("/api/runtime/status")
@@ -554,28 +623,38 @@ def get_runtime_diagnostics():
 
 
 @app.post("/api/runtime/diagnostics/run")
-def run_runtime_diagnostics():
-    return runtime_manager.run_diagnostics()
+def run_runtime_diagnostics(request: Request):
+    result = runtime_manager.run_diagnostics()
+    write_audit(request, None, "RUNTIME_DIAGNOSTICS_RUN", "RUNTIME", "diagnostics", after={"status": result.get("status")})
+    return result
 
 
 @app.post("/api/runtime/go2rtc/start")
-def runtime_start_go2rtc():
-    return runtime_manager.start_go2rtc()
+def runtime_start_go2rtc(request: Request):
+    result = runtime_manager.start_go2rtc()
+    write_audit(request, None, "RUNTIME_START", "RUNTIME", "go2rtc", after=result)
+    return result
 
 
 @app.post("/api/runtime/go2rtc/stop")
-def runtime_stop_go2rtc():
-    return runtime_manager.stop_go2rtc()
+def runtime_stop_go2rtc(request: Request):
+    result = runtime_manager.stop_go2rtc()
+    write_audit(request, None, "RUNTIME_STOP", "RUNTIME", "go2rtc", after=result)
+    return result
 
 
 @app.post("/api/runtime/go2rtc/restart")
-def runtime_restart_go2rtc():
-    return runtime_manager.restart_go2rtc()
+def runtime_restart_go2rtc(request: Request):
+    result = runtime_manager.restart_go2rtc()
+    write_audit(request, None, "RUNTIME_RELOAD", "RUNTIME", "go2rtc", after=result)
+    return result
 
 
 @app.post("/api/runtime/reload")
-def reload_runtime():
-    return runtime_manager.reload()
+def reload_runtime(request: Request):
+    result = runtime_manager.reload()
+    write_audit(request, None, "RUNTIME_RELOAD", "RUNTIME", "manager", after={"status": result.get("status")})
+    return result
 
 
 @app.get("/api/health/summary")
@@ -763,23 +842,66 @@ def get_notification_unread_count(current_user: str = Depends(verify_current_use
 
 
 @app.put("/api/notifications/{notification_id}/read")
-def mark_notification_read(notification_id: int, current_user: str = Depends(verify_current_user)):
+def mark_notification_read(notification_id: int, request: Request, current_user: str = Depends(verify_current_user)):
     result = notification_service.mark_read(current_user, notification_id)
     if result.get("status") == "not_found":
         raise HTTPException(status_code=404, detail="Không tìm thấy thông báo")
     if result.get("status") == "user_not_found":
         raise HTTPException(status_code=401, detail="Phiên đăng nhập hết hạn hoặc Token xác thực không hợp lệ!")
+    write_audit(request, current_user, "NOTIFICATION_READ", "NOTIFICATION", notification_id, after=result)
     return result
 
 
 @app.put("/api/notifications/read-all")
-def mark_all_notifications_read(current_user: str = Depends(verify_current_user)):
-    return notification_service.mark_all_read(current_user)
+def mark_all_notifications_read(request: Request, current_user: str = Depends(verify_current_user)):
+    result = notification_service.mark_all_read(current_user)
+    write_audit(request, current_user, "NOTIFICATION_READ_ALL", "NOTIFICATION", "all", after=result)
+    return result
 
 
-@app.put("/api/vms/settings/notifications", dependencies=[Depends(verify_admin_role)])
-def update_notification_settings(data: NotificationSettingsInput):
+@app.get("/api/audit")
+def get_audit_logs(
+    user: Optional[str] = None,
+    action: Optional[str] = None,
+    entity: Optional[str] = None,
+    date: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 50,
+    admin_user: str = Depends(verify_admin_role),
+):
+    try:
+        return audit_service.list_logs(
+            user=user,
+            action=action,
+            entity=entity,
+            date=date,
+            page=page,
+            page_size=page_size,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        print(f"PostgreSQL audit list error: {exc}")
+        raise HTTPException(status_code=500, detail=f"Khong the doc audit log: {str(exc)}")
+
+
+@app.get("/api/audit/{audit_id}")
+def get_audit_detail(audit_id: int, admin_user: str = Depends(verify_admin_role)):
+    try:
+        item = audit_service.get_log(audit_id)
+    except Exception as exc:
+        print(f"PostgreSQL audit detail error: {exc}")
+        raise HTTPException(status_code=500, detail=f"Khong the doc chi tiet audit: {str(exc)}")
+    if not item:
+        raise HTTPException(status_code=404, detail="Khong tim thay audit log")
+    return item
+
+
+@app.put("/api/vms/settings/notifications")
+def update_notification_settings(data: NotificationSettingsInput, request: Request, admin_user: str = Depends(verify_admin_role)):
+    before_settings = load_settings().get("notifications")
     update_system_settings_section("notifications", data.dict(), DEFAULT_SETTINGS)
+    write_audit(request, admin_user, "SETTINGS_UPDATE", "SETTINGS", "notifications", before=before_settings, after=data.dict())
     return {"status": "success"}
 
 class IntegrationSettingsInput(BaseModel):
@@ -787,9 +909,11 @@ class IntegrationSettingsInput(BaseModel):
     webhook_url: str
     webhook_enabled: bool
 
-@app.put("/api/vms/settings/integration", dependencies=[Depends(verify_admin_role)])
-def update_integration_settings(data: IntegrationSettingsInput):
+@app.put("/api/vms/settings/integration")
+def update_integration_settings(data: IntegrationSettingsInput, request: Request, admin_user: str = Depends(verify_admin_role)):
+    before_settings = load_settings().get("integration")
     update_system_settings_section("integration", data.dict(), DEFAULT_SETTINGS)
+    write_audit(request, admin_user, "SETTINGS_UPDATE", "SETTINGS", "integration", before=before_settings, after=data.dict())
     return {"status": "success"}
 
 class SecuritySettingsInput(BaseModel):
@@ -797,18 +921,22 @@ class SecuritySettingsInput(BaseModel):
     min_password_length: int
     force_password_change_days: int
 
-@app.put("/api/vms/settings/security", dependencies=[Depends(verify_admin_role)])
-def update_security_settings(data: SecuritySettingsInput):
+@app.put("/api/vms/settings/security")
+def update_security_settings(data: SecuritySettingsInput, request: Request, admin_user: str = Depends(verify_admin_role)):
+    before_settings = load_settings().get("security")
     update_system_settings_section("security", data.dict(), DEFAULT_SETTINGS)
+    write_audit(request, admin_user, "SETTINGS_UPDATE", "SETTINGS", "security", before=before_settings, after=data.dict())
     return {"status": "success"}
 
 class BackupSettingsInput(BaseModel):
     auto_backup_enabled: bool
     auto_backup_interval_hours: int
 
-@app.put("/api/vms/settings/backup", dependencies=[Depends(verify_admin_role)])
-def update_backup_settings(data: BackupSettingsInput):
+@app.put("/api/vms/settings/backup")
+def update_backup_settings(data: BackupSettingsInput, request: Request, admin_user: str = Depends(verify_admin_role)):
+    before_settings = load_settings().get("backup")
     update_system_settings_section("backup", data.dict(), DEFAULT_SETTINGS)
+    write_audit(request, admin_user, "SETTINGS_UPDATE", "SETTINGS", "backup", before=before_settings, after=data.dict())
     return {"status": "success"}
 
 @app.post("/api/vms/system/restart-media", dependencies=[Depends(verify_admin_role)])

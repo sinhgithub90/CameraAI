@@ -5,6 +5,7 @@ from psycopg2.errors import UniqueViolation
 
 from db import db_cursor
 from notification_service import notification_service
+from audit_service import audit_service
 
 
 OPEN_STATUSES = {"NEW", "PROCESSING", "ACKNOWLEDGED"}
@@ -96,6 +97,20 @@ class AlertService:
         except UniqueViolation:
             return self._handle_unique_duplicate(duplicate_key, description)
         notification_result = self._create_notification_side_effect(alert_id)
+        audit_service.record(
+            action="ALERT_CREATE",
+            entity_type="ALERT",
+            entity_id=alert_id,
+            after={
+                "source": source,
+                "severity": severity,
+                "camera_id": camera_id,
+                "khu_vuc_id": khu_vuc_id,
+                "title": title,
+                "description": description,
+                "event_time": event_time.isoformat() if hasattr(event_time, "isoformat") else event_time,
+            },
+        )
         return {
             "status": "created",
             "alert_id": alert_id,
@@ -199,6 +214,20 @@ class AlertService:
             )
         if requested_status is not None and requested_status == current_status and updates:
             return {"status": "no_change", "alert_id": alert_id, "current_status": current_status}
+        audit_service.record(
+            actor_username=username,
+            action="ALERT_UPDATE",
+            entity_type="ALERT",
+            entity_id=alert_id,
+            before={"status": current_status},
+            after={
+                "status": requested_status or current_status,
+                "severity": severity,
+                "title": title,
+                "description": description,
+                "note": note,
+            },
+        )
         return {"status": "updated", "alert_id": alert_id}
 
     def close_alert(self, alert_id, status="CLOSED", note=None, username=None):
@@ -207,6 +236,13 @@ class AlertService:
             raise ValueError("close_alert chi nhan CLOSED hoac RESOLVED")
         result = self.update_alert(alert_id, status=status, note=note, username=username)
         if result.get("status") == "updated":
+            audit_service.record(
+                actor_username=username,
+                action="ALERT_CLOSE",
+                entity_type="ALERT",
+                entity_id=alert_id,
+                after={"status": status, "note": note},
+            )
             return {"status": "closed", "alert_id": alert_id}
         return result
 

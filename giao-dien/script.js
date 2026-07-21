@@ -15,6 +15,7 @@ let NOTIFICATION_POLL_TIMER = null;
 let NOTIFICATION_DROPDOWN_OPEN = false;
 let NOTIFICATION_INIT_DONE = false;
 let NOTIFICATION_LOADING = false;
+let AUDIT_LOGS = [];
 
 // 1. Hàm gọi API lấy danh sách camera tập trung từ Backend FastAPI
 async function fetchCamerasFromBackend() {
@@ -89,7 +90,7 @@ function checkAuthSecurity() {
   const pagePermissionMap = {
     'cammgmt.html': 'cammgmt', 'users.html': 'usermgmt', 'alerts.html': 'alertmgmt',
     'reports.html': 'reports', 'settings.html': 'sysconfig', 'live.html': 'live',
-    'index.html': 'live', 'ai.html': 'live', 'map.html': 'live'
+    'index.html': 'live', 'ai.html': 'live', 'map.html': 'live', 'audit.html': 'sysconfig'
   };
   const userPermissions = currentUser.permissions || [];
   const isAdmin = currentUser.role === 'Quản trị viên';
@@ -555,6 +556,93 @@ function initNotifications() {
       fetchNotificationUnreadCount().catch(() => {});
       if (NOTIFICATION_DROPDOWN_OPEN) refreshNotificationDropdown();
     }, 10000);
+  }
+}
+
+function auditStatus(message, isError = false) {
+  const el = document.getElementById('auditStatus');
+  if (!el) return;
+  el.textContent = message || '';
+  el.style.color = isError ? '#dc2626' : 'var(--slate-500)';
+}
+
+function auditFilters(page = 1) {
+  const params = new URLSearchParams();
+  const user = document.getElementById('auditUserFilter')?.value.trim();
+  const action = document.getElementById('auditActionFilter')?.value.trim();
+  const entity = document.getElementById('auditEntityFilter')?.value.trim();
+  const date = document.getElementById('auditDateFilter')?.value;
+  if (user) params.set('user', user);
+  if (action) params.set('action', action);
+  if (entity) params.set('entity', entity);
+  if (date) params.set('date', date);
+  params.set('page', page);
+  params.set('page_size', 50);
+  return params;
+}
+
+async function loadAuditLogs(page = 1) {
+  const body = document.getElementById('auditTableBody');
+  if (!body) return;
+  body.innerHTML = '<tr><td colspan="5" style="padding:18px; text-align:center; color:var(--slate-400);">Đang tải audit...</td></tr>';
+  auditStatus('');
+  try {
+    const response = await fetch(`http://127.0.0.1:8000/api/audit?${auditFilters(page).toString()}`, {
+      headers: notificationHeaders()
+    });
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        auditStatus('Bạn không có quyền xem audit.', true);
+        body.innerHTML = '<tr><td colspan="5" style="padding:18px; text-align:center; color:#dc2626;">Không có quyền truy cập</td></tr>';
+        return;
+      }
+      const err = await response.json().catch(() => ({}));
+      throw new Error(notificationErrorMessage(err.detail, 'Không thể tải audit.'));
+    }
+    const data = await response.json();
+    AUDIT_LOGS = data.items || [];
+    renderAuditLogs(AUDIT_LOGS);
+    auditStatus(`Tổng ${Number(data.total || 0)} bản ghi audit.`);
+  } catch (error) {
+    body.innerHTML = '<tr><td colspan="5" style="padding:18px; text-align:center; color:#dc2626;">Không thể tải audit</td></tr>';
+    auditStatus(error.message || 'Không thể tải audit.', true);
+  }
+}
+
+function renderAuditLogs(items) {
+  const body = document.getElementById('auditTableBody');
+  if (!body) return;
+  if (!items.length) {
+    body.innerHTML = '<tr><td colspan="5" style="padding:18px; text-align:center; color:var(--slate-400);">Chưa có dữ liệu audit</td></tr>';
+    return;
+  }
+  body.innerHTML = items.map(item => `
+    <tr onclick="openAuditDetail(${Number(item.id)})" style="cursor:pointer;">
+      <td>${escapeHtml(formatAlertDateTime(item.created_at))}</td>
+      <td>${escapeHtml(item.actor_username || '-')}</td>
+      <td><b>${escapeHtml(item.action || '-')}</b></td>
+      <td>${escapeHtml(item.entity_type || '-')}${item.entity_id ? ` #${escapeHtml(item.entity_id)}` : ''}</td>
+      <td>${escapeHtml(item.ip || '-')}</td>
+    </tr>
+  `).join('');
+}
+
+async function openAuditDetail(id) {
+  const detail = document.getElementById('auditDetailJson');
+  if (!detail) return;
+  detail.textContent = 'Đang tải chi tiết...';
+  try {
+    const response = await fetch(`http://127.0.0.1:8000/api/audit/${encodeURIComponent(id)}`, {
+      headers: notificationHeaders()
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(notificationErrorMessage(err.detail, 'Không thể tải chi tiết audit.'));
+    }
+    const data = await response.json();
+    detail.textContent = JSON.stringify(data, null, 2);
+  } catch (error) {
+    detail.textContent = error.message || 'Không thể tải chi tiết audit.';
   }
 }
 
@@ -1952,6 +2040,7 @@ document.addEventListener("DOMContentLoaded", async () => {
      fillSettingsForm(settings);
      checkMediaServerStatus();
    }
+   if(document.getElementById('auditTableBody')) await loadAuditLogs();
 
    // Bật tính năng vượt CORS
    startCameraHealthMonitor();
