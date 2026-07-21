@@ -11,6 +11,10 @@ let ALL_ALERTS = [];
 let selectedAlertId = null;
 let SELECTED_ALERT_PLAYBACK = null;
 let DASHBOARD_REFRESH_TIMER = null;
+let NOTIFICATION_POLL_TIMER = null;
+let NOTIFICATION_DROPDOWN_OPEN = false;
+let NOTIFICATION_INIT_DONE = false;
+let NOTIFICATION_LOADING = false;
 
 // 1. Hàm gọi API lấy danh sách camera tập trung từ Backend FastAPI
 async function fetchCamerasFromBackend() {
@@ -305,6 +309,255 @@ function escapeHtml(value) {
   }[char]));
 }
 
+function notificationHeaders() {
+  const token = localStorage.getItem('token');
+  return token ? { 'Authorization': `Bearer ${token}` } : {};
+}
+
+function formatNotificationBadgeValue(unread) {
+  const count = Number(unread || 0);
+  if (count <= 0) return '';
+  return count > 99 ? '99+' : String(count);
+}
+
+function updateNotificationBadges(unread) {
+  const value = formatNotificationBadgeValue(unread);
+  document.querySelectorAll('.js-notification-badge').forEach(badge => {
+    badge.textContent = value;
+    badge.style.display = value ? '' : 'none';
+  });
+}
+
+function notificationErrorMessage(detail, fallback = 'Không thể tải thông báo.') {
+  if (!detail) return fallback;
+  if (typeof detail === 'string') return detail;
+  if (typeof detail === 'object' && detail.message) return detail.message;
+  return fallback;
+}
+
+function handleNotificationAuthError(status) {
+  if (status === 401) {
+    alert('Phiên làm việc hết hạn, vui lòng đăng nhập lại.');
+    window.location.href = 'login.html';
+    return true;
+  }
+  return false;
+}
+
+async function fetchNotificationUnreadCount() {
+  const token = localStorage.getItem('token');
+  if (!token || document.hidden) return null;
+  const response = await fetch('http://127.0.0.1:8000/api/notifications/unread-count', {
+    headers: notificationHeaders()
+  });
+  if (!response.ok) {
+    if (handleNotificationAuthError(response.status)) return null;
+    const err = await response.json().catch(() => ({}));
+    throw new Error(notificationErrorMessage(err.detail, 'Không thể tải số thông báo chưa đọc.'));
+  }
+  const data = await response.json();
+  updateNotificationBadges(data.unread || 0);
+  return data.unread || 0;
+}
+
+async function fetchNotifications() {
+  const response = await fetch('http://127.0.0.1:8000/api/notifications?limit=30', {
+    headers: notificationHeaders()
+  });
+  if (!response.ok) {
+    if (handleNotificationAuthError(response.status)) return { items: [], unread: 0 };
+    const err = await response.json().catch(() => ({}));
+    throw new Error(notificationErrorMessage(err.detail, 'Không thể tải thông báo.'));
+  }
+  return response.json();
+}
+
+function ensureNotificationDropdown(bell) {
+  let dropdown = bell.querySelector('.notification-dropdown');
+  if (dropdown) return dropdown;
+  dropdown = document.createElement('div');
+  dropdown.className = 'notification-dropdown';
+  dropdown.innerHTML = `
+    <div class="notification-head">
+      <div class="notification-title">Thông báo</div>
+      <button type="button" class="notification-read-all">Đánh dấu tất cả đã đọc</button>
+    </div>
+    <div class="notification-body"><div class="notification-empty">Đang tải thông báo...</div></div>
+  `;
+  bell.appendChild(dropdown);
+  dropdown.addEventListener('click', event => event.stopPropagation());
+  dropdown.querySelector('.notification-read-all').addEventListener('click', async (event) => {
+    event.stopPropagation();
+    await markAllNotificationsRead();
+  });
+  return dropdown;
+}
+
+function setNotificationDropdownState(message, isError = false) {
+  document.querySelectorAll('.notification-dropdown .notification-body').forEach(body => {
+    body.innerHTML = '';
+    const empty = document.createElement('div');
+    empty.className = 'notification-empty';
+    empty.style.color = isError ? '#dc2626' : 'var(--slate-400)';
+    empty.textContent = message;
+    body.appendChild(empty);
+  });
+}
+
+function renderNotificationList(items) {
+  document.querySelectorAll('.notification-dropdown .notification-body').forEach(body => {
+    body.innerHTML = '';
+    if (!items.length) {
+      const empty = document.createElement('div');
+      empty.className = 'notification-empty';
+      empty.textContent = 'Không có thông báo.';
+      body.appendChild(empty);
+      return;
+    }
+    items.forEach(item => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = `notification-item${item.read ? '' : ' unread'}`;
+      button.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        await openNotification(item);
+      });
+
+      const titleRow = document.createElement('div');
+      titleRow.className = 'notification-item-title';
+      const title = document.createElement('span');
+      title.textContent = item.title || 'Thông báo';
+      const severity = document.createElement('span');
+      severity.className = `pill ${alertSeverityClass(item.severity || 'MEDIUM')}`;
+      severity.textContent = item.severity || 'MEDIUM';
+      titleRow.appendChild(title);
+      titleRow.appendChild(severity);
+
+      const message = document.createElement('div');
+      message.className = 'notification-item-message';
+      message.textContent = item.message || '';
+
+      const meta = document.createElement('div');
+      meta.className = 'notification-item-meta';
+      if (!item.read) {
+        const dot = document.createElement('span');
+        dot.className = 'notification-state';
+        meta.appendChild(dot);
+      }
+      const time = document.createElement('span');
+      time.textContent = `${item.read ? 'Đã đọc' : 'Chưa đọc'} · ${formatAlertDateTime(item.created_at)}`;
+      meta.appendChild(time);
+
+      button.appendChild(titleRow);
+      button.appendChild(message);
+      button.appendChild(meta);
+      body.appendChild(button);
+    });
+  });
+}
+
+async function refreshNotificationDropdown() {
+  if (!NOTIFICATION_DROPDOWN_OPEN || NOTIFICATION_LOADING || document.hidden) return;
+  NOTIFICATION_LOADING = true;
+  setNotificationDropdownState('Đang tải thông báo...');
+  try {
+    const data = await fetchNotifications();
+    updateNotificationBadges(data.unread || 0);
+    renderNotificationList(data.items || []);
+  } catch (error) {
+    setNotificationDropdownState(error.message || 'Không thể tải thông báo.', true);
+  } finally {
+    NOTIFICATION_LOADING = false;
+  }
+}
+
+async function toggleNotificationDropdown(event) {
+  event.stopPropagation();
+  const bell = event.currentTarget;
+  const dropdown = ensureNotificationDropdown(bell);
+  const shouldOpen = !dropdown.classList.contains('open');
+  document.querySelectorAll('.notification-dropdown').forEach(item => item.classList.remove('open'));
+  NOTIFICATION_DROPDOWN_OPEN = shouldOpen;
+  if (shouldOpen) {
+    dropdown.classList.add('open');
+    await refreshNotificationDropdown();
+  }
+}
+
+async function markNotificationRead(notificationId) {
+  const response = await fetch(`http://127.0.0.1:8000/api/notifications/${notificationId}/read`, {
+    method: 'PUT',
+    headers: notificationHeaders()
+  });
+  if (!response.ok) {
+    if (handleNotificationAuthError(response.status)) return false;
+    const err = await response.json().catch(() => ({}));
+    throw new Error(notificationErrorMessage(err.detail, 'Không thể đánh dấu thông báo đã đọc.'));
+  }
+  await fetchNotificationUnreadCount();
+  if (NOTIFICATION_DROPDOWN_OPEN) await refreshNotificationDropdown();
+  return true;
+}
+
+async function markAllNotificationsRead() {
+  try {
+    const response = await fetch('http://127.0.0.1:8000/api/notifications/read-all', {
+      method: 'PUT',
+      headers: notificationHeaders()
+    });
+    if (!response.ok) {
+      if (handleNotificationAuthError(response.status)) return;
+      const err = await response.json().catch(() => ({}));
+      throw new Error(notificationErrorMessage(err.detail, 'Không thể đánh dấu tất cả đã đọc.'));
+    }
+    updateNotificationBadges(0);
+    await refreshNotificationDropdown();
+  } catch (error) {
+    setNotificationDropdownState(error.message || 'Không thể đánh dấu tất cả đã đọc.', true);
+  }
+}
+
+async function openNotification(item) {
+  try {
+    if (!item.read) await markNotificationRead(item.id);
+  } catch (error) {
+    setNotificationDropdownState(error.message || 'Không thể cập nhật thông báo.', true);
+    return;
+  }
+  if (item.alert_id) {
+    window.location.href = `alerts.html?alert_id=${encodeURIComponent(item.alert_id)}`;
+  }
+}
+
+function closeNotificationDropdowns() {
+  NOTIFICATION_DROPDOWN_OPEN = false;
+  document.querySelectorAll('.notification-dropdown').forEach(dropdown => dropdown.classList.remove('open'));
+}
+
+function initNotifications() {
+  if (NOTIFICATION_INIT_DONE) return;
+  NOTIFICATION_INIT_DONE = true;
+  document.querySelectorAll('.js-notification-bell').forEach(bell => {
+    ensureNotificationDropdown(bell);
+    bell.addEventListener('click', toggleNotificationDropdown);
+  });
+  document.addEventListener('click', closeNotificationDropdowns);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      fetchNotificationUnreadCount().catch(() => {});
+      if (NOTIFICATION_DROPDOWN_OPEN) refreshNotificationDropdown();
+    }
+  });
+  fetchNotificationUnreadCount().catch(() => {});
+  if (!NOTIFICATION_POLL_TIMER) {
+    NOTIFICATION_POLL_TIMER = setInterval(() => {
+      if (document.hidden) return;
+      fetchNotificationUnreadCount().catch(() => {});
+      if (NOTIFICATION_DROPDOWN_OPEN) refreshNotificationDropdown();
+    }, 10000);
+  }
+}
+
 function alertSeverityClass(severity) {
   const value = String(severity || '').toUpperCase();
   if (value === 'HIGH' || value === 'CRITICAL') return 'cao';
@@ -384,7 +637,10 @@ async function loadAlerts() {
     ALL_ALERTS = data.items || [];
     updateAlertStats(data.summary || {});
     renderAlertList(ALL_ALERTS);
-    if (ALL_ALERTS.length) {
+    const deepLinkAlertId = new URLSearchParams(window.location.search).get('alert_id');
+    if (deepLinkAlertId) {
+      await selectAlertById(deepLinkAlertId);
+    } else if (ALL_ALERTS.length) {
       await selectAlertById(ALL_ALERTS[0].id);
     } else {
       selectedAlertId = null;
@@ -1673,6 +1929,7 @@ async function restoreBackup(event) {
 document.addEventListener("DOMContentLoaded", async () => {
    if (!checkAuthSecurity()) return;
    syncSessionUserDisplayName();
+   initNotifications();
 
    await fetchCamerasFromBackend();
    if (document.getElementById('userTableBody')) { await fetchUsersFromBackend(); renderUserTable(); }
