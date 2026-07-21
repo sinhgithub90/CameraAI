@@ -9,6 +9,7 @@ let PLAYBACK_SEGMENTS = [];
 let PLAYBACK_GAPS = [];
 let ALL_ALERTS = [];
 let selectedAlertId = null;
+let SELECTED_ALERT_PLAYBACK = null;
 let DASHBOARD_REFRESH_TIMER = null;
 
 // 1. Hàm gọi API lấy danh sách camera tập trung từ Backend FastAPI
@@ -472,6 +473,70 @@ function formatAlertApiError(detail, fallback = 'Không thể cập nhật trạ
   return lines.length ? lines.join('\n') : fallback;
 }
 
+function renderAlertPlaybackBlock(playback) {
+  const segments = playback?.matching_segments || [];
+  if (!playback?.camera_id) {
+    return '<div class="reco-item" style="color:var(--slate-400);">Cảnh báo chưa có camera để xem phát lại.</div>';
+  }
+  if (!segments.length) {
+    return '<div class="reco-item" style="color:var(--slate-400);">Không có video tại thời điểm cảnh báo.</div>';
+  }
+  return `
+    <button class="btn-sm primary" onclick="openAlertPlayback()" style="width:auto;display:inline-flex;align-items:center;gap:6px;">
+      Xem phát lại
+    </button>
+    <div style="font-size:11.5px;color:var(--slate-400);margin-top:6px;">${segments.length} segment trong khoảng gợi ý.</div>
+  `;
+}
+
+function evidencePreviewUrl(item) {
+  return item?.stream_url || item?.download_url || item?.path || '';
+}
+
+function renderAlertEvidence(evidence) {
+  if (!evidence.length) return '<div style="font-size:12px;color:var(--slate-500);">Chưa có bằng chứng.</div>';
+  return `
+    <div style="display:grid;gap:8px;">
+      ${evidence.map(item => {
+        const type = String(item.type || item.file_type || 'FILE').toUpperCase();
+        const url = evidencePreviewUrl(item);
+        const meta = `${type} · ${formatPlaybackBytes(item.size || 0)}${item.mime_type ? ` · ${escapeHtml(item.mime_type)}` : ''}`;
+        const preview = type === 'IMAGE' && url
+          ? `<img src="${escapeHtml(url)}" alt="${escapeHtml(item.file_name || 'Bằng chứng ảnh')}" style="width:100%;max-height:180px;object-fit:contain;border:1px solid var(--slate-200);border-radius:8px;background:#f8fafc;margin-top:6px;" onerror="this.style.display='none';">`
+          : '';
+        return `
+          <div class="reco-item">
+            <div style="display:flex;justify-content:space-between;gap:10px;align-items:center;">
+              <strong>${escapeHtml(item.file_name || item.path || 'Bằng chứng')}</strong>
+              <span style="font-size:11px;color:var(--slate-400);">${escapeHtml(meta)}</span>
+            </div>
+            ${item.path ? `<div style="font-size:11.5px;color:var(--slate-400);margin-top:4px;word-break:break-all;">${escapeHtml(item.path)}</div>` : ''}
+            ${preview}
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+async function openAlertPlayback() {
+  const playback = SELECTED_ALERT_PLAYBACK;
+  if (!playback?.camera_id || !(playback.matching_segments || []).length) {
+    alert('Không có video tại thời điểm cảnh báo.');
+    return;
+  }
+  openPlaybackModal();
+  const cameraSelect = document.getElementById('playbackCameraSelect');
+  const fromInput = document.getElementById('playbackFromTime');
+  const toInput = document.getElementById('playbackToTime');
+  if (cameraSelect) cameraSelect.value = playback.camera_id;
+  if (fromInput && playback.suggested_from) fromInput.value = formatDateTimeLocal(new Date(playback.suggested_from));
+  if (toInput && playback.suggested_to) toInput.value = formatDateTimeLocal(new Date(playback.suggested_to));
+  await searchPlaybackSegments();
+  const firstSegment = playback.matching_segments[0];
+  if (firstSegment?.id) playPlaybackSegment(firstSegment.id);
+}
+
 function renderAlertEmptyDetail() {
   const detail = document.getElementById('alertDetailPanel');
   if (detail) detail.innerHTML = '<div style="color:var(--slate-400);">Chưa có cảnh báo để hiển thị.</div>';
@@ -500,6 +565,7 @@ function renderAlertDetail(alertItem) {
   if (!detail) return;
   const timeline = alertItem.timeline || [];
   const evidence = alertItem.evidence || [];
+  SELECTED_ALERT_PLAYBACK = alertItem.playback || null;
   detail.innerHTML = `
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
       <span class="pill ${alertSeverityClass(alertItem.severity)}">${escapeHtml(alertItem.severity_label)}</span>
@@ -513,8 +579,10 @@ function renderAlertDetail(alertItem) {
     </div>
     <h4 style="font-size:12px;color:var(--slate-400);margin-bottom:8px;">MÔ TẢ</h4>
     <div class="ai-summary">${escapeHtml(alertItem.description || 'Chưa có mô tả.')}</div>
+    <h4 style="font-size:12px;color:var(--slate-400);margin:14px 0 8px;">PHÁT LẠI</h4>
+    ${renderAlertPlaybackBlock(alertItem.playback)}
     <h4 style="font-size:12px;color:var(--slate-400);margin:14px 0 8px;">BẰNG CHỨNG</h4>
-    <div style="font-size:12px;color:var(--slate-500);">${evidence.length ? evidence.map(item => escapeHtml(item.file_name || item.path)).join('<br>') : 'Chưa có bằng chứng.'}</div>
+    ${renderAlertEvidence(evidence)}
     <h4 style="font-size:12px;color:var(--slate-400);margin:14px 0 8px;">TIMELINE TRẠNG THÁI</h4>
     <div style="display:grid;gap:8px;font-size:12px;color:var(--slate-600);">
       ${timeline.length ? timeline.map(item => `<div class="reco-item">● ${escapeHtml(formatAlertDateTime(item.occurred_at))} · ${escapeHtml(item.status_label || item.status)}${item.note ? ` · ${escapeHtml(item.note)}` : ''}</div>`).join('') : '<div class="reco-item">Chưa có lịch sử trạng thái.</div>'}

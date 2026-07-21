@@ -1,6 +1,7 @@
 import os
 import re
 import json
+from datetime import timedelta
 from contextlib import contextmanager
 
 import psycopg2
@@ -2226,6 +2227,186 @@ def _normalize_alert_row(row):
     }
 
 
+def _normalize_recording_segment_row(row):
+    data = dict(row)
+    start_time = data.get("start_time")
+    end_time = data.get("end_time")
+    stream_url = f"http://127.0.0.1:8000/api/playback/file/{data['id']}"
+    return {
+        "id": data["id"],
+        "camera_id": data.get("camera_id"),
+        "camera_name": data.get("camera_name"),
+        "zone": data.get("zone"),
+        "loc": data.get("loc"),
+        "file_path": None,
+        "start_time": start_time.isoformat() if start_time else None,
+        "end_time": end_time.isoformat() if end_time else None,
+        "duration_seconds": data.get("duration_seconds"),
+        "file_size": data.get("file_size"),
+        "status": str(data.get("status") or "").lower(),
+        "stream_url": stream_url,
+        "download_url": stream_url,
+    }
+
+
+def _find_alert_playback_segments(cur, camera_db_id, suggested_from, suggested_to):
+    if not camera_db_id or not suggested_from or not suggested_to:
+        return []
+    cur.execute(
+        """
+        select
+          dv.id,
+          c.stream_key as camera_id,
+          c.ten_camera as camera_name,
+          coalesce(kv.ten_khu_vuc, ldc.toa_nha, '-') as zone,
+          coalesce(ldc.vi_tri_lap_dat, '-') as loc,
+          dv.duong_dan_video as file_path,
+          dv.bat_dau_luc as start_time,
+          dv.ket_thuc_luc as end_time,
+          dv.thoi_luong_giay as duration_seconds,
+          dv.dung_luong as file_size,
+          lower(dv.trang_thai) as status
+        from doan_video dv
+        join camera c on c.id = dv.camera_id
+        left join khu_vuc kv on kv.id = c.khu_vuc_id
+        left join lap_dat_camera ldc on ldc.camera_id = c.id
+        where dv.deleted_at is null
+          and dv.camera_id = %s
+          and dv.ket_thuc_luc >= %s
+          and dv.bat_dau_luc <= %s
+        order by dv.bat_dau_luc asc
+        limit 50
+        """,
+        (camera_db_id, suggested_from, suggested_to),
+    )
+    return [_normalize_recording_segment_row(row) for row in cur.fetchall()]
+
+
+def _playback_gaps_for_segments(segments):
+    gaps = []
+    previous = None
+    previous_end = None
+    for segment in segments:
+        current_end = _parse_iso_datetime(segment.get("end_time"))
+        if previous and previous_end and segment.get("start_time"):
+            current_start = _parse_iso_datetime(segment["start_time"])
+            if previous_end and current_start:
+                gap_seconds = int((current_start - previous_end).total_seconds())
+                if gap_seconds > 10:
+                    gaps.append(
+                        {
+                            "camera_id": segment.get("camera_id"),
+                            "from_time": previous["end_time"],
+                            "to_time": segment["start_time"],
+                            "gap_seconds": gap_seconds,
+                        }
+                    )
+        if current_end and (not previous_end or current_end > previous_end):
+            previous_end = current_end
+        previous = segment
+    return gaps
+
+
+def _parse_iso_datetime(value):
+    if not value:
+        return None
+    if hasattr(value, "isoformat"):
+        return value
+    from datetime import datetime
+
+    try:
+        return datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+
+
+def _normalize_evidence_item(row, evidence_type, source):
+    data = dict(row)
+    captured_at = data.get("captured_at")
+    created_at = data.get("created_at")
+    path = data.get("path")
+    file_name = data.get("file_name")
+    public_path = path if _is_public_url(path) else None
+    stream_url = data.get("stream_url")
+    download_url = data.get("download_url") or public_path
+    preview_url = data.get("preview_url") or (public_path if evidence_type == "IMAGE" else None)
+    return {
+        "id": data.get("id"),
+        "type": evidence_type,
+        "source": source,
+        "file_name": _safe_file_name(file_name) or _safe_file_name(path) or f"{source}-{data.get('id')}",
+        "path": public_path,
+        "mime_type": data.get("mime_type"),
+        "size": data.get("size") or 0,
+        "checksum_sha256": data.get("checksum_sha256"),
+        "captured_at": captured_at.isoformat() if captured_at else None,
+        "created_at": created_at.isoformat() if created_at else None,
+        "preview_url": preview_url if evidence_type == "IMAGE" else None,
+        "stream_url": stream_url if evidence_type == "VIDEO" else None,
+        "download_url": download_url,
+    }
+
+
+def _file_evidence_type(file_type, mime_type):
+    value = str(file_type or "").upper()
+    mime = str(mime_type or "").lower()
+    if value == "VIDEO" or mime.startswith("video/"):
+        return "VIDEO"
+    if value == "IMAGE" or mime.startswith("image/"):
+        return "IMAGE"
+    return "FILE"
+
+
+def _is_public_url(value):
+    text = str(value or "").lower()
+    return text.startswith("http://") or text.startswith("https://")
+
+
+def _safe_file_name(value):
+    if not value:
+        return None
+    return os.path.basename(str(value).replace("\\", "/"))
+
+
+def _evidence_dedupe_key(item):
+    checksum = item.get("checksum_sha256")
+    if checksum:
+        return ("checksum", checksum)
+    if item.get("id") is not None:
+        return ("file_id", item.get("source"), item.get("id"))
+    if item.get("path"):
+        return ("path", item.get("path"))
+    return ("fallback", item.get("source"), item.get("file_name"), item.get("size"))
+
+
+def _dedupe_evidence(items):
+    deduped = []
+    positions = {}
+    for item in items:
+        key = _evidence_dedupe_key(item)
+        if key in positions:
+            index = positions[key]
+            if _evidence_score(item) > _evidence_score(deduped[index]):
+                deduped[index] = item
+            continue
+        positions[key] = len(deduped)
+        deduped.append(item)
+    return deduped
+
+
+def _evidence_score(item):
+    score = 0
+    if item.get("preview_url"):
+        score += 4
+    if item.get("stream_url"):
+        score += 4
+    if item.get("download_url"):
+        score += 2
+    if item.get("source") == "doan_video":
+        score += 1
+    return score
+
+
 def list_alerts_for_ui(status=None, severity=None, camera_id=None, from_time=None, to_time=None):
     where = ["cb.deleted_at is null"]
     params = []
@@ -2308,7 +2489,7 @@ def get_alert_detail_for_ui(alert_id):
               coalesce(kv.ten_khu_vuc, ldc.toa_nha, '-') as zone,
               coalesce(ldc.vi_tri_lap_dat, '-') as location
             from canh_bao cb
-            join camera c on c.id = cb.camera_id
+            left join camera c on c.id = cb.camera_id
             left join khu_vuc kv on kv.id = cb.khu_vuc_id
             left join lap_dat_camera ldc on ldc.camera_id = c.id
             left join su_kien_phat_hien sk on sk.id = cb.su_kien_phat_hien_id
@@ -2320,6 +2501,22 @@ def get_alert_detail_for_ui(alert_id):
         alert = _normalize_alert_row(cur.fetchone())
         if not alert:
             return None
+        event_time = _parse_iso_datetime(alert.get("occurred_at"))
+        suggested_from = event_time - timedelta(seconds=30) if event_time else None
+        suggested_to = event_time + timedelta(seconds=30) if event_time else None
+        matching_segments = _find_alert_playback_segments(
+            cur,
+            alert.get("camera_db_id"),
+            suggested_from,
+            suggested_to,
+        )
+        playback_reason = None
+        if not alert.get("camera_db_id"):
+            playback_reason = "Alert khong co camera_id de truy van video phat lai."
+        elif not event_time:
+            playback_reason = "Alert khong co thoi diem su kien hop le."
+        elif not matching_segments:
+            playback_reason = "Khong co video tai thoi diem canh bao."
 
         cur.execute(
             """
@@ -2355,22 +2552,109 @@ def get_alert_detail_for_ui(alert_id):
             item["status_label"] = _alert_status_label(item.get("status"))
             timeline.append(item)
 
+        evidence = []
         cur.execute(
             """
-            select tbc.id, tbc.loai_tep as file_type, tbc.ten_tep as file_name,
-                   tbc.duong_dan as path, tbc.mime_type, tbc.dung_luong as size
+            select
+              tbc.id,
+              tbc.loai_tep as file_type,
+              tbc.ten_tep as file_name,
+              tbc.duong_dan as path,
+              tbc.mime_type,
+              tbc.dung_luong as size,
+              tbc.checksum_sha256,
+              null::timestamptz as captured_at,
+              tbc.created_at
             from bang_chung bc
             join tep_bang_chung tbc on tbc.bang_chung_id = bc.id
             where bc.canh_bao_id = %s
             order by tbc.created_at desc
-            limit 20
+            limit 50
             """,
             (alert_id,),
         )
-        evidence = [dict(row) for row in cur.fetchall()]
+        for row in cur.fetchall():
+            data = dict(row)
+            evidence_type = _file_evidence_type(data.get("file_type"), data.get("mime_type"))
+            if evidence_type == "IMAGE" and _is_public_url(data.get("path")):
+                data["preview_url"] = data["path"]
+                data["download_url"] = data["path"]
+            elif evidence_type == "FILE" and _is_public_url(data.get("path")):
+                data["download_url"] = data["path"]
+            evidence.append(
+                _normalize_evidence_item(
+                    data,
+                    evidence_type,
+                    "tep_bang_chung",
+                )
+            )
+
+        cur.execute(
+            """
+            select
+              dv.id,
+              'VIDEO' as file_type,
+              dv.duong_dan_video as file_name,
+              dv.duong_dan_video as path,
+              dv.mime_type,
+              dv.dung_luong as size,
+              dv.checksum_sha256,
+              dv.bat_dau_luc as captured_at,
+              dv.created_at
+            from bang_chung bc
+            join doan_video dv on dv.bang_chung_id = bc.id
+            where bc.canh_bao_id = %s
+              and dv.deleted_at is null
+            order by dv.bat_dau_luc desc
+            limit 50
+            """,
+            (alert_id,),
+        )
+        for row in cur.fetchall():
+            data = dict(row)
+            data["stream_url"] = f"http://127.0.0.1:8000/api/playback/file/{data['id']}"
+            data["download_url"] = data["stream_url"]
+            evidence.append(_normalize_evidence_item(data, "VIDEO", "doan_video"))
+
+        cur.execute(
+            """
+            select
+              ac.id,
+              'IMAGE' as file_type,
+              ac.duong_dan_anh as file_name,
+              ac.duong_dan_anh as path,
+              ac.mime_type,
+              ac.dung_luong as size,
+              null::varchar as checksum_sha256,
+              ac.thoi_diem_chup as captured_at,
+              ac.created_at
+            from bang_chung bc
+            join anh_chup ac on ac.bang_chung_id = bc.id
+            where bc.canh_bao_id = %s
+              and ac.deleted_at is null
+            order by ac.thoi_diem_chup desc
+            limit 50
+            """,
+            (alert_id,),
+        )
+        for row in cur.fetchall():
+            data = dict(row)
+            if _is_public_url(data.get("path")):
+                data["preview_url"] = data["path"]
+                data["download_url"] = data["path"]
+            evidence.append(_normalize_evidence_item(data, "IMAGE", "anh_chup"))
 
     alert["timeline"] = timeline
-    alert["evidence"] = evidence
+    alert["evidence"] = _dedupe_evidence(evidence)
+    alert["playback"] = {
+        "camera_id": alert.get("camera_id"),
+        "event_time": alert.get("occurred_at"),
+        "suggested_from": suggested_from.isoformat() if suggested_from else None,
+        "suggested_to": suggested_to.isoformat() if suggested_to else None,
+        "matching_segments": matching_segments,
+        "gaps": _playback_gaps_for_segments(matching_segments),
+        "reason": playback_reason,
+    }
     return alert
 
 
