@@ -12,6 +12,8 @@ from urllib.parse import urlparse
 import requests
 from dotenv import load_dotenv
 
+from alert_service import alert_service
+
 try:
     import psutil
 except ImportError:
@@ -234,6 +236,17 @@ class HealthManager:
             rtsp_signal.get("latency_ms") or live_signal.get("latency_ms"),
             reason=reason,
         )
+        alert_result = None
+        if status_value == "OFFLINE" and self.fail_counter.get(stream_key, 0) >= self.fail_threshold:
+            alert_result = alert_service.create_alert(
+                source="HEALTH",
+                severity="HIGH",
+                camera_id=camera["db_id"],
+                khu_vuc_id=camera.get("khu_vuc_id"),
+                title=f"Camera offline: {camera.get('name') or stream_key}",
+                description=reason,
+                duplicate_key=f"HEALTH:CAMERA_OFFLINE:{stream_key}",
+            )
         return {
             "camera_id": stream_key,
             "host": host,
@@ -249,6 +262,7 @@ class HealthManager:
                 "recording_available": recording_signal,
             },
             "reason": reason,
+            "alert": alert_result,
             "fail_count": self.fail_counter.get(stream_key, 0),
             "changed": write_result.get("changed", False),
         }
