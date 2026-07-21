@@ -10,8 +10,6 @@ import yaml
 import subprocess
 import os
 import platform
-import threading
-import time
 import shutil
 from datetime import datetime, timedelta
 try:
@@ -48,7 +46,12 @@ from db import (
     search_recording_segments,
     verify_admin_user_from_db,
 )
+from health_manager import health_manager
 from recording_manager import recording_manager
+from runtime.startup_manager import StartupManager
+
+health_manager.set_recording_status_provider(recording_manager.status)
+runtime_manager = StartupManager(health_manager, recording_manager)
 
 app = FastAPI(title="VMS Central API Gateway", version="1.0")
 
@@ -362,114 +365,22 @@ def delete_user(username: str, admin_user: str = Depends(verify_admin_role)):
     return {"status": "success"}
 
 # 🌟 LUỒNG QUYÉT NGẦM TRUNG GIAN (PROXY HEALTH CHECK)
-# THAY THẾ HÀM start_go2rtc_proxy_sync TRONG main.py
+# Health manager thay the luong kiem tra RTSP legacy.
 def start_go2rtc_proxy_sync():
-    import socket
-    from urllib.parse import urlparse
-    from concurrent.futures import ThreadPoolExecutor
-
-    # Có thể chỉnh các tham số này để cân bằng giữa "phát hiện nhanh"
-    # và "chống chớp tắt do rớt gói mạng tạm thời"
-    PROBE_TIMEOUT = 1.0      # giây - thời gian chờ tối đa mỗi lần dò cổng RTSP
-    POLL_INTERVAL = 1.0      # giây - khoảng cách giữa các vòng quét
-    FAIL_THRESHOLD = 2       # số lần thất bại liên tiếp mới xác nhận offline
-    DEFAULT_RTSP_PORT = 554  # fallback nếu không tìm thấy trong go2rtc.yaml
-
-    def get_rtsp_targets():
-        """Đọc go2rtc.yaml để lấy đúng host:port RTSP thật của từng camera.
-        Không dùng port cố định vì mỗi camera có thể khai báo port RTSP khác nhau
-        (VD: cam_huyen_01 dùng 2004, cam_huyen_02 dùng 2005)."""
-        targets = {}
-        try:
-            if os.path.exists(GO2RTC_YAML_PATH):
-                with open(GO2RTC_YAML_PATH, 'r', encoding='utf-8') as f:
-                    config_data = yaml.safe_load(f) or {}
-                for cam_id, url in (config_data.get('streams') or {}).items():
-                    parsed = urlparse(url)
-                    if parsed.hostname:
-                        targets[cam_id] = (parsed.hostname, parsed.port or DEFAULT_RTSP_PORT)
-        except Exception as e:
-            print(f"Lỗi đọc go2rtc.yaml: {e}")
-        return targets
-
-    def check_camera_reachable(host, port, timeout=PROBE_TIMEOUT):
-        """Kiểm tra camera có mở cổng RTSP không - độc lập với go2rtc"""
-        try:
-            with socket.create_connection((host, port), timeout=timeout):
-                return True
-        except (socket.timeout, ConnectionRefusedError, OSError):
-            return False
-
-    def background_sync():
-        from db import db_cursor
-
-        time.sleep(5)
-        fail_counter = {}
-
-        while True:
-            try:
-                cameras = list_cameras_for_ui()
-                video_cams = [c for c in cameras if c.get("type") == "video"]
-                rtsp_targets = get_rtsp_targets()  # đọc lại mỗi vòng để nhận camera mới thêm
-
-                def probe(cam):
-                    cam_id = cam["id"]
-                    host, port = rtsp_targets.get(cam_id, (cam["ip"], DEFAULT_RTSP_PORT))
-                    return cam_id, check_camera_reachable(host, port)
-
-                # Quét song song tất cả camera trong cùng 1 vòng, thay vì tuần tự,
-                # để tổng thời gian 1 vòng quét không phụ thuộc số lượng camera
-                with ThreadPoolExecutor(max_workers=max(len(video_cams), 1)) as pool:
-                    results = list(pool.map(probe, video_cams))
-                online_map = dict(results)
-
-                status_updates = []
-                for cam in video_cams:
-                    cam_id = cam["id"]
-                    is_online = online_map.get(cam_id, False)
-
-                    if is_online:
-                        fail_counter[cam_id] = 0
-                        status_updates.append(("ONLINE", cam_id))
-                    else:
-                        fail_counter[cam_id] = fail_counter.get(cam_id, 0) + 1
-                        if fail_counter[cam_id] >= FAIL_THRESHOLD:
-                            status_updates.append(("OFFLINE", cam_id))
-
-                if status_updates:
-                    with db_cursor(commit=True) as cur:
-                        for status_value, stream_key in status_updates:
-                            cur.execute(
-                                """
-                                update camera
-                                set trang_thai_hien_tai = %s
-                                where stream_key = %s
-                                  and deleted_at is null
-                                  and trang_thai_hien_tai is distinct from %s
-                                """,
-                                (status_value, stream_key, status_value),
-                            )
-            except Exception as e:
-                print(f"Lỗi health check: {e}")
-            time.sleep(POLL_INTERVAL)
-
-    t = threading.Thread(target=background_sync, daemon=True)
-    t.start()
-
-start_go2rtc_proxy_sync()
+    health_manager.start()
 
 
 @app.on_event("startup")
 def startup_recording_manager():
     try:
-        recording_manager.start()
+        runtime_manager.start()
     except Exception as exc:
-        print(f"Recording manager startup error: {exc}")
+        print(f"Runtime startup error: {exc}")
 
 
 @app.on_event("shutdown")
 def shutdown_recording_manager():
-    recording_manager.shutdown()
+    runtime_manager.shutdown()
 
 
 def _parse_range_header(range_header, file_size):
@@ -611,6 +522,81 @@ def stop_recording_camera(camera_id: str):
 @app.post("/api/recording/reload")
 def reload_recording_manager():
     return recording_manager.reload()
+
+
+@app.get("/api/runtime/status")
+def get_runtime_status():
+    return runtime_manager.status()
+
+
+@app.get("/api/runtime/diagnostics")
+def get_runtime_diagnostics():
+    status_payload = runtime_manager.status()
+    return status_payload.get("diagnostics") or runtime_manager.run_diagnostics()
+
+
+@app.post("/api/runtime/diagnostics/run")
+def run_runtime_diagnostics():
+    return runtime_manager.run_diagnostics()
+
+
+@app.post("/api/runtime/go2rtc/start")
+def runtime_start_go2rtc():
+    return runtime_manager.start_go2rtc()
+
+
+@app.post("/api/runtime/go2rtc/stop")
+def runtime_stop_go2rtc():
+    return runtime_manager.stop_go2rtc()
+
+
+@app.post("/api/runtime/go2rtc/restart")
+def runtime_restart_go2rtc():
+    return runtime_manager.restart_go2rtc()
+
+
+@app.post("/api/runtime/reload")
+def reload_runtime():
+    return runtime_manager.reload()
+
+
+@app.get("/api/health/summary")
+def get_health_summary():
+    summary = health_manager.summary()
+    recording_status = recording_manager.status()
+    go2rtc_status = health_manager.go2rtc()
+    summary["recording"] = {
+        "status": recording_status.get("status"),
+        "cameras": len(recording_status.get("cameras") or []),
+    }
+    summary["go2rtc"] = {
+        "healthy": go2rtc_status.get("healthy"),
+        "api_ok": (go2rtc_status.get("api") or {}).get("ok"),
+        "process_running": (go2rtc_status.get("process") or {}).get("running"),
+    }
+    return summary
+
+
+@app.get("/api/health/cameras")
+def get_health_cameras():
+    return health_manager.cameras()
+
+
+@app.get("/api/health/recording")
+def get_health_recording():
+    return recording_manager.status()
+
+
+@app.get("/api/health/system")
+def get_health_system():
+    system_status = health_manager.system(RECORDINGS_DIR)
+    system_status["recording_manager"] = recording_manager.status()
+    return system_status
+
+
+@app.get("/api/health/go2rtc")
+def get_health_go2rtc():
+    return health_manager.go2rtc()
 
 
 def _disk_usage(path):
