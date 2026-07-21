@@ -2375,58 +2375,15 @@ def get_alert_detail_for_ui(alert_id):
 
 
 def update_alert_status_for_ui(alert_id, new_status, note=None, username=None):
-    allowed = {"NEW", "PROCESSING", "ACKNOWLEDGED", "CLOSED", "RESOLVED", "IGNORED"}
-    status_value = str(new_status or "").upper()
-    if status_value not in allowed:
-        raise ValueError("Trang thai canh bao khong hop le")
+    from alert_service import alert_service
 
-    with db_cursor(commit=True) as cur:
-        cur.execute(
-            """
-            select id, trang_thai_hien_tai
-            from canh_bao
-            where id = %s and deleted_at is null
-            for update
-            """,
-            (alert_id,),
-        )
-        alert = cur.fetchone()
-        if not alert:
-            return None
-
-        actor_id = _admin_actor_id(cur, username) if username else None
-        old_status = alert["trang_thai_hien_tai"]
-        cur.execute(
-            "update canh_bao set trang_thai_hien_tai = %s, updated_at = now() where id = %s",
-            (status_value, alert_id),
-        )
-        cur.execute(
-            """
-            update lich_su_trang_thai_canh_bao
-            set ket_thuc_luc = now()
-            where canh_bao_id = %s and ket_thuc_luc is null
-            """,
-            (alert_id,),
-        )
-        cur.execute(
-            """
-            insert into lich_su_trang_thai_canh_bao (
-              canh_bao_id, trang_thai, bat_dau_luc, nguoi_thuc_hien_id, ghi_chu
-            )
-            values (%s, %s, now(), %s, %s)
-            """,
-            (alert_id, status_value, actor_id, note),
-        )
-        cur.execute(
-            """
-            insert into tien_trinh_xu_ly_canh_bao (
-              canh_bao_id, hanh_dong, noi_dung, nguoi_thuc_hien_id
-            )
-            values (%s, %s, %s, %s)
-            """,
-            (alert_id, "UPDATE_STATUS", f"{old_status} -> {status_value}", actor_id),
-        )
-    return get_alert_detail_for_ui(alert_id)
+    result = alert_service.update_alert(alert_id, status=new_status, note=note, username=username)
+    if result.get("status") == "not_found":
+        return None
+    alert = get_alert_detail_for_ui(alert_id)
+    if alert:
+        alert["workflow_result"] = result
+    return alert
 
 
 def get_reports_summary_from_db(from_time=None, to_time=None):

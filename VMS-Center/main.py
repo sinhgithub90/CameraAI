@@ -48,6 +48,7 @@ from db import (
 )
 from health_manager import health_manager
 from recording_manager import recording_manager
+from alert_service import AlertTransitionError
 from runtime.startup_manager import StartupManager
 
 health_manager.set_recording_status_provider(recording_manager.status)
@@ -722,6 +723,8 @@ def get_alert_detail(alert_id: int):
 def update_alert_status(alert_id: int, data: AlertStatusInput, admin_user: str = Depends(verify_admin_role)):
     try:
         alert = update_alert_status_for_ui(alert_id, data.status, data.note, admin_user)
+    except AlertTransitionError as exc:
+        raise HTTPException(status_code=400, detail=exc.to_dict())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:

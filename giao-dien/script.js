@@ -423,6 +423,55 @@ function renderAlertList(alerts) {
   });
 }
 
+const ALERT_STATUS_ACTIONS = {
+  NEW: [
+    { status: 'PROCESSING', label: 'Tiếp nhận', className: 'primary' },
+    { status: 'ACKNOWLEDGED', label: 'Xác nhận', className: '' },
+    { status: 'IGNORED', label: 'Bỏ qua', className: '' }
+  ],
+  PROCESSING: [
+    { status: 'ACKNOWLEDGED', label: 'Xác nhận', className: '' },
+    { status: 'RESOLVED', label: 'Đã xử lý', className: 'green' },
+    { status: 'CLOSED', label: 'Đóng', className: 'green' }
+  ],
+  ACKNOWLEDGED: [
+    { status: 'RESOLVED', label: 'Đã xử lý', className: 'green' },
+    { status: 'CLOSED', label: 'Đóng', className: 'green' }
+  ],
+  RESOLVED: [
+    { status: 'CLOSED', label: 'Đóng', className: 'green' }
+  ],
+  CLOSED: [],
+  IGNORED: []
+};
+
+function renderAlertStatusActions(alertItem) {
+  const currentStatus = String(alertItem.status || '').toUpperCase();
+  const actions = ALERT_STATUS_ACTIONS[currentStatus] || [];
+  if (!actions.length) return '';
+  return `
+    <div class="btn-row">
+      ${actions.map(action => `<button class="btn-sm ${action.className}" onclick="updateAlertStatus('${alertItem.id}', '${action.status}')">${escapeHtml(action.label)}</button>`).join('')}
+    </div>
+  `;
+}
+
+function formatAlertApiError(detail, fallback = 'Không thể cập nhật trạng thái cảnh báo.') {
+  if (!detail) return fallback;
+  if (typeof detail === 'string') return detail;
+  if (typeof detail !== 'object') return fallback;
+  const lines = [];
+  if (detail.message) lines.push(detail.message);
+  if (detail.current_status || detail.requested_status) {
+    lines.push(`Trạng thái hiện tại: ${detail.current_status || '-'}`);
+    lines.push(`Trạng thái yêu cầu: ${detail.requested_status || '-'}`);
+  }
+  if (Array.isArray(detail.allowed_transitions)) {
+    lines.push(`Có thể chuyển sang: ${detail.allowed_transitions.length ? detail.allowed_transitions.join(', ') : 'Không còn trạng thái hợp lệ'}`);
+  }
+  return lines.length ? lines.join('\n') : fallback;
+}
+
 function renderAlertEmptyDetail() {
   const detail = document.getElementById('alertDetailPanel');
   if (detail) detail.innerHTML = '<div style="color:var(--slate-400);">Chưa có cảnh báo để hiển thị.</div>';
@@ -438,7 +487,7 @@ async function selectAlertById(alertId) {
     const response = await fetch(`http://127.0.0.1:8000/api/vms/alerts/${alertId}`);
     if (!response.ok) {
       const err = await response.json().catch(() => ({}));
-      throw new Error(err.detail || 'Không thể tải chi tiết cảnh báo.');
+      throw new Error(formatAlertApiError(err.detail, 'Không thể tải chi tiết cảnh báo.'));
     }
     renderAlertDetail(await response.json());
   } catch (error) {
@@ -470,10 +519,7 @@ function renderAlertDetail(alertItem) {
     <div style="display:grid;gap:8px;font-size:12px;color:var(--slate-600);">
       ${timeline.length ? timeline.map(item => `<div class="reco-item">● ${escapeHtml(formatAlertDateTime(item.occurred_at))} · ${escapeHtml(item.status_label || item.status)}${item.note ? ` · ${escapeHtml(item.note)}` : ''}</div>`).join('') : '<div class="reco-item">Chưa có lịch sử trạng thái.</div>'}
     </div>
-    <div class="btn-row">
-      <button class="btn-sm primary" onclick="updateAlertStatus('${alertItem.id}', 'PROCESSING')">Tiếp nhận</button>
-      <button class="btn-sm green" onclick="updateAlertStatus('${alertItem.id}', 'CLOSED')">Đóng cảnh báo</button>
-    </div>
+    ${renderAlertStatusActions(alertItem)}
   `;
 }
 
@@ -488,7 +534,7 @@ async function updateAlertStatus(alertId, status) {
     });
     if (!response.ok) {
       const err = await response.json().catch(() => ({}));
-      throw new Error(err.detail || 'Không thể cập nhật trạng thái cảnh báo.');
+      throw new Error(formatAlertApiError(err.detail, 'Không thể cập nhật trạng thái cảnh báo.'));
     }
     await loadAlerts();
   } catch (error) {
