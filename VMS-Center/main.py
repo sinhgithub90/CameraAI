@@ -44,11 +44,13 @@ from db import (
     update_user_for_ui,
     restore_backup_to_db,
     search_recording_segments,
+    verify_active_user_from_db,
     verify_admin_user_from_db,
 )
 from health_manager import health_manager
 from recording_manager import recording_manager
 from alert_service import AlertTransitionError
+from notification_service import notification_service
 from runtime.startup_manager import StartupManager
 
 health_manager.set_recording_status_provider(recording_manager.status)
@@ -157,6 +159,21 @@ def verify_admin_role(credentials: HTTPAuthorizationCredentials = Depends(securi
     if admin_check.get("status") != "ok":
         raise HTTPException(status_code=403, detail="TỪ CHỐI TRUY CẬP: Thao tác cấu hình quyền chỉ dành riêng cho Quản trị viên!")
     return admin_check["username"]
+
+
+def verify_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    token = credentials.credentials
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        username = payload.get("sub")
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Phiên đăng nhập hết hạn hoặc Token xác thực không hợp lệ!")
+    user_check = verify_active_user_from_db(username)
+    if user_check.get("status") == "not_found":
+        raise HTTPException(status_code=401, detail="Phiên đăng nhập hết hạn hoặc Token xác thực không hợp lệ!")
+    if user_check.get("status") == "inactive":
+        raise HTTPException(status_code=403, detail="Tài khoản hiện đang bị tạm khóa!")
+    return user_check["username"]
 
 @app.post("/api/auth/token")
 def login(user: str, text_pass: str):
@@ -733,6 +750,31 @@ def update_alert_status(alert_id: int, data: AlertStatusInput, admin_user: str =
     if not alert:
         raise HTTPException(status_code=404, detail="Khong tim thay canh bao")
     return {"success": True, "alert": alert}
+
+
+@app.get("/api/notifications")
+def get_notifications(current_user: str = Depends(verify_current_user), limit: int = 50):
+    return notification_service.list_notifications(current_user, limit=limit)
+
+
+@app.get("/api/notifications/unread-count")
+def get_notification_unread_count(current_user: str = Depends(verify_current_user)):
+    return notification_service.get_unread_count(current_user)
+
+
+@app.put("/api/notifications/{notification_id}/read")
+def mark_notification_read(notification_id: int, current_user: str = Depends(verify_current_user)):
+    result = notification_service.mark_read(current_user, notification_id)
+    if result.get("status") == "not_found":
+        raise HTTPException(status_code=404, detail="Không tìm thấy thông báo")
+    if result.get("status") == "user_not_found":
+        raise HTTPException(status_code=401, detail="Phiên đăng nhập hết hạn hoặc Token xác thực không hợp lệ!")
+    return result
+
+
+@app.put("/api/notifications/read-all")
+def mark_all_notifications_read(current_user: str = Depends(verify_current_user)):
+    return notification_service.mark_all_read(current_user)
 
 
 @app.put("/api/vms/settings/notifications", dependencies=[Depends(verify_admin_role)])

@@ -1,8 +1,10 @@
 from datetime import datetime
+import json
 
 from psycopg2.errors import UniqueViolation
 
 from db import db_cursor
+from notification_service import notification_service
 
 
 OPEN_STATUSES = {"NEW", "PROCESSING", "ACKNOWLEDGED"}
@@ -93,7 +95,13 @@ class AlertService:
                 )
         except UniqueViolation:
             return self._handle_unique_duplicate(duplicate_key, description)
-        return {"status": "created", "alert_id": alert_id, "created": True}
+        notification_result = self._create_notification_side_effect(alert_id)
+        return {
+            "status": "created",
+            "alert_id": alert_id,
+            "created": True,
+            "notification": notification_result,
+        }
 
     def update_alert(
         self,
@@ -245,6 +253,36 @@ class AlertService:
 
     def _duplicate_key(self, source, camera_id, title):
         return f"{source}:camera:{camera_id}:{title}".lower()
+
+    def _create_notification_side_effect(self, alert_id):
+        try:
+            return notification_service.create_alert_notification(alert_id)
+        except Exception as exc:
+            self._log_notification_error(alert_id, exc)
+            return {
+                "status": "error",
+                "notification_id": None,
+                "recipient_count": 0,
+                "error": str(exc),
+            }
+
+    def _log_notification_error(self, alert_id, exc):
+        try:
+            with db_cursor(commit=True) as cur:
+                cur.execute(
+                    """
+                    insert into nhat_ky_he_thong (
+                      hanh_dong, ten_bang, ban_ghi_id, gia_tri_moi
+                    )
+                    values ('NOTIFICATION_ERROR', 'canh_bao', %s, %s::jsonb)
+                    """,
+                    (
+                        str(alert_id),
+                        json.dumps({"error": str(exc), "alert_id": alert_id}),
+                    ),
+                )
+        except Exception:
+            pass
 
     def _normalize_source(self, source):
         value = str(source or "SYSTEM").upper()

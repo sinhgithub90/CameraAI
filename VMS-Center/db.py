@@ -1387,6 +1387,28 @@ def verify_admin_user_from_db(username):
     return {"status": "forbidden"}
 
 
+def verify_active_user_from_db(username):
+    if not username:
+        return {"status": "not_found"}
+    with db_cursor() as cur:
+        cur.execute(
+            """
+            select ten_dang_nhap, trang_thai
+            from nguoi_dung
+            where deleted_at is null
+              and ten_dang_nhap = %s
+            limit 1
+            """,
+            (username,),
+        )
+        row = cur.fetchone()
+    if not row:
+        return {"status": "not_found"}
+    if row.get("trang_thai") != "ACTIVE":
+        return {"status": "inactive"}
+    return {"status": "ok", "username": row["ten_dang_nhap"]}
+
+
 def _next_camera_stream_key(cur):
     cur.execute(
         """
