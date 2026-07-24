@@ -2,7 +2,20 @@
 let ALL_CAMERAS = [];
 let ALL_USERS = [];
 let selectedUsername = null;
+let editingCameraId = null;
 let currentGridLimit = 6;
+let selectedLiveCameraId = null;
+let PLAYBACK_SEGMENTS = [];
+let PLAYBACK_GAPS = [];
+let ALL_ALERTS = [];
+let selectedAlertId = null;
+let SELECTED_ALERT_PLAYBACK = null;
+let DASHBOARD_REFRESH_TIMER = null;
+let NOTIFICATION_POLL_TIMER = null;
+let NOTIFICATION_DROPDOWN_OPEN = false;
+let NOTIFICATION_INIT_DONE = false;
+let NOTIFICATION_LOADING = false;
+let AUDIT_LOGS = [];
 
 // 1. Hàm gọi API lấy danh sách camera tập trung từ Backend FastAPI
 async function fetchCamerasFromBackend() {
@@ -77,7 +90,7 @@ function checkAuthSecurity() {
   const pagePermissionMap = {
     'cammgmt.html': 'cammgmt', 'users.html': 'usermgmt', 'alerts.html': 'alertmgmt',
     'reports.html': 'reports', 'settings.html': 'sysconfig', 'live.html': 'live',
-    'index.html': 'live', 'ai.html': 'live', 'map.html': 'live'
+    'index.html': 'live', 'ai.html': 'live', 'map.html': 'live', 'audit.html': 'sysconfig'
   };
   const userPermissions = currentUser.permissions || [];
   const isAdmin = currentUser.role === 'Quản trị viên';
@@ -138,6 +151,7 @@ function renderLiveGrid() {
 function renderDashboardStats() {
   const totalEl = document.getElementById('statTotalCameras');
   if (!totalEl) return; // Không ở trang index.html thì bỏ qua
+  if (document.getElementById('statAlertsToday')) return; // Dashboard mới dùng API /api/dashboard/summary
 
   const total = ALL_CAMERAS.length;
   const onlineCount = ALL_CAMERAS.filter(c => c.status === 'online').length;
@@ -153,6 +167,894 @@ function renderDashboardStats() {
 
   const zoneCountEl = document.getElementById('statZoneCount');
   if (zoneCountEl) zoneCountEl.textContent = zoneSet.size;
+}
+
+function formatDashboardBytes(value) {
+  const bytes = Number(value || 0);
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+function setText(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = value;
+}
+
+async function fetchDashboardJson(path) {
+  const response = await fetch(`http://127.0.0.1:8000${path}`);
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.detail || `Không thể tải ${path}`);
+  }
+  return response.json();
+}
+
+async function refreshDashboard() {
+  if (!document.getElementById('statTotalCameras')) return;
+  try {
+    const [summary, activity, system] = await Promise.all([
+      fetchDashboardJson('/api/dashboard/summary'),
+      fetchDashboardJson('/api/dashboard/activity?limit=8'),
+      fetchDashboardJson('/api/dashboard/system')
+    ]);
+    renderDashboardSummary(summary, system);
+    renderDashboardActivity(activity.items || []);
+  } catch (error) {
+    console.error('Lỗi tải Dashboard:', error);
+  }
+}
+
+function renderDashboardSummary(summary, system) {
+  const camera = summary.camera || {};
+  const recording = summary.recording || {};
+  const users = summary.users || {};
+  const disk = (system && system.disk) || summary.disk || {};
+  const alertsToday = Number(summary.alerts?.today || 0);
+  const aiToday = Number(summary.ai_events?.today || 0);
+  const totalCamera = Number(camera.total || 0);
+  const onlineCamera = Number(camera.online || 0);
+  const offlineCamera = Number(camera.offline || 0);
+  const onlinePercent = totalCamera ? Math.round((onlineCamera / totalCamera) * 100) : 0;
+
+  setText('statTotalCameras', totalCamera);
+  setText('statTotalCamerasSub', `Online ${onlineCamera} · Offline ${offlineCamera}`);
+  setText('statOnlineCameras', onlineCamera);
+  setText('statOnlinePercent', `${onlinePercent}%`);
+  setText('statAlertsToday', alertsToday);
+  setText('statAlertsSub', alertsToday ? 'Dữ liệu từ PostgreSQL' : 'Chưa có dữ liệu');
+  setText('statAiToday', aiToday);
+  setText('statAiSub', aiToday ? 'Dữ liệu từ PostgreSQL' : 'Chưa có dữ liệu');
+  setText('statZoneCount', Number(summary.areas?.total || 0));
+  setText('statZoneSub', 'Khu vực trong PostgreSQL');
+  setText('statRecordingEnabled', Number(camera.recording_enabled || 0));
+  setText('statRecordingEnabledSub', 'Camera bat_ghi_hinh=true');
+  setText('statRecordingToday', Number(recording.today_segments || 0));
+  setText('statRecordingTodaySub', `${formatDashboardBytes(recording.today_size)} hôm nay`);
+  setText('statRecordingSize', formatDashboardBytes(recording.total_size));
+  setText('statRecordingSizeSub', `${Number(recording.total_segments || 0)} segment`);
+  setText('statUsersOnline', Number(users.online || 0));
+  setText('statUsersSub', `${Number(users.total || 0)} người dùng · ${Number(users.online || 0) ? 'Đang hoạt động' : 'Chưa có dữ liệu phiên'}`);
+  setText('statDiskUsage', `${Math.round(Number(disk.percent || 0))}%`);
+  setText('statDiskSub', `${formatDashboardBytes(disk.used)} / ${formatDashboardBytes(disk.total)}`);
+  setText('quickAlertToday', alertsToday);
+  setText('quickAiToday', aiToday);
+  setText('quickRecordingToday', Number(recording.today_segments || 0));
+  setText('quickUserOnline', Number(users.online || 0));
+
+  renderEmptyAiTable(aiToday);
+  renderLineChart('alertChartHost', summary.charts?.alerts_7_days || [], '#3b82f6');
+  renderLineChart('aiChartHost', summary.charts?.ai_events_7_days || [], '#8b5cf6');
+}
+
+function renderEmptyAiTable(aiToday) {
+  const table = document.getElementById('recentAiTable');
+  if (!table) return;
+  if (!aiToday) {
+    table.innerHTML = '<tr><th>Thời gian</th><th>Camera</th><th>Sự kiện</th><th>Mức độ</th><th>Trạng thái</th></tr><tr><td colspan="5" style="text-align:center;color:var(--slate-400);padding:24px;">Chưa có dữ liệu</td></tr>';
+  }
+}
+
+function renderLineChart(hostId, rows, color) {
+  const host = document.getElementById(hostId);
+  if (!host) return;
+  const values = (rows || []).map(row => Number(row.total || 0));
+  const hasData = values.some(value => value > 0);
+  if (!hasData) {
+    host.innerHTML = 'Chưa có dữ liệu';
+    host.style.display = 'flex';
+    return;
+  }
+  const max = Math.max(...values, 1);
+  const width = 560;
+  const height = 190;
+  const points = values.map((value, index) => {
+    const x = 20 + index * ((width - 40) / Math.max(values.length - 1, 1));
+    const y = 20 + (height - 40) * (1 - value / max);
+    return `${x},${y}`;
+  }).join(' ');
+  const labels = (rows || []).map((row, index) => {
+    const x = 20 + index * ((width - 40) / Math.max(values.length - 1, 1));
+    const label = String(row.day || '').slice(5);
+    return `<text x="${x - 16}" y="184" font-size="11" fill="#94a3b8">${label}</text>`;
+  }).join('');
+  host.style.display = 'block';
+  host.innerHTML = `<svg viewBox="0 0 ${width} ${height}" style="width:100%;height:220px;padding:10px 0;"><polyline points="${points}" fill="none" stroke="${color}" stroke-width="2.5"/>${labels}</svg>`;
+}
+
+function renderDashboardActivity(items) {
+  const host = document.getElementById('dashboardActivityList');
+  if (!host) return;
+  if (!items.length) {
+    host.style.display = 'flex';
+    host.innerHTML = 'Chưa có dữ liệu';
+    return;
+  }
+  host.style.display = 'block';
+  host.innerHTML = '';
+  items.forEach(item => {
+    const time = item.occurred_at ? new Date(item.occurred_at).toLocaleTimeString('vi-VN', { hour12: false }) : '-';
+    const html = `<div class="activity-item"><div class="act-time">${time}</div><div class="act-icon" style="background:var(--blue-50);color:var(--blue-600)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg></div><div class="act-body"><div class="t">${item.title || item.action || '-'}</div><div class="s">${item.source || 'log'} · ${item.subtitle || ''}</div></div><div class="act-loc">${item.target || '-'}</div></div>`;
+    host.insertAdjacentHTML('beforeend', html);
+  });
+}
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, char => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#039;'
+  }[char]));
+}
+
+function notificationHeaders() {
+  const token = localStorage.getItem('token');
+  return token ? { 'Authorization': `Bearer ${token}` } : {};
+}
+
+function formatNotificationBadgeValue(unread) {
+  const count = Number(unread || 0);
+  if (count <= 0) return '';
+  return count > 99 ? '99+' : String(count);
+}
+
+function updateNotificationBadges(unread) {
+  const value = formatNotificationBadgeValue(unread);
+  document.querySelectorAll('.js-notification-badge').forEach(badge => {
+    badge.textContent = value;
+    badge.style.display = value ? '' : 'none';
+  });
+}
+
+function notificationErrorMessage(detail, fallback = 'Không thể tải thông báo.') {
+  if (!detail) return fallback;
+  if (typeof detail === 'string') return detail;
+  if (typeof detail === 'object' && detail.message) return detail.message;
+  return fallback;
+}
+
+function handleNotificationAuthError(status) {
+  if (status === 401) {
+    alert('Phiên làm việc hết hạn, vui lòng đăng nhập lại.');
+    window.location.href = 'login.html';
+    return true;
+  }
+  return false;
+}
+
+async function fetchNotificationUnreadCount() {
+  const token = localStorage.getItem('token');
+  if (!token || document.hidden) return null;
+  const response = await fetch('http://127.0.0.1:8000/api/notifications/unread-count', {
+    headers: notificationHeaders()
+  });
+  if (!response.ok) {
+    if (handleNotificationAuthError(response.status)) return null;
+    const err = await response.json().catch(() => ({}));
+    throw new Error(notificationErrorMessage(err.detail, 'Không thể tải số thông báo chưa đọc.'));
+  }
+  const data = await response.json();
+  updateNotificationBadges(data.unread || 0);
+  return data.unread || 0;
+}
+
+async function fetchNotifications() {
+  const response = await fetch('http://127.0.0.1:8000/api/notifications?limit=30', {
+    headers: notificationHeaders()
+  });
+  if (!response.ok) {
+    if (handleNotificationAuthError(response.status)) return { items: [], unread: 0 };
+    const err = await response.json().catch(() => ({}));
+    throw new Error(notificationErrorMessage(err.detail, 'Không thể tải thông báo.'));
+  }
+  return response.json();
+}
+
+function ensureNotificationDropdown(bell) {
+  let dropdown = bell.querySelector('.notification-dropdown');
+  if (dropdown) return dropdown;
+  dropdown = document.createElement('div');
+  dropdown.className = 'notification-dropdown';
+  dropdown.innerHTML = `
+    <div class="notification-head">
+      <div class="notification-title">Thông báo</div>
+      <button type="button" class="notification-read-all">Đánh dấu tất cả đã đọc</button>
+    </div>
+    <div class="notification-body"><div class="notification-empty">Đang tải thông báo...</div></div>
+  `;
+  bell.appendChild(dropdown);
+  dropdown.addEventListener('click', event => event.stopPropagation());
+  dropdown.querySelector('.notification-read-all').addEventListener('click', async (event) => {
+    event.stopPropagation();
+    await markAllNotificationsRead();
+  });
+  return dropdown;
+}
+
+function setNotificationDropdownState(message, isError = false) {
+  document.querySelectorAll('.notification-dropdown .notification-body').forEach(body => {
+    body.innerHTML = '';
+    const empty = document.createElement('div');
+    empty.className = 'notification-empty';
+    empty.style.color = isError ? '#dc2626' : 'var(--slate-400)';
+    empty.textContent = message;
+    body.appendChild(empty);
+  });
+}
+
+function renderNotificationList(items) {
+  document.querySelectorAll('.notification-dropdown .notification-body').forEach(body => {
+    body.innerHTML = '';
+    if (!items.length) {
+      const empty = document.createElement('div');
+      empty.className = 'notification-empty';
+      empty.textContent = 'Không có thông báo.';
+      body.appendChild(empty);
+      return;
+    }
+    items.forEach(item => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = `notification-item${item.read ? '' : ' unread'}`;
+      button.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        await openNotification(item);
+      });
+
+      const titleRow = document.createElement('div');
+      titleRow.className = 'notification-item-title';
+      const title = document.createElement('span');
+      title.textContent = item.title || 'Thông báo';
+      const severity = document.createElement('span');
+      severity.className = `pill ${alertSeverityClass(item.severity || 'MEDIUM')}`;
+      severity.textContent = item.severity || 'MEDIUM';
+      titleRow.appendChild(title);
+      titleRow.appendChild(severity);
+
+      const message = document.createElement('div');
+      message.className = 'notification-item-message';
+      message.textContent = item.message || '';
+
+      const meta = document.createElement('div');
+      meta.className = 'notification-item-meta';
+      if (!item.read) {
+        const dot = document.createElement('span');
+        dot.className = 'notification-state';
+        meta.appendChild(dot);
+      }
+      const time = document.createElement('span');
+      time.textContent = `${item.read ? 'Đã đọc' : 'Chưa đọc'} · ${formatAlertDateTime(item.created_at)}`;
+      meta.appendChild(time);
+
+      button.appendChild(titleRow);
+      button.appendChild(message);
+      button.appendChild(meta);
+      body.appendChild(button);
+    });
+  });
+}
+
+async function refreshNotificationDropdown() {
+  if (!NOTIFICATION_DROPDOWN_OPEN || NOTIFICATION_LOADING || document.hidden) return;
+  NOTIFICATION_LOADING = true;
+  setNotificationDropdownState('Đang tải thông báo...');
+  try {
+    const data = await fetchNotifications();
+    updateNotificationBadges(data.unread || 0);
+    renderNotificationList(data.items || []);
+  } catch (error) {
+    setNotificationDropdownState(error.message || 'Không thể tải thông báo.', true);
+  } finally {
+    NOTIFICATION_LOADING = false;
+  }
+}
+
+async function toggleNotificationDropdown(event) {
+  event.stopPropagation();
+  const bell = event.currentTarget;
+  const dropdown = ensureNotificationDropdown(bell);
+  const shouldOpen = !dropdown.classList.contains('open');
+  document.querySelectorAll('.notification-dropdown').forEach(item => item.classList.remove('open'));
+  NOTIFICATION_DROPDOWN_OPEN = shouldOpen;
+  if (shouldOpen) {
+    dropdown.classList.add('open');
+    await refreshNotificationDropdown();
+  }
+}
+
+async function markNotificationRead(notificationId) {
+  const response = await fetch(`http://127.0.0.1:8000/api/notifications/${notificationId}/read`, {
+    method: 'PUT',
+    headers: notificationHeaders()
+  });
+  if (!response.ok) {
+    if (handleNotificationAuthError(response.status)) return false;
+    const err = await response.json().catch(() => ({}));
+    throw new Error(notificationErrorMessage(err.detail, 'Không thể đánh dấu thông báo đã đọc.'));
+  }
+  await fetchNotificationUnreadCount();
+  if (NOTIFICATION_DROPDOWN_OPEN) await refreshNotificationDropdown();
+  return true;
+}
+
+async function markAllNotificationsRead() {
+  try {
+    const response = await fetch('http://127.0.0.1:8000/api/notifications/read-all', {
+      method: 'PUT',
+      headers: notificationHeaders()
+    });
+    if (!response.ok) {
+      if (handleNotificationAuthError(response.status)) return;
+      const err = await response.json().catch(() => ({}));
+      throw new Error(notificationErrorMessage(err.detail, 'Không thể đánh dấu tất cả đã đọc.'));
+    }
+    updateNotificationBadges(0);
+    await refreshNotificationDropdown();
+  } catch (error) {
+    setNotificationDropdownState(error.message || 'Không thể đánh dấu tất cả đã đọc.', true);
+  }
+}
+
+async function openNotification(item) {
+  try {
+    if (!item.read) await markNotificationRead(item.id);
+  } catch (error) {
+    setNotificationDropdownState(error.message || 'Không thể cập nhật thông báo.', true);
+    return;
+  }
+  if (item.alert_id) {
+    window.location.href = `alerts.html?alert_id=${encodeURIComponent(item.alert_id)}`;
+  }
+}
+
+function closeNotificationDropdowns() {
+  NOTIFICATION_DROPDOWN_OPEN = false;
+  document.querySelectorAll('.notification-dropdown').forEach(dropdown => dropdown.classList.remove('open'));
+}
+
+function initNotifications() {
+  if (NOTIFICATION_INIT_DONE) return;
+  NOTIFICATION_INIT_DONE = true;
+  document.querySelectorAll('.js-notification-bell').forEach(bell => {
+    ensureNotificationDropdown(bell);
+    bell.addEventListener('click', toggleNotificationDropdown);
+  });
+  document.addEventListener('click', closeNotificationDropdowns);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      fetchNotificationUnreadCount().catch(() => {});
+      if (NOTIFICATION_DROPDOWN_OPEN) refreshNotificationDropdown();
+    }
+  });
+  fetchNotificationUnreadCount().catch(() => {});
+  if (!NOTIFICATION_POLL_TIMER) {
+    NOTIFICATION_POLL_TIMER = setInterval(() => {
+      if (document.hidden) return;
+      fetchNotificationUnreadCount().catch(() => {});
+      if (NOTIFICATION_DROPDOWN_OPEN) refreshNotificationDropdown();
+    }, 10000);
+  }
+}
+
+function auditStatus(message, isError = false) {
+  const el = document.getElementById('auditStatus');
+  if (!el) return;
+  el.textContent = message || '';
+  el.style.color = isError ? '#dc2626' : 'var(--slate-500)';
+}
+
+function auditFilters(page = 1) {
+  const params = new URLSearchParams();
+  const user = document.getElementById('auditUserFilter')?.value.trim();
+  const action = document.getElementById('auditActionFilter')?.value.trim();
+  const entity = document.getElementById('auditEntityFilter')?.value.trim();
+  const date = document.getElementById('auditDateFilter')?.value;
+  if (user) params.set('user', user);
+  if (action) params.set('action', action);
+  if (entity) params.set('entity', entity);
+  if (date) params.set('date', date);
+  params.set('page', page);
+  params.set('page_size', 50);
+  return params;
+}
+
+async function loadAuditLogs(page = 1) {
+  const body = document.getElementById('auditTableBody');
+  if (!body) return;
+  body.innerHTML = '<tr><td colspan="5" style="padding:18px; text-align:center; color:var(--slate-400);">Đang tải audit...</td></tr>';
+  auditStatus('');
+  try {
+    const response = await fetch(`http://127.0.0.1:8000/api/audit?${auditFilters(page).toString()}`, {
+      headers: notificationHeaders()
+    });
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        auditStatus('Bạn không có quyền xem audit.', true);
+        body.innerHTML = '<tr><td colspan="5" style="padding:18px; text-align:center; color:#dc2626;">Không có quyền truy cập</td></tr>';
+        return;
+      }
+      const err = await response.json().catch(() => ({}));
+      throw new Error(notificationErrorMessage(err.detail, 'Không thể tải audit.'));
+    }
+    const data = await response.json();
+    AUDIT_LOGS = data.items || [];
+    renderAuditLogs(AUDIT_LOGS);
+    auditStatus(`Tổng ${Number(data.total || 0)} bản ghi audit.`);
+  } catch (error) {
+    body.innerHTML = '<tr><td colspan="5" style="padding:18px; text-align:center; color:#dc2626;">Không thể tải audit</td></tr>';
+    auditStatus(error.message || 'Không thể tải audit.', true);
+  }
+}
+
+function renderAuditLogs(items) {
+  const body = document.getElementById('auditTableBody');
+  if (!body) return;
+  if (!items.length) {
+    body.innerHTML = '<tr><td colspan="5" style="padding:18px; text-align:center; color:var(--slate-400);">Chưa có dữ liệu audit</td></tr>';
+    return;
+  }
+  body.innerHTML = items.map(item => `
+    <tr onclick="openAuditDetail(${Number(item.id)})" style="cursor:pointer;">
+      <td>${escapeHtml(formatAlertDateTime(item.created_at))}</td>
+      <td>${escapeHtml(item.actor_username || '-')}</td>
+      <td><b>${escapeHtml(item.action || '-')}</b></td>
+      <td>${escapeHtml(item.entity_type || '-')}${item.entity_id ? ` #${escapeHtml(item.entity_id)}` : ''}</td>
+      <td>${escapeHtml(item.ip || '-')}</td>
+    </tr>
+  `).join('');
+}
+
+async function openAuditDetail(id) {
+  const detail = document.getElementById('auditDetailJson');
+  if (!detail) return;
+  detail.textContent = 'Đang tải chi tiết...';
+  try {
+    const response = await fetch(`http://127.0.0.1:8000/api/audit/${encodeURIComponent(id)}`, {
+      headers: notificationHeaders()
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(notificationErrorMessage(err.detail, 'Không thể tải chi tiết audit.'));
+    }
+    const data = await response.json();
+    detail.textContent = JSON.stringify(data, null, 2);
+  } catch (error) {
+    detail.textContent = error.message || 'Không thể tải chi tiết audit.';
+  }
+}
+
+function alertSeverityClass(severity) {
+  const value = String(severity || '').toUpperCase();
+  if (value === 'HIGH' || value === 'CRITICAL') return 'cao';
+  if (value === 'MEDIUM') return 'trungbinh';
+  return 'thap';
+}
+
+function alertStatusColor(status) {
+  const value = String(status || '').toUpperCase();
+  if (value === 'NEW') return '#3b82f6';
+  if (value === 'CLOSED' || value === 'RESOLVED') return '#16a34a';
+  if (value === 'IGNORED') return 'var(--slate-400)';
+  return '#d97706';
+}
+
+function formatAlertDateTime(value) {
+  if (!value) return '-';
+  return new Date(value).toLocaleString('vi-VN', { hour12: false });
+}
+
+function formatAlertTime(value) {
+  if (!value) return '-';
+  return new Date(value).toLocaleTimeString('vi-VN', { hour12: false });
+}
+
+function updateAlertStats(summary = {}) {
+  setText('alertStatNew', Number(summary.new || 0));
+  setText('alertStatProcessing', Number(summary.processing || 0));
+  setText('alertStatHigh', Number(summary.high || 0));
+  setText('alertStatClosed', Number(summary.closed || 0));
+  setText('alertStatTotal', `Tổng: ${Number(summary.total || 0)}`);
+  setText('alertMenuBadge', Number(summary.new || 0));
+  setText('alertTopBadge', Number(summary.new || 0));
+}
+
+function populateAlertCameraFilter() {
+  const select = document.getElementById('alertCameraFilter');
+  if (!select) return;
+  const current = select.value || 'all';
+  select.innerHTML = '<option value="all">Tất cả camera</option>';
+  ALL_CAMERAS.forEach(cam => {
+    const option = document.createElement('option');
+    option.value = cam.id;
+    option.textContent = `${cam.index || ''}. ${cam.name || cam.id}`.trim();
+    select.appendChild(option);
+  });
+  if (current === 'all' || ALL_CAMERAS.some(cam => cam.id === current)) {
+    select.value = current;
+  }
+}
+
+async function loadAlerts() {
+  const list = document.getElementById('alertList');
+  if (!list) return;
+  list.innerHTML = '<div style="padding:28px;text-align:center;color:var(--slate-400);">Đang tải cảnh báo...</div>';
+  populateAlertCameraFilter();
+
+  const params = new URLSearchParams();
+  const severity = document.getElementById('alertSeverityFilter')?.value;
+  const status = document.getElementById('alertStatusFilter')?.value;
+  const cameraId = document.getElementById('alertCameraFilter')?.value;
+  const fromTime = document.getElementById('alertFromFilter')?.value;
+  const toTime = document.getElementById('alertToFilter')?.value;
+  if (severity && severity !== 'all') params.set('severity', severity);
+  if (status && status !== 'all') params.set('status', status);
+  if (cameraId && cameraId !== 'all') params.set('camera_id', cameraId);
+  if (fromTime) params.set('from_time', new Date(fromTime).toISOString());
+  if (toTime) params.set('to_time', new Date(toTime).toISOString());
+
+  try {
+    const response = await fetch(`http://127.0.0.1:8000/api/vms/alerts?${params.toString()}`);
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.detail || 'Không thể tải cảnh báo.');
+    }
+    const data = await response.json();
+    ALL_ALERTS = data.items || [];
+    updateAlertStats(data.summary || {});
+    renderAlertList(ALL_ALERTS);
+    const deepLinkAlertId = new URLSearchParams(window.location.search).get('alert_id');
+    if (deepLinkAlertId) {
+      await selectAlertById(deepLinkAlertId);
+    } else if (ALL_ALERTS.length) {
+      await selectAlertById(ALL_ALERTS[0].id);
+    } else {
+      selectedAlertId = null;
+      renderAlertEmptyDetail();
+    }
+  } catch (error) {
+    list.innerHTML = `<div style="padding:28px;text-align:center;color:#dc2626;">${escapeHtml(error.message || 'Lỗi tải cảnh báo.')}</div>`;
+    renderAlertEmptyDetail();
+  }
+}
+
+function renderAlertList(alerts) {
+  const list = document.getElementById('alertList');
+  const title = document.getElementById('alertListTitle');
+  const pageText = document.getElementById('alertPaginationText');
+  if (!list) return;
+  if (title) title.textContent = `Danh sách cảnh báo (${alerts.length})`;
+  if (pageText) pageText.textContent = alerts.length ? `Hiển thị ${alerts.length} cảnh báo` : 'Chưa có cảnh báo';
+
+  if (!alerts.length) {
+    list.innerHTML = '<div style="padding:34px;text-align:center;color:var(--slate-400);">Chưa có cảnh báo</div>';
+    return;
+  }
+
+  list.innerHTML = '';
+  alerts.forEach(alertItem => {
+    const row = document.createElement('div');
+    row.className = `alert-row${alertItem.id === selectedAlertId ? ' selected' : ''}`;
+    row.onclick = () => selectAlertById(alertItem.id);
+    row.innerHTML = `
+      <div class="time"><b>${escapeHtml(formatAlertTime(alertItem.occurred_at))}</b><br><span style="color:var(--slate-400);">${escapeHtml(formatAlertDateTime(alertItem.occurred_at).split(' ')[0] || '')}</span></div>
+      <div class="alert-icon" style="background:var(--red-50);color:var(--red-500)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/></svg></div>
+      <div class="alert-mid"><div class="t">${escapeHtml(alertItem.title)} <span class="pill ${alertSeverityClass(alertItem.severity)}">${escapeHtml(alertItem.severity_label)}</span></div><div class="s">${escapeHtml(alertItem.location)} · ${escapeHtml(alertItem.camera_name)}</div></div>
+      <div style="font-size:11.5px;color:${alertStatusColor(alertItem.status)};">● ${escapeHtml(alertItem.status_label)}</div>
+    `;
+    list.appendChild(row);
+  });
+}
+
+const ALERT_STATUS_ACTIONS = {
+  NEW: [
+    { status: 'PROCESSING', label: 'Tiếp nhận', className: 'primary' },
+    { status: 'ACKNOWLEDGED', label: 'Xác nhận', className: '' },
+    { status: 'IGNORED', label: 'Bỏ qua', className: '' }
+  ],
+  PROCESSING: [
+    { status: 'ACKNOWLEDGED', label: 'Xác nhận', className: '' },
+    { status: 'RESOLVED', label: 'Đã xử lý', className: 'green' },
+    { status: 'CLOSED', label: 'Đóng', className: 'green' }
+  ],
+  ACKNOWLEDGED: [
+    { status: 'RESOLVED', label: 'Đã xử lý', className: 'green' },
+    { status: 'CLOSED', label: 'Đóng', className: 'green' }
+  ],
+  RESOLVED: [
+    { status: 'CLOSED', label: 'Đóng', className: 'green' }
+  ],
+  CLOSED: [],
+  IGNORED: []
+};
+
+function renderAlertStatusActions(alertItem) {
+  const currentStatus = String(alertItem.status || '').toUpperCase();
+  const actions = ALERT_STATUS_ACTIONS[currentStatus] || [];
+  if (!actions.length) return '';
+  return `
+    <div class="btn-row">
+      ${actions.map(action => `<button class="btn-sm ${action.className}" onclick="updateAlertStatus('${alertItem.id}', '${action.status}')">${escapeHtml(action.label)}</button>`).join('')}
+    </div>
+  `;
+}
+
+function formatAlertApiError(detail, fallback = 'Không thể cập nhật trạng thái cảnh báo.') {
+  if (!detail) return fallback;
+  if (typeof detail === 'string') return detail;
+  if (typeof detail !== 'object') return fallback;
+  const lines = [];
+  if (detail.message) lines.push(detail.message);
+  if (detail.current_status || detail.requested_status) {
+    lines.push(`Trạng thái hiện tại: ${detail.current_status || '-'}`);
+    lines.push(`Trạng thái yêu cầu: ${detail.requested_status || '-'}`);
+  }
+  if (Array.isArray(detail.allowed_transitions)) {
+    lines.push(`Có thể chuyển sang: ${detail.allowed_transitions.length ? detail.allowed_transitions.join(', ') : 'Không còn trạng thái hợp lệ'}`);
+  }
+  return lines.length ? lines.join('\n') : fallback;
+}
+
+function renderAlertPlaybackBlock(playback) {
+  const segments = playback?.matching_segments || [];
+  if (!playback?.camera_id) {
+    return '<div class="reco-item" style="color:var(--slate-400);">Cảnh báo chưa có camera để xem phát lại.</div>';
+  }
+  if (!segments.length) {
+    return '<div class="reco-item" style="color:var(--slate-400);">Không có video tại thời điểm cảnh báo.</div>';
+  }
+  return `
+    <button class="btn-sm primary" onclick="openAlertPlayback()" style="width:auto;display:inline-flex;align-items:center;gap:6px;">
+      Xem phát lại
+    </button>
+    <div style="font-size:11.5px;color:var(--slate-400);margin-top:6px;">${segments.length} segment trong khoảng gợi ý.</div>
+  `;
+}
+
+function evidencePreviewUrl(item) {
+  return item?.stream_url || item?.download_url || item?.path || '';
+}
+
+function renderAlertEvidence(evidence) {
+  if (!evidence.length) return '<div style="font-size:12px;color:var(--slate-500);">Chưa có bằng chứng.</div>';
+  return `
+    <div style="display:grid;gap:8px;">
+      ${evidence.map(item => {
+        const type = String(item.type || item.file_type || 'FILE').toUpperCase();
+        const url = evidencePreviewUrl(item);
+        const meta = `${type} · ${formatPlaybackBytes(item.size || 0)}${item.mime_type ? ` · ${escapeHtml(item.mime_type)}` : ''}`;
+        const preview = type === 'IMAGE' && url
+          ? `<img src="${escapeHtml(url)}" alt="${escapeHtml(item.file_name || 'Bằng chứng ảnh')}" style="width:100%;max-height:180px;object-fit:contain;border:1px solid var(--slate-200);border-radius:8px;background:#f8fafc;margin-top:6px;" onerror="this.style.display='none';">`
+          : '';
+        return `
+          <div class="reco-item">
+            <div style="display:flex;justify-content:space-between;gap:10px;align-items:center;">
+              <strong>${escapeHtml(item.file_name || item.path || 'Bằng chứng')}</strong>
+              <span style="font-size:11px;color:var(--slate-400);">${escapeHtml(meta)}</span>
+            </div>
+            ${item.path ? `<div style="font-size:11.5px;color:var(--slate-400);margin-top:4px;word-break:break-all;">${escapeHtml(item.path)}</div>` : ''}
+            ${preview}
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+async function openAlertPlayback() {
+  const playback = SELECTED_ALERT_PLAYBACK;
+  if (!playback?.camera_id || !(playback.matching_segments || []).length) {
+    alert('Không có video tại thời điểm cảnh báo.');
+    return;
+  }
+  openPlaybackModal();
+  const cameraSelect = document.getElementById('playbackCameraSelect');
+  const fromInput = document.getElementById('playbackFromTime');
+  const toInput = document.getElementById('playbackToTime');
+  if (cameraSelect) cameraSelect.value = playback.camera_id;
+  if (fromInput && playback.suggested_from) fromInput.value = formatDateTimeLocal(new Date(playback.suggested_from));
+  if (toInput && playback.suggested_to) toInput.value = formatDateTimeLocal(new Date(playback.suggested_to));
+  await searchPlaybackSegments();
+  const firstSegment = playback.matching_segments[0];
+  if (firstSegment?.id) playPlaybackSegment(firstSegment.id);
+}
+
+function renderAlertEmptyDetail() {
+  const detail = document.getElementById('alertDetailPanel');
+  if (detail) detail.innerHTML = '<div style="color:var(--slate-400);">Chưa có cảnh báo để hiển thị.</div>';
+}
+
+async function selectAlertById(alertId) {
+  selectedAlertId = alertId;
+  renderAlertList(ALL_ALERTS);
+  const detail = document.getElementById('alertDetailPanel');
+  if (!detail) return;
+  detail.innerHTML = '<div style="color:var(--slate-400);">Đang tải chi tiết...</div>';
+  try {
+    const response = await fetch(`http://127.0.0.1:8000/api/vms/alerts/${alertId}`);
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(formatAlertApiError(err.detail, 'Không thể tải chi tiết cảnh báo.'));
+    }
+    renderAlertDetail(await response.json());
+  } catch (error) {
+    detail.innerHTML = `<div style="color:#dc2626;">${escapeHtml(error.message || 'Lỗi tải chi tiết cảnh báo.')}</div>`;
+  }
+}
+
+function renderAlertDetail(alertItem) {
+  const detail = document.getElementById('alertDetailPanel');
+  if (!detail) return;
+  const timeline = alertItem.timeline || [];
+  const evidence = alertItem.evidence || [];
+  SELECTED_ALERT_PLAYBACK = alertItem.playback || null;
+  detail.innerHTML = `
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+      <span class="pill ${alertSeverityClass(alertItem.severity)}">${escapeHtml(alertItem.severity_label)}</span>
+      <b>${escapeHtml(alertItem.title)}</b>
+      <span style="margin-left:auto;font-size:11px;color:var(--slate-400);">ID: #${escapeHtml(alertItem.code)}</span>
+    </div>
+    <div style="font-size:12px;color:var(--slate-500);margin-bottom:14px;">
+      ${escapeHtml(formatAlertDateTime(alertItem.occurred_at))}<br>
+      Camera: ${escapeHtml(alertItem.camera_name)} (${escapeHtml(alertItem.camera_id)})<br>
+      Khu vực: ${escapeHtml(alertItem.zone)} · Vị trí: ${escapeHtml(alertItem.location)}
+    </div>
+    <h4 style="font-size:12px;color:var(--slate-400);margin-bottom:8px;">MÔ TẢ</h4>
+    <div class="ai-summary">${escapeHtml(alertItem.description || 'Chưa có mô tả.')}</div>
+    <h4 style="font-size:12px;color:var(--slate-400);margin:14px 0 8px;">PHÁT LẠI</h4>
+    ${renderAlertPlaybackBlock(alertItem.playback)}
+    <h4 style="font-size:12px;color:var(--slate-400);margin:14px 0 8px;">BẰNG CHỨNG</h4>
+    ${renderAlertEvidence(evidence)}
+    <h4 style="font-size:12px;color:var(--slate-400);margin:14px 0 8px;">TIMELINE TRẠNG THÁI</h4>
+    <div style="display:grid;gap:8px;font-size:12px;color:var(--slate-600);">
+      ${timeline.length ? timeline.map(item => `<div class="reco-item">● ${escapeHtml(formatAlertDateTime(item.occurred_at))} · ${escapeHtml(item.status_label || item.status)}${item.note ? ` · ${escapeHtml(item.note)}` : ''}</div>`).join('') : '<div class="reco-item">Chưa có lịch sử trạng thái.</div>'}
+    </div>
+    ${renderAlertStatusActions(alertItem)}
+  `;
+}
+
+async function updateAlertStatus(alertId, status) {
+  const token = localStorage.getItem('token');
+  if (!token) return alert('Phiên làm việc hết hạn, vui lòng đăng nhập lại.');
+  try {
+    const response = await fetch(`http://127.0.0.1:8000/api/vms/alerts/${alertId}/status`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ status })
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(formatAlertApiError(err.detail, 'Không thể cập nhật trạng thái cảnh báo.'));
+    }
+    await loadAlerts();
+  } catch (error) {
+    alert(error.message || 'Lỗi cập nhật trạng thái cảnh báo.');
+  }
+}
+
+function renderNoData(host, message = 'Chưa có dữ liệu') {
+  if (!host) return;
+  host.innerHTML = `<div style="height:100%;min-height:120px;display:flex;align-items:center;justify-content:center;color:var(--slate-400);font-size:13px;text-align:center;">${escapeHtml(message)}</div>`;
+}
+
+function renderReportBars(hostId, rows, labelKey, valueKey, color = '#3b82f6') {
+  const host = document.getElementById(hostId);
+  if (!host) return;
+  const data = rows || [];
+  const max = Math.max(...data.map(row => Number(row[valueKey] || 0)), 0);
+  if (!data.length || max <= 0) {
+    renderNoData(host);
+    return;
+  }
+  host.innerHTML = data.map(row => {
+    const value = Number(row[valueKey] || 0);
+    const width = Math.max(4, Math.round((value / max) * 100));
+    return `
+      <div style="margin-bottom:10px;">
+        <div style="display:flex;justify-content:space-between;gap:10px;font-size:12px;color:var(--slate-600);margin-bottom:4px;">
+          <span>${escapeHtml(row[labelKey] || '-')}</span><b>${value}</b>
+        </div>
+        <div style="height:9px;background:var(--slate-100);border-radius:999px;overflow:hidden;"><div style="width:${width}%;height:100%;background:${color};border-radius:999px;"></div></div>
+      </div>
+    `;
+  }).join('');
+}
+
+function renderReportCameraChart(camera = {}) {
+  const host = document.getElementById('reportCameraChart');
+  if (!host) return;
+  const total = Number(camera.total || 0);
+  if (!total) {
+    renderNoData(host);
+    return;
+  }
+  const online = Number(camera.online || 0);
+  const offline = Number(camera.offline || 0);
+  host.innerHTML = `
+    <div style="display:grid;gap:12px;padding-top:14px;">
+      <div><b style="color:#16a34a;">Online</b><div style="height:12px;background:var(--slate-100);border-radius:999px;overflow:hidden;margin-top:6px;"><div style="width:${Math.round((online / total) * 100)}%;height:100%;background:#16a34a;"></div></div><div style="font-size:12px;color:var(--slate-500);margin-top:4px;">${online}/${total}</div></div>
+      <div><b style="color:#dc2626;">Offline</b><div style="height:12px;background:var(--slate-100);border-radius:999px;overflow:hidden;margin-top:6px;"><div style="width:${Math.round((offline / total) * 100)}%;height:100%;background:#dc2626;"></div></div><div style="font-size:12px;color:var(--slate-500);margin-top:4px;">${offline}/${total}</div></div>
+    </div>
+  `;
+}
+
+function renderReportTables(data) {
+  const areaTable = document.getElementById('reportAreaTable');
+  if (areaTable) {
+    const areas = data.areas || [];
+    areaTable.innerHTML = areas.length
+      ? `<tr><th>Khu vực</th><th>Camera</th><th>Online</th><th>Offline</th><th>Cảnh báo</th></tr>${areas.map(area => `<tr><td>${escapeHtml(area.name)}</td><td>${Number(area.cameras || 0)}</td><td>${Number(area.online || 0)}</td><td>${Number(area.offline || 0)}</td><td>${Number(area.alerts || 0)}</td></tr>`).join('')}`
+      : '<tr><td style="text-align:center;color:var(--slate-400);padding:24px;">Chưa có dữ liệu</td></tr>';
+  }
+
+  const camTable = document.getElementById('reportCameraRecordingTable');
+  if (camTable) {
+    const rows = data.recording_by_camera || [];
+    const usefulRows = rows.filter(row => Number(row.segments || 0) > 0 || Number(row.size || 0) > 0);
+    camTable.innerHTML = usefulRows.length
+      ? `<tr><th>Camera</th><th>Segment</th><th>Dung lượng</th></tr>${usefulRows.map(row => `<tr><td>${escapeHtml(row.camera_name)}</td><td>${Number(row.segments || 0)}</td><td>${formatDashboardBytes(row.size)}</td></tr>`).join('')}`
+      : '<tr><td style="text-align:center;color:var(--slate-400);padding:24px;">Chưa có dữ liệu</td></tr>';
+  }
+}
+
+async function loadReports() {
+  if (!document.getElementById('reportCameraOnline')) return;
+  const params = new URLSearchParams();
+  const fromTime = document.getElementById('reportFromTime')?.value;
+  const toTime = document.getElementById('reportToTime')?.value;
+  if (fromTime) params.set('from_time', new Date(fromTime).toISOString());
+  if (toTime) params.set('to_time', new Date(toTime).toISOString());
+
+  try {
+    const response = await fetch(`http://127.0.0.1:8000/api/reports/summary?${params.toString()}`);
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.detail || 'Không thể tải báo cáo.');
+    }
+    const data = await response.json();
+    const camera = data.camera || {};
+    const recording = data.recording || {};
+    const alerts = data.alerts || {};
+    setText('reportCameraOnline', Number(camera.online || 0));
+    setText('reportCameraSub', `Offline ${Number(camera.offline || 0)} / Tổng ${Number(camera.total || 0)}`);
+    setText('reportRecordingSegments', Number(recording.total || 0));
+    setText('reportRecordingDuration', `Thời lượng TB ${Math.round(Number(recording.avg_duration_seconds || 0))}s`);
+    setText('reportRecordingSize', formatDashboardBytes(recording.total_size));
+    setText('reportAlertTotal', Number(alerts.total || 0));
+    setText('reportAlertSub', Number(alerts.total || 0) ? `Mới ${Number(alerts.new || 0)} · Đang xử lý ${Number(alerts.processing || 0)} · Đã đóng ${Number(alerts.closed || 0)}` : 'Chưa có dữ liệu');
+    setText('reportAreaTotal', (data.areas || []).length);
+
+    renderReportBars('reportRecordingChart', data.recording_by_day || [], 'day', 'segments', '#3b82f6');
+    renderReportBars('reportAlertStatusChart', data.alerts_by_status || [], 'status', 'total', '#ef4444');
+    renderReportCameraChart(camera);
+    renderReportTables(data);
+  } catch (error) {
+    ['reportRecordingChart', 'reportAlertStatusChart', 'reportCameraChart'].forEach(id => renderNoData(document.getElementById(id), error.message || 'Lỗi tải báo cáo'));
+    const areaTable = document.getElementById('reportAreaTable');
+    if (areaTable) areaTable.innerHTML = `<tr><td style="text-align:center;color:#dc2626;padding:24px;">${escapeHtml(error.message || 'Lỗi tải báo cáo')}</td></tr>`;
+  }
 }
 
 function renderOverviewGrid() {
@@ -179,28 +1081,46 @@ function renderCamManagementTable() {
   if (!tbody) return;
   tbody.innerHTML = '';
   ALL_CAMERAS.forEach((cam) => {
-    const trHTML = `<tr><td><b>#${cam.index}</b></td><td><span style="font-weight:600; color:var(--slate-900);">${cam.name}</span></td><td><span class="pill thap" style="font-family:monospace;">${cam.ip}</span></td><td>${cam.model}</td><td>${cam.zone}</td><td>${cam.loc}</td><td><span class="status daxuly"><span class="d"></span>${cam.status === 'online' ? 'Hoạt động' : 'Ngoại tuyến'}</span></td><td><button class="btn-sm red" onclick="deleteCamera('${cam.id}')" style="width:auto; padding:5px 12px; display:inline-block; cursor:pointer;">Xóa</button></td></tr>`;
+    const trHTML = `<tr><td><b>#${cam.index}</b></td><td><span style="font-weight:600; color:var(--slate-900);">${cam.name}</span></td><td><span class="pill thap" style="font-family:monospace;">${cam.ip}</span></td><td>${cam.model}</td><td>${cam.zone}</td><td>${cam.loc}</td><td><span class="status daxuly"><span class="d"></span>${cam.status === 'online' ? 'Hoạt động' : 'Ngoại tuyến'}</span></td><td><div style="display:flex; gap:6px; align-items:center;"><button class="btn-sm" onclick="openEditCamModal('${cam.id}')" style="width:auto; padding:5px 12px; display:inline-block; cursor:pointer;">Sửa</button><button class="btn-sm red" onclick="deleteCamera('${cam.id}')" style="width:auto; padding:5px 12px; display:inline-block; cursor:pointer;">Xóa</button></div></td></tr>`;
     tbody.insertAdjacentHTML('beforeend', trHTML);
   });
 }
 
 async function handleAddCamera(event) {
   event.preventDefault();
-  const name = document.getElementById('modalCamName').value;
-  const ip = document.getElementById('modalCamIP').value;
-  const model = document.getElementById('modalCamModel').value;
-  const user = document.getElementById('modalCamUser').value;
-  const pass = document.getElementById('modalCamPass').value;
-  const zone = document.getElementById('modalCamZone').value;
-  const loc = document.getElementById('modalCamLoc').value;
+  const payload = editingCameraId ? getCameraUpdatePayload(editingCameraId) : getCameraFormPayload(false);
+  if (editingCameraId && Object.keys(payload).length === 0) {
+    alert("Chưa có thông tin camera nào được thay đổi.");
+    return;
+  }
   const submitBtn = event.target.querySelector('button[type="submit"]');
   const originalText = submitBtn.textContent;
-  submitBtn.textContent = "Đang kết nối & khởi động lại..."; submitBtn.disabled = true;
+  submitBtn.textContent = editingCameraId ? "Đang lưu thay đổi..." : "Đang kết nối & khởi động lại...";
+  submitBtn.disabled = true;
   try {
-    const response = await fetch('http://127.0.0.1:8000/api/vms/camera/add', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, ip, user, password: pass, model, zone, loc }) });
-    if (response.ok) { closeAddCamModal(); document.getElementById('addCamForm').reset(); setTimeout(async () => { await fetchCamerasFromBackend(); renderCamManagementTable(); }, 1000); } 
-    else alert("Lỗi ghi nhận cấu hình từ Backend.");
-  } catch (error) { alert("Không thể kết nối API tới FastAPI."); } finally { submitBtn.textContent = originalText; submitBtn.disabled = false; }
+    const url = editingCameraId
+      ? `http://127.0.0.1:8000/api/vms/camera/${editingCameraId}`
+      : 'http://127.0.0.1:8000/api/vms/camera/add';
+    const response = await fetch(url, {
+      method: editingCameraId ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (response.ok) {
+      closeAddCamModal();
+      document.getElementById('addCamForm').reset();
+      await fetchCamerasFromBackend();
+      renderCamManagementTable();
+    } else {
+      const err = await response.json().catch(() => ({}));
+      alert(err.detail || (editingCameraId ? "Không thể cập nhật camera." : "Lỗi ghi nhận cấu hình từ Backend."));
+    }
+  } catch (error) {
+    alert("Không thể kết nối API tới FastAPI.");
+  } finally {
+    submitBtn.textContent = originalText;
+    submitBtn.disabled = false;
+  }
 }
 
 async function deleteCamera(id) {
@@ -212,11 +1132,395 @@ async function deleteCamera(id) {
   }
 }
 
-function openAddCamModal() { const modal = document.getElementById('addCamModal'); if (modal) modal.style.display = 'flex'; }
-function closeAddCamModal() { const modal = document.getElementById('addCamModal'); if (modal) modal.style.display = 'none'; }
+function getCameraFormPayload(isEdit = false) {
+  const payload = {
+    name: document.getElementById('modalCamName').value.trim(),
+    ip: document.getElementById('modalCamIP').value.trim(),
+    user: document.getElementById('modalCamUser').value.trim(),
+    model: document.getElementById('modalCamModel').value.trim(),
+    zone: document.getElementById('modalCamZone').value.trim(),
+    loc: document.getElementById('modalCamLoc').value.trim()
+  };
+  const password = document.getElementById('modalCamPass').value.trim();
+  if (password || !isEdit) payload.password = password;
+
+  const optionalTextFields = [
+    ['resolution', 'modalCamResolution'],
+    ['codec', 'modalCamCodec']
+  ];
+  optionalTextFields.forEach(([key, id]) => {
+    const value = document.getElementById(id).value.trim();
+    if (value) payload[key] = value;
+  });
+
+  const optionalNumberFields = [
+    ['fps', 'modalCamFPS'],
+    ['bitrate', 'modalCamBitrate'],
+    ['lat', 'modalCamLat'],
+    ['lng', 'modalCamLng']
+  ];
+  optionalNumberFields.forEach(([key, id]) => {
+    const value = document.getElementById(id).value.trim();
+    if (value !== '') payload[key] = Number(value);
+  });
+  return payload;
+}
+
+function getCameraUpdatePayload(camId) {
+  const cam = ALL_CAMERAS.find(c => c.id === camId);
+  const fullPayload = getCameraFormPayload(true);
+  const updatePayload = {};
+  const comparableFields = [
+    ['name', cam?.name],
+    ['ip', cam?.ip],
+    ['model', cam?.model],
+    ['zone', cam?.zone],
+    ['loc', cam?.loc],
+    ['resolution', cam?.resolution],
+    ['codec', cam?.codec],
+    ['fps', cam?.fps],
+    ['bitrate', cam?.bitrate],
+    ['lat', cam?.lat],
+    ['lng', cam?.lng]
+  ];
+  comparableFields.forEach(([key, currentValue]) => {
+    if (!(key in fullPayload)) return;
+    if (String(fullPayload[key] ?? '') !== String(currentValue ?? '')) {
+      updatePayload[key] = fullPayload[key];
+    }
+  });
+
+  const password = document.getElementById('modalCamPass').value.trim();
+  if (password) {
+    updatePayload.password = password;
+    const user = document.getElementById('modalCamUser').value.trim();
+    if (user) updatePayload.user = user;
+    const ip = document.getElementById('modalCamIP').value.trim();
+    if (ip) updatePayload.ip = ip;
+  }
+  return updatePayload;
+}
+
+function fillCameraForm(cam) {
+  document.getElementById('modalCamName').value = cam.name || '';
+  document.getElementById('modalCamIP').value = cam.ip || '';
+  document.getElementById('modalCamModel').value = cam.model || '';
+  document.getElementById('modalCamUser').value = 'admin';
+  document.getElementById('modalCamPass').value = '';
+  document.getElementById('modalCamZone').value = cam.zone || '';
+  document.getElementById('modalCamLoc').value = cam.loc || '';
+  document.getElementById('modalCamResolution').value = cam.resolution || '';
+  document.getElementById('modalCamCodec').value = cam.codec || '';
+  document.getElementById('modalCamFPS').value = cam.fps || '';
+  document.getElementById('modalCamBitrate').value = cam.bitrate || '';
+  document.getElementById('modalCamLat').value = cam.lat ?? '';
+  document.getElementById('modalCamLng').value = cam.lng ?? '';
+}
+
+function setCameraModalMode(mode) {
+  const isEdit = mode === 'edit';
+  const title = document.getElementById('camModalTitle');
+  const submitBtn = document.getElementById('camModalSubmitBtn');
+  const passwordInput = document.getElementById('modalCamPass');
+  if (title) title.textContent = isEdit ? 'Sửa thông tin camera' : 'Quy hoạch Thiết Bị Camera Động';
+  if (submitBtn) submitBtn.textContent = isEdit ? 'Lưu thay đổi' : 'Kích hoạt kết nối';
+  if (passwordInput) {
+    passwordInput.required = !isEdit;
+    passwordInput.placeholder = isEdit ? 'Để trống nếu không đổi mật khẩu RTSP' : 'Nhập mật khẩu camera';
+  }
+}
+
+function openAddCamModal() {
+  editingCameraId = null;
+  const form = document.getElementById('addCamForm');
+  if (form) form.reset();
+  document.getElementById('modalCamUser').value = 'admin';
+  setCameraModalMode('add');
+  const modal = document.getElementById('addCamModal');
+  if (modal) modal.style.display = 'flex';
+}
+
+function openEditCamModal(camId) {
+  const cam = ALL_CAMERAS.find(c => c.id === camId);
+  if (!cam) {
+    alert("Không tìm thấy camera cần sửa.");
+    return;
+  }
+  editingCameraId = camId;
+  setCameraModalMode('edit');
+  fillCameraForm(cam);
+  const modal = document.getElementById('addCamModal');
+  if (modal) modal.style.display = 'flex';
+}
+
+function closeAddCamModal() {
+  const modal = document.getElementById('addCamModal');
+  if (modal) modal.style.display = 'none';
+  editingCameraId = null;
+  const form = document.getElementById('addCamForm');
+  if (form) form.reset();
+  setCameraModalMode('add');
+}
 function changeGridLimit(val) { currentGridLimit = parseInt(val); const liveGrid = document.getElementById('liveCamGrid'); if(liveGrid) { liveGrid.style.gridTemplateColumns = (currentGridLimit === 2 || currentGridLimit === 4) ? 'repeat(2, 1fr)' : 'repeat(3, 1fr)'; renderLiveGrid(); } }
-function selectCam(el){ document.querySelectorAll('.live-tile').forEach(t => t.classList.remove('selected')); el.classList.add('selected'); const camId = el.getAttribute('data-id'); const camData = ALL_CAMERAS.find(c => c.id === camId); if (!camData) return; if(document.getElementById('sideCamName')) document.getElementById('sideCamName').textContent = `${camData.index}. ${camData.name}`; if(document.getElementById('sideCamIP')) document.getElementById('sideCamIP').textContent = camData.ip; if(document.getElementById('sideCamModel')) document.getElementById('sideCamModel').textContent = camData.model; if(document.getElementById('sideCamZone')) document.getElementById('sideCamZone').textContent = camData.zone; if(document.getElementById('sideCamLoc')) document.getElementById('sideCamLoc').textContent = camData.loc; const detailContainer = document.getElementById('mainDetailContainer'); if (detailContainer) { detailContainer.innerHTML = `<iframe src="http://127.0.0.1:1984/stream.html?src=${camData.id}&mode=webrtc" frameborder="0" scrolling="no" style="width:100%; aspect-ratio:16/9; pointer-events:none; display:block;"></iframe>`; } }
+function selectCam(el) {
+  document.querySelectorAll('.live-tile').forEach(t => t.classList.remove('selected'));
+  el.classList.add('selected');
+  const camId = el.getAttribute('data-id');
+  const camData = ALL_CAMERAS.find(c => c.id === camId);
+  if (!camData) return;
+  selectedLiveCameraId = camId;
+  if(document.getElementById('sideCamName')) document.getElementById('sideCamName').textContent = `${camData.index}. ${camData.name}`;
+  if(document.getElementById('sideCamIP')) document.getElementById('sideCamIP').textContent = camData.ip;
+  if(document.getElementById('sideCamModel')) document.getElementById('sideCamModel').textContent = camData.model;
+  if(document.getElementById('sideCamZone')) document.getElementById('sideCamZone').textContent = camData.zone;
+  if(document.getElementById('sideCamLoc')) document.getElementById('sideCamLoc').textContent = camData.loc;
+  const detailContainer = document.getElementById('mainDetailContainer');
+  if (detailContainer) {
+    detailContainer.innerHTML = `<iframe src="http://127.0.0.1:1984/stream.html?src=${camData.id}&mode=webrtc" frameborder="0" scrolling="no" style="width:100%; aspect-ratio:16/9; pointer-events:none; display:block;"></iframe>`;
+  }
+}
 function maximizeCam(el) { const mediaElement = el.querySelector('iframe') || el.querySelector('img'); if (mediaElement && mediaElement.requestFullscreen) mediaElement.requestFullscreen(); }
+
+function handleLiveQueryAction() {
+  if (!document.getElementById('liveCamGrid')) return;
+  const params = new URLSearchParams(window.location.search);
+  const cameraId = params.get('camera_id');
+  const action = params.get('action') || 'live';
+  if (!cameraId) return;
+
+  let tile = Array.from(document.querySelectorAll('.live-tile')).find(item => item.dataset.id === cameraId);
+  if (!tile && ALL_CAMERAS.some(cam => cam.id === cameraId)) {
+    currentGridLimit = ALL_CAMERAS.length;
+    const gridSelect = document.getElementById('gridLimitSelect');
+    if (gridSelect) gridSelect.value = String(currentGridLimit);
+    renderLiveGrid();
+    tile = Array.from(document.querySelectorAll('.live-tile')).find(item => item.dataset.id === cameraId);
+  }
+  if (!tile) return;
+  selectCam(tile);
+  tile.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+
+  if (action === 'playback') {
+    openPlaybackModal();
+    const playbackSelect = document.getElementById('playbackCameraSelect');
+    if (playbackSelect && ALL_CAMERAS.some(cam => cam.id === cameraId)) {
+      playbackSelect.value = cameraId;
+    }
+  }
+}
+
+function formatDateTimeLocal(date) {
+  const pad = (value) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function formatPlaybackTime(value) {
+  if (!value) return '-';
+  return new Date(value).toLocaleString('vi-VN', { hour12: false });
+}
+
+function formatPlaybackBytes(value) {
+  const bytes = Number(value || 0);
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
+}
+
+function setPlaybackStatus(message, color = 'var(--slate-500)') {
+  const status = document.getElementById('playbackStatus');
+  if (status) {
+    status.textContent = message;
+    status.style.color = color;
+  }
+}
+
+function populatePlaybackCameraSelect() {
+  const select = document.getElementById('playbackCameraSelect');
+  if (!select) return;
+  select.innerHTML = '';
+  ALL_CAMERAS.forEach(cam => {
+    const option = document.createElement('option');
+    option.value = cam.id;
+    option.textContent = `${cam.index || ''}. ${cam.name || cam.id}`.trim();
+    select.appendChild(option);
+  });
+  if (selectedLiveCameraId && ALL_CAMERAS.some(cam => cam.id === selectedLiveCameraId)) {
+    select.value = selectedLiveCameraId;
+  }
+}
+
+function openPlaybackModal() {
+  const modal = document.getElementById('playbackModal');
+  if (!modal) return;
+  populatePlaybackCameraSelect();
+  const now = new Date();
+  const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+  const fromInput = document.getElementById('playbackFromTime');
+  const toInput = document.getElementById('playbackToTime');
+  if (fromInput && !fromInput.value) fromInput.value = formatDateTimeLocal(oneHourAgo);
+  if (toInput && !toInput.value) toInput.value = formatDateTimeLocal(now);
+  modal.style.display = 'flex';
+  setPlaybackStatus('Chọn khoảng thời gian để tìm video đã lưu.');
+}
+
+function closePlaybackModal() {
+  const modal = document.getElementById('playbackModal');
+  const video = document.getElementById('playbackVideo');
+  if (video) {
+    video.pause();
+    video.removeAttribute('src');
+    video.load();
+  }
+  if (modal) modal.style.display = 'none';
+}
+
+async function searchPlaybackSegments() {
+  const cameraSelect = document.getElementById('playbackCameraSelect');
+  const fromInput = document.getElementById('playbackFromTime');
+  const toInput = document.getElementById('playbackToTime');
+  const cameraId = cameraSelect?.value;
+  if (!cameraId) {
+    setPlaybackStatus('Chưa có camera để tìm phát lại.', '#dc2626');
+    return;
+  }
+  if (!fromInput?.value || !toInput?.value) {
+    setPlaybackStatus('Vui lòng chọn đủ từ thời gian và đến thời gian.', '#dc2626');
+    return;
+  }
+  const fromDate = new Date(fromInput.value);
+  const toDate = new Date(toInput.value);
+  if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime()) || fromDate >= toDate) {
+    setPlaybackStatus('Khoảng thời gian không hợp lệ.', '#dc2626');
+    return;
+  }
+
+  setPlaybackStatus('Đang tìm video phát lại...', 'var(--blue-600)');
+  const params = new URLSearchParams({
+    camera_id: cameraId,
+    from_time: fromDate.toISOString(),
+    to_time: toDate.toISOString()
+  });
+
+  try {
+    const response = await fetch(`http://127.0.0.1:8000/api/playback/search?${params.toString()}`);
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.detail || 'Không thể tìm video phát lại.');
+    }
+    const data = await response.json();
+    PLAYBACK_SEGMENTS = data.segments || [];
+    PLAYBACK_GAPS = data.gaps || [];
+    renderPlaybackTimeline(PLAYBACK_SEGMENTS, PLAYBACK_GAPS);
+    renderPlaybackSegmentList(PLAYBACK_SEGMENTS);
+    if (PLAYBACK_SEGMENTS.length > 0) {
+      setPlaybackStatus(`Tìm thấy ${PLAYBACK_SEGMENTS.length} segment, ${PLAYBACK_GAPS.length} khoảng trống.`);
+    } else {
+      setPlaybackStatus('Không có video trong khoảng thời gian đã chọn.', 'var(--slate-500)');
+    }
+  } catch (error) {
+    PLAYBACK_SEGMENTS = [];
+    PLAYBACK_GAPS = [];
+    renderPlaybackTimeline([], []);
+    renderPlaybackSegmentList([]);
+    setPlaybackStatus(error.message || 'Lỗi kết nối API phát lại.', '#dc2626');
+  }
+}
+
+function renderPlaybackTimeline(segments, gaps) {
+  const timeline = document.getElementById('playbackTimeline');
+  if (!timeline) return;
+  timeline.innerHTML = '';
+  if (!segments.length) {
+    timeline.innerHTML = '<div style="height:100%; display:flex; align-items:center; justify-content:center; color:var(--slate-400); font-size:13px;">Không có dữ liệu timeline</div>';
+    return;
+  }
+
+  const times = [];
+  segments.forEach(seg => {
+    times.push(new Date(seg.start_time).getTime(), new Date(seg.end_time).getTime());
+  });
+  gaps.forEach(gap => {
+    const gapStart = gap.start_time || gap.from_time;
+    const gapEnd = gap.end_time || gap.to_time;
+    times.push(new Date(gapStart).getTime(), new Date(gapEnd).getTime());
+  });
+  const minTime = Math.min(...times);
+  const maxTime = Math.max(...times);
+  const total = Math.max(maxTime - minTime, 1000);
+  const pct = (value) => Math.max(0, Math.min(100, ((new Date(value).getTime() - minTime) / total) * 100));
+
+  gaps.forEach(gap => {
+    const gapStart = gap.start_time || gap.from_time;
+    const gapEnd = gap.end_time || gap.to_time;
+    const left = pct(gapStart);
+    const width = Math.max(0.5, pct(gapEnd) - left);
+    const bar = document.createElement('div');
+    bar.title = `Gap: ${formatPlaybackTime(gapStart)} - ${formatPlaybackTime(gapEnd)}`;
+    bar.style.cssText = `position:absolute; top:12px; left:${left}%; width:${width}%; height:38px; background:#ef4444; opacity:0.28; border-radius:6px;`;
+    timeline.appendChild(bar);
+  });
+
+  segments.forEach(seg => {
+    const left = pct(seg.start_time);
+    const width = Math.max(0.55, pct(seg.end_time) - left);
+    const bar = document.createElement('button');
+    bar.type = 'button';
+    bar.className = 'playback-timeline-segment';
+    bar.dataset.segmentId = seg.id;
+    bar.title = `${formatPlaybackTime(seg.start_time)} - ${formatPlaybackTime(seg.end_time)}`;
+    bar.style.cssText = `position:absolute; top:18px; left:${left}%; width:${width}%; height:26px; border:0; background:#16a34a; border-radius:5px; cursor:pointer; box-shadow:0 1px 2px rgba(15,23,42,0.12);`;
+    bar.onclick = () => playPlaybackSegment(seg.id);
+    timeline.appendChild(bar);
+  });
+}
+
+function renderPlaybackSegmentList(segments) {
+  const list = document.getElementById('playbackSegmentList');
+  if (!list) return;
+  list.innerHTML = '';
+  if (!segments.length) {
+    list.innerHTML = '<div style="height:100%; display:flex; align-items:center; justify-content:center; padding:16px; text-align:center; color:var(--slate-400); font-size:13px;">Không có segment phù hợp.</div>';
+    return;
+  }
+  segments.forEach(seg => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'playback-segment-item';
+    item.dataset.segmentId = seg.id;
+    item.style.cssText = 'width:100%; border:0; border-bottom:1px solid var(--slate-100); background:#fff; padding:10px 12px; text-align:left; cursor:pointer; display:block;';
+    item.innerHTML = `
+      <div style="display:flex; justify-content:space-between; gap:10px; align-items:center;">
+        <strong style="font-size:13px; color:var(--slate-900);">Segment #${seg.id}</strong>
+        <span style="font-size:11px; color:var(--slate-500);">${Math.round(Number(seg.duration_seconds || 0))}s</span>
+      </div>
+      <div style="font-size:12px; color:var(--slate-500); margin-top:5px; line-height:1.45;">
+        ${formatPlaybackTime(seg.start_time)}<br>
+        ${formatPlaybackTime(seg.end_time)}
+      </div>
+      <div style="font-size:11px; color:var(--slate-400); margin-top:5px;">${formatPlaybackBytes(seg.size_bytes)} · ${seg.status || 'READY'}</div>
+    `;
+    item.onclick = () => playPlaybackSegment(seg.id);
+    list.appendChild(item);
+  });
+}
+
+function playPlaybackSegment(segmentId) {
+  const video = document.getElementById('playbackVideo');
+  if (!video) return;
+  document.querySelectorAll('.playback-segment-item').forEach(item => {
+    const active = item.dataset.segmentId === String(segmentId);
+    item.style.background = active ? 'var(--blue-50)' : '#fff';
+    item.style.boxShadow = active ? 'inset 3px 0 0 var(--blue-600)' : 'none';
+  });
+  document.querySelectorAll('.playback-timeline-segment').forEach(item => {
+    item.style.background = item.dataset.segmentId === String(segmentId) ? '#2563eb' : '#16a34a';
+  });
+  video.src = `http://127.0.0.1:8000/api/playback/file/${segmentId}`;
+  video.load();
+  video.play().catch(() => {});
+  setPlaybackStatus(`Đang phát segment #${segmentId}.`);
+}
 
 function renderUserTable() {
   const userBody = document.getElementById('userTableBody');
@@ -713,18 +2017,30 @@ async function restoreBackup(event) {
 document.addEventListener("DOMContentLoaded", async () => {
    if (!checkAuthSecurity()) return;
    syncSessionUserDisplayName();
+   initNotifications();
 
    await fetchCamerasFromBackend();
    if (document.getElementById('userTableBody')) { await fetchUsersFromBackend(); renderUserTable(); }
-   if(document.getElementById('liveCamGrid')) renderLiveGrid();
+   if(document.getElementById('liveCamGrid')) {
+     renderLiveGrid();
+     handleLiveQueryAction();
+   }
    if(document.getElementById('overviewCamGrid')) renderOverviewGrid();
-   if(document.getElementById('statTotalCameras')) renderDashboardStats();
+   if(document.getElementById('alertList')) await loadAlerts();
+   if(document.getElementById('reportCameraOnline')) await loadReports();
+   if(document.getElementById('statTotalCameras')) {
+     renderDashboardStats();
+     await refreshDashboard();
+     if (DASHBOARD_REFRESH_TIMER) clearInterval(DASHBOARD_REFRESH_TIMER);
+     DASHBOARD_REFRESH_TIMER = setInterval(refreshDashboard, 10000);
+   }
    if(document.getElementById('camManagementTableBody')) renderCamManagementTable();
    if(document.getElementById('settingsPanelHost')) {
      const settings = await fetchSettingsFromBackend();
      fillSettingsForm(settings);
      checkMediaServerStatus();
    }
+   if(document.getElementById('auditTableBody')) await loadAuditLogs();
 
    // Bật tính năng vượt CORS
    startCameraHealthMonitor();

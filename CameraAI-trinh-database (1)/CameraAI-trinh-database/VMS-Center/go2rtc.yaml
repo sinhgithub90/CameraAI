@@ -1,9 +1,0 @@
-api:
-  listen: 127.0.0.1:1984
-streams:
-  cam_huyen_01: rtsp://admin:Abc123456@192.168.1.4:2004/Streaming/Channels/102
-  cam_huyen_02: rtsp://admin:Abc123456@192.168.1.5:2005/Streaming/Channels/102
-  cam_huyen_03: rtsp://admin:45646@10.10.10.15:2004/Streaming/Channels/102
-  cam_huyen_04: rtsp://admin:1we2@10.10.10.16:2004/Streaming/Channels/102
-webrtc:
-  listen: 0.0.0.0:8555
