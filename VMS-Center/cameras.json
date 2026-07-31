@@ -10,7 +10,7 @@
     "type": "video",
     "src": "http://127.0.0.1:1984/stream.html?src=cam_huyen_01&mode=webrtc",
     "tag": "Live",
-    "status": "online",
+    "status": "offline",
     "lat": 13.761426245174341,
     "lng": 109.20764602371123
   },
@@ -25,7 +25,7 @@
     "type": "video",
     "src": "http://127.0.0.1:1984/stream.html?src=cam_huyen_02&mode=webrtc",
     "tag": "Live",
-    "status": "online",
+    "status": "offline",
     "lat": 13.761461415577786,
     "lng": 109.20768095885197
   },
