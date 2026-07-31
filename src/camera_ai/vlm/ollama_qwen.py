@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 # vision model) can be used without touching code.
 DEFAULT_MODEL = "qwen3-vl:4b-instruct-q4_K_M"
 DEFAULT_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+DEFAULT_NUM_CTX = 8192
 
 _PROMPT = (
     "Bạn là nhà phân tích camera an ninh. Hãy nhìn vào khung hình camera được đính kèm.\n"
@@ -52,12 +53,14 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
         model: str | None = None,
         base_url: str | None = None,
         timeout: float = 120.0,
+        num_ctx: int | None = None,
     ) -> None:
         self.model = model or os.getenv("OLLAMA_MODEL") or DEFAULT_MODEL
         self.base_url = (
             base_url or os.getenv("OLLAMA_BASE_URL") or DEFAULT_BASE_URL
         ).rstrip("/")
         self.timeout = timeout
+        self.num_ctx = num_ctx or int(os.getenv("OLLAMA_NUM_CTX", DEFAULT_NUM_CTX))
 
     def analyze(self, frame: np.ndarray, detections: list[Detection]) -> SceneAnalysis:
         return self._analyze_frames([frame], detections)
@@ -96,6 +99,7 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
                     "images": [self._frame_to_jpeg_b64(frame) for frame in frames],
                 }
             ],
+            "options": {"num_ctx": self.num_ctx},
             "stream": False,
         }
         try:
@@ -107,7 +111,12 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
             resp.raise_for_status()
         except requests.RequestException as exc:
             # Ollama down / unreachable — degrade instead of failing the request.
-            logger.warning("Ollama unreachable (%s); returning degraded result", exc)
+            detail = getattr(getattr(exc, "response", None), "text", "")
+            logger.warning(
+                "Ollama request failed (%s%s); returning degraded result",
+                exc,
+                f" response={detail[:500]}" if detail else "",
+            )
             return SceneAnalysis(
                 summary=f"Không kết nối được Ollama ({self.model}): {exc}. "
                         "Kết quả này không có phân tích VLM.",
