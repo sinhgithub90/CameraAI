@@ -26,7 +26,9 @@ logger = logging.getLogger(__name__)
 # vision model) can be used without touching code.
 DEFAULT_MODEL = "qwen3-vl:4b-instruct-q4_K_M"
 DEFAULT_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-DEFAULT_NUM_CTX = 8192
+DEFAULT_NUM_CTX = 4096
+DEFAULT_NUM_PREDICT = 160
+DEFAULT_KEEP_ALIVE = "10m"
 
 _PROMPT = (
     "Bạn là nhà phân tích camera an ninh. Hãy nhìn vào khung hình camera được đính kèm.\n"
@@ -54,6 +56,8 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
         base_url: str | None = None,
         timeout: float = 120.0,
         num_ctx: int | None = None,
+        num_predict: int | None = None,
+        keep_alive: str | None = None,
     ) -> None:
         self.model = model or os.getenv("OLLAMA_MODEL") or DEFAULT_MODEL
         self.base_url = (
@@ -61,6 +65,12 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
         ).rstrip("/")
         self.timeout = timeout
         self.num_ctx = num_ctx or int(os.getenv("OLLAMA_NUM_CTX", DEFAULT_NUM_CTX))
+        self.num_predict = num_predict or int(
+            os.getenv("OLLAMA_NUM_PREDICT", DEFAULT_NUM_PREDICT)
+        )
+        self.keep_alive = (
+            keep_alive or os.getenv("OLLAMA_KEEP_ALIVE") or DEFAULT_KEEP_ALIVE
+        )
 
     def analyze(self, frame: np.ndarray, detections: list[Detection]) -> SceneAnalysis:
         return self._analyze_frames([frame], detections)
@@ -99,7 +109,12 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
                     "images": [self._frame_to_jpeg_b64(frame) for frame in frames],
                 }
             ],
-            "options": {"num_ctx": self.num_ctx},
+            "options": {
+                "num_ctx": self.num_ctx,
+                "num_predict": self.num_predict,
+                "temperature": 0,
+            },
+            "keep_alive": self.keep_alive,
             "stream": False,
         }
         try:
@@ -126,8 +141,26 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
                 recommended_action="kiem_tra_dich_vu_ollama",
                 degraded=True,
             )
-        content = resp.json()["message"]["content"]
+        response_data = resp.json()
+        self._log_ollama_timing(response_data)
+        content = response_data["message"]["content"]
         return self._parse(content)
+
+    @staticmethod
+    def _log_ollama_timing(response_data: dict) -> None:
+        def duration_ms(field: str) -> float:
+            return float(response_data.get(field, 0) or 0) / 1_000_000
+
+        logger.info(
+            "[ollama] total_ms=%.1f load_ms=%.1f prompt_tokens=%s "
+            "prompt_ms=%.1f output_tokens=%s output_ms=%.1f",
+            duration_ms("total_duration"),
+            duration_ms("load_duration"),
+            response_data.get("prompt_eval_count", 0),
+            duration_ms("prompt_eval_duration"),
+            response_data.get("eval_count", 0),
+            duration_ms("eval_duration"),
+        )
 
     @staticmethod
     def _frame_to_jpeg_b64(frame: np.ndarray) -> str:
