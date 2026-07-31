@@ -206,12 +206,14 @@ class SecurityAIPipeline:
                     and idx >= source_fps * self.window_seconds * self.max_video_windows
                 ):
                     break
-                ok, frame = cap.read()
-                if not ok:
+                if not cap.grab():
                     break
                 frames_read += 1
-                last_frame = frame
                 if idx % motion_interval == 0:
+                    ok, frame = cap.retrieve()
+                    if not ok:
+                        break
+                    last_frame = frame
                     frame = self._resize(frame, VIDEO_MAX_SIDE)
                     window_index = int((idx / source_fps) // self.window_seconds)
                     if current_window_index is None:

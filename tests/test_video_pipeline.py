@@ -120,6 +120,40 @@ class RecordingVLM:
         return SceneAnalysis(summary="sequence", alert_level=AlertLevel.MEDIUM)
 
 
+class GrabOnlyCapture:
+    def __init__(self, frames: list[np.ndarray], fps: float):
+        self.frames = frames
+        self.fps = fps
+        self.position = 0
+        self.current_index = -1
+        self.grab_calls = 0
+        self.retrieve_calls = 0
+
+    def isOpened(self) -> bool:
+        return True
+
+    def get(self, prop: int) -> float:
+        return self.fps if prop == cv2.CAP_PROP_FPS else 0.0
+
+    def read(self):
+        raise AssertionError("pipeline must not decode every frame with read()")
+
+    def grab(self) -> bool:
+        if self.position >= len(self.frames):
+            return False
+        self.current_index = self.position
+        self.position += 1
+        self.grab_calls += 1
+        return True
+
+    def retrieve(self):
+        self.retrieve_calls += 1
+        return True, self.frames[self.current_index].copy()
+
+    def release(self) -> None:
+        return None
+
+
 def write_test_video(path, frames: list[np.ndarray], fps: float = 5.0) -> None:
     height, width = frames[0].shape[:2]
     writer = cv2.VideoWriter(
@@ -129,6 +163,27 @@ def write_test_video(path, frames: list[np.ndarray], fps: float = 5.0) -> None:
     for frame in frames:
         writer.write(frame)
     writer.release()
+
+
+def test_video_retrieves_only_motion_sample_frames(monkeypatch):
+    frame = np.zeros((32, 32, 3), dtype=np.uint8)
+    capture = GrabOnlyCapture([frame] * 12, fps=30.0)
+    monkeypatch.setattr(
+        "camera_ai.pipeline.cv2.VideoCapture",
+        lambda source: capture,
+    )
+
+    result = SecurityAIPipeline(
+        detector=RecordingDetector(),
+        vlm=RecordingVLM(),
+        motion_fps=5.0,
+        yolo_fps=2.0,
+    ).analyze_event(EventObject(image="fake.mp4", media_type=MediaType.VIDEO))
+
+    assert result.video_stats is not None
+    assert result.video_stats.frames_read == 12
+    assert capture.grab_calls == 12
+    assert capture.retrieve_calls == 2
 
 
 def make_video_pipeline(detector, vlm):
