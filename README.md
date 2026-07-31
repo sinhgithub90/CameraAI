@@ -1,5 +1,31 @@
 # CameraAI
 
+## Model setup
+
+The upload endpoints use these defaults:
+
+```text
+YOLO_WEIGHTS=yolo26n.pt
+OLLAMA_MODEL=qwen3-vl:4b-instruct-q4_K_M
+OLLAMA_BASE_URL=http://localhost:11434
+```
+
+`yolo26n.pt` is downloaded automatically by Ultralytics on first detection.
+The FireDetector remains a separate fire/smoke trigger. The configured Qwen
+model is already available in the local Ollama installation; verify it with:
+
+```powershell
+ollama list
+```
+
+To run the upload API:
+
+```powershell
+$env:YOLO_WEIGHTS = "yolo26n.pt"
+$env:OLLAMA_MODEL = "qwen3-vl:4b-instruct-q4_K_M"
+python -m uvicorn apps.api.main:app --reload
+```
+
 ## Video motion-first pipeline
 
 Video analysis uses a lightweight motion stage before the expensive detectors:
