@@ -25,6 +25,12 @@ logger = logging.getLogger(__name__)
 # vision model) can be used without touching code.
 DEFAULT_MODEL = os.getenv("OLLAMA_MODEL", "qwen3-vl:2b-instruct-q8_0")
 DEFAULT_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+# Keep the model resident in VRAM so requests after a quiet period don't pay a
+# reload + kernel-warmup penalty (which is what made the first call ~8-10s).
+# Default 30m balances memory vs reload cost for machines that share the GPU;
+# -1 keeps it loaded indefinitely (pin VRAM ~2.7GB). Override per-instance via
+# OLLAMA_KEEP_ALIVE (e.g. "30m", 300, or -1).
+DEFAULT_KEEP_ALIVE = "30m"
 
 _PROMPT = (
     "Bạn là nhà phân tích camera an ninh. Hãy nhìn vào khung hình camera được đính kèm.\n"
@@ -51,12 +57,16 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
         model: str | None = None,
         base_url: str | None = None,
         timeout: float = 120.0,
+        keep_alive: int | str | None = None,
     ) -> None:
         self.model = model or os.getenv("OLLAMA_MODEL") or DEFAULT_MODEL
         self.base_url = (
             base_url or os.getenv("OLLAMA_BASE_URL") or DEFAULT_BASE_URL
         ).rstrip("/")
         self.timeout = timeout
+        self.keep_alive = keep_alive if keep_alive is not None else (
+            os.getenv("OLLAMA_KEEP_ALIVE") or DEFAULT_KEEP_ALIVE
+        )
 
     def analyze(self, frame: np.ndarray, detections: list[Detection]) -> SceneAnalysis:
         det_lines = "\n".join(
@@ -75,6 +85,7 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
                 }
             ],
             "stream": False,
+            "keep_alive": self.keep_alive,
         }
         try:
             resp = requests.post(
