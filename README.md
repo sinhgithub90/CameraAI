@@ -1,6 +1,74 @@
 # CameraAI
 
-> Camera-AI sub-module (YOLO11 + Qwen-VL): `src/camera_ai/` + `apps/api/`. Chi tiết bên dưới.
+## Model setup
+
+The upload endpoints use these defaults:
+
+```text
+YOLO_WEIGHTS=yolo26n.pt
+OLLAMA_MODEL=qwen3-vl:4b-instruct-q4_K_M
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_NUM_CTX=4096
+OLLAMA_NUM_PREDICT=160
+OLLAMA_KEEP_ALIVE=10m
+```
+
+`yolo26n.pt` is downloaded automatically by Ultralytics on first detection.
+The runtime pipeline uses only YOLO26n before Qwen; no fire heuristic or
+separate fire weights are loaded. The configured Qwen model is already
+available in the local Ollama installation; verify it with:
+
+```powershell
+ollama list
+```
+
+YOLO26 requires Ultralytics `8.4.0` or newer. If an existing environment
+still reports an older version, upgrade it with:
+
+```powershell
+python -m pip install --upgrade "ultralytics>=8.4.0"
+```
+
+To run the upload API:
+
+```powershell
+$env:YOLO_WEIGHTS = "yolo26n.pt"
+$env:OLLAMA_MODEL = "qwen3-vl:4b-instruct-q4_K_M"
+$env:OLLAMA_NUM_CTX = "4096"
+$env:OLLAMA_NUM_PREDICT = "160"
+$env:OLLAMA_KEEP_ALIVE = "10m"
+python -m uvicorn apps.api.main:app --reload
+```
+
+## Video motion-first pipeline
+
+Video analysis uses a lightweight motion stage before the expensive detectors:
+
+```text
+Video frames -> Motion (default 5 FPS) -> YOLO26n (default 2 FPS)
+             -> event-aware keyframe selection (max 2) -> one VLM call
+```
+
+Static video skips YOLO and VLM. If motion is detected but YOLO finds no
+objects, the keyframes are still sent to the VLM so smoke, fire, obstruction,
+spills, or fallen objects are not filtered out by object detection.
+`PipelineResult.video_stats` exposes frame and keyframe counters.
+
+The current test mode reads only the first five-second window by default
+(`max_video_windows=1`). Set `max_video_windows=None` when constructing the
+pipeline to process the complete video. Frames are grouped into five-second
+windows (`window_seconds=5.0`), and each active window produces one VLM
+analysis in `PipelineResult.video_windows`.
+
+Each window sends at most two event-aware keyframes to Qwen and reports their indices and
+stage timings in
+`qwen_input` and `timing`; the same information is logged to the terminal.
+
+The defaults can be overridden when constructing `SecurityAIPipeline` with
+`motion_fps`, `yolo_fps`, and `max_keyframes`. Stage boundaries remain
+framework-agnostic so the synchronous MVP can later move to worker queues.
+
+> Camera-AI sub-module (YOLO26n + Qwen-VL): `src/camera_ai/` + `apps/api/`. Chi tiết bên dưới.
 
 ---
 
@@ -17,8 +85,8 @@ src/camera_ai/
   gate.py                # VLMGate — quyết định có gọi VLM hay không (gated | always)
   detectors/
     base.py              # Detector interface (pluggable)
-    yolo.py              # YOLO11 COCO (ultralytics), lazy-load singleton
-    fire.py              # FireDetector — fire YOLO nhẹ + heuristic fallback
+    yolo.py              # YOLO26n COCO (ultralytics), lazy-load singleton
+    fire.py              # FireDetector standalone (không dùng trong pipeline mặc định)
   vlm/
     base.py              # VLMAnalyzer interface (pluggable)
     ollama_qwen.py       # Qwen-VL qua Ollama /api/chat (model configurable)
@@ -33,11 +101,9 @@ tests/                   # Smoke test core (không cần model/Ollama)
 ## Luồng xử lý
 
 ```
-Input → YOLO11 (COCO) ──┐
-                        ├─→ VLMGate: có trigger nào không?
-       FireDetector ────┘      │
-      (fire YOLO / heuristic)  ├─ Có  → Qwen-VL phân tích → PipelineResult đầy đủ
-                               └─ Không → skip VLM → PipelineResult nhẹ (vlm.skipped=true)
+Input → YOLO26n (COCO) → VLMGate: có detection nào không?
+                              ├─ Có  → Qwen-VL phân tích → PipelineResult đầy đủ
+                              └─ Không → skip VLM → PipelineResult nhẹ (vlm.skipped=true)
 ```
 
 VLM là tầng đắt — chỉ chạy khi tầng detect rẻ báo có tín hiệu (người/xe/lửa/khói). Với luồng camera sau này, thêm motion gate làm trigger 24/7.
@@ -46,13 +112,13 @@ VLM là tầng đắt — chỉ chạy khi tầng detect rẻ báo có tín hi�
 
 | Biến | Mặc định | Ý nghĩa |
 |---|---|---|
-| `OLLAMA_MODEL` | `qwen3-vl:2b-instruct-q8_0` | Model VLM trên Ollama (bạn bè dùng model Qwen khác thì đổi cái này) |
+| `OLLAMA_MODEL` | `qwen3-vl:4b-instruct-q4_K_M` | Model VLM trên Ollama (bạn bè dùng model Qwen khác thì đổi cái này) |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Endpoint Ollama |
-| `OLLAMA_KEEP_ALIVE` | `30m` | Giữ model trong VRAM sau mỗi request (giây hoặc `30m`/`-1`). `30m`: tự unload sau 30 phút rảnh · `-1`: giữ mãi (~2.7GB VRAM cố định) — tránh reload + kernel-warmup khi có khoảng nghỉ |
-| `OLLAMA_NUM_CTX` | `12288` | Context window Ollama (token). Đủ cho ~8 frame video @640px trên GPU 6GB; quá cao → KV cache tràn CPU, sinh token chậm |
+| `OLLAMA_NUM_CTX` | `4096` | Context phù hợp để Qwen 4B nằm hoàn toàn trên GPU 6 GB |
+| `OLLAMA_NUM_PREDICT` | `160` | Giới hạn độ dài JSON trả về |
+| `OLLAMA_KEEP_ALIVE` | `10m` | Giữ model trong Ollama giữa các lần test |
 | `CAMERA_AI_VLM_POLICY` | `gated` | `gated`: chỉ gọi VLM khi có trigger · `always`: gọi mọi input |
 | `CAMERA_AI_VLM` | `ollama` | `mock`: dùng VLM giả, không cần Ollama |
-| `FIRE_MODEL` | (URL fire YOLO11n) | Path/URL model fire/smoke · `none`/`off`: tắt tầng fire |
 
 ## Cài đặt
 
@@ -97,5 +163,5 @@ python -m pytest tests/ -v
 
 ## Điểm cần model (chạy lần đầu)
 
-- `yolo11n.pt` và model fire được tự tải về khi có request đầu tiên.
-- Ollama phải đang chạy với model vision, VD: `ollama pull qwen3-vl:2b-instruct-q8_0`.
+- `yolo26n.pt` được tự tải về khi có request đầu tiên.
+- Ollama phải đang chạy với model vision: `qwen3-vl:4b-instruct-q4_K_M`.

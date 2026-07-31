@@ -11,6 +11,7 @@ import base64
 import json
 import logging
 import os
+from collections.abc import Sequence
 
 import cv2
 import numpy as np
@@ -23,23 +24,11 @@ logger = logging.getLogger(__name__)
 
 # Model + endpoint are overridable via env so a different Qwen (or any Ollama
 # vision model) can be used without touching code.
-DEFAULT_MODEL = os.getenv("OLLAMA_MODEL", "qwen3-vl:2b-instruct-q8_0")
+DEFAULT_MODEL = "qwen3-vl:4b-instruct-q4_K_M"
 DEFAULT_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-# Keep the model resident in VRAM so requests after a quiet period don't pay a
-# reload + kernel-warmup penalty (which is what made the first call ~8-10s).
-# Default 30m balances memory vs reload cost for machines that share the GPU;
-# -1 keeps it loaded indefinitely (pin VRAM ~2.7GB). Override per-instance via
-# OLLAMA_KEEP_ALIVE (e.g. "30m", 300, or -1).
-DEFAULT_KEEP_ALIVE = "30m"
-# Cap detections listed in the prompt so it never exceeds Ollama's num_ctx
-# (4096). Listing 100+ detections each with a bbox pushes the request over the
-# context window and Ollama rejects it with HTTP 400 "exceeds the available
-# context size".
-MAX_DETECTIONS_IN_PROMPT = 40
-# Context window Ollama uses for the model. Enough for ~8 video frames at 640px
-# while staying fully on the 6GB GPU (12288 measured 100% GPU; 16384+ spills KV
-# cache to CPU and slows generation). Override via OLLAMA_NUM_CTX.
-DEFAULT_NUM_CTX = 12288
+DEFAULT_NUM_CTX = 4096
+DEFAULT_NUM_PREDICT = 160
+DEFAULT_KEEP_ALIVE = "10m"
 
 _PROMPT = (
     "Bạn là nhà phân tích camera an ninh. Hãy nhìn vào khung hình camera được đính kèm.\n"
@@ -66,60 +55,47 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
         model: str | None = None,
         base_url: str | None = None,
         timeout: float = 120.0,
-        keep_alive: int | str | None = None,
         num_ctx: int | None = None,
+        num_predict: int | None = None,
+        keep_alive: str | None = None,
     ) -> None:
         self.model = model or os.getenv("OLLAMA_MODEL") or DEFAULT_MODEL
         self.base_url = (
             base_url or os.getenv("OLLAMA_BASE_URL") or DEFAULT_BASE_URL
         ).rstrip("/")
         self.timeout = timeout
-        self.keep_alive = self._normalize_keep_alive(
-            keep_alive if keep_alive is not None else (
-                os.getenv("OLLAMA_KEEP_ALIVE") or DEFAULT_KEEP_ALIVE
-            )
+        self.num_ctx = num_ctx or int(os.getenv("OLLAMA_NUM_CTX", DEFAULT_NUM_CTX))
+        self.num_predict = num_predict or int(
+            os.getenv("OLLAMA_NUM_PREDICT", DEFAULT_NUM_PREDICT)
         )
-        if num_ctx is not None:
-            self.num_ctx = num_ctx
-        else:
-            env = os.getenv("OLLAMA_NUM_CTX")
-            try:
-                self.num_ctx = int(env) if env else DEFAULT_NUM_CTX
-            except ValueError:
-                logger.warning("Invalid OLLAMA_NUM_CTX=%r; using default %s", env, DEFAULT_NUM_CTX)
-                self.num_ctx = DEFAULT_NUM_CTX
+        self.keep_alive = (
+            keep_alive or os.getenv("OLLAMA_KEEP_ALIVE") or DEFAULT_KEEP_ALIVE
+        )
 
-    @staticmethod
-    def _normalize_keep_alive(value: object) -> int | str:
-        """Ollama's /api/chat rejects keep_alive values without a time unit.
+    def analyze(self, frame: np.ndarray, detections: list[Detection]) -> SceneAnalysis:
+        return self._analyze_frames([frame], detections)
 
-        A string like "-1" or "300" is parsed by Go's time.ParseDuration and
-        fails with "missing unit". Send plain integers as seconds instead
-        (int -1 = keep the model loaded forever) and leave duration strings
-        ("30m", "1h") untouched.
-        """
-        if isinstance(value, int):
-            return value
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return str(value)
+    def analyze_sequence(
+        self,
+        frames: Sequence[np.ndarray],
+        detections: list[Detection],
+    ) -> SceneAnalysis:
+        if not frames:
+            raise ValueError("at least one frame is required")
+        return self._analyze_frames(frames, detections)
 
-    def analyze(self, frames: list[np.ndarray], detections: list[Detection]) -> SceneAnalysis:
-        # Keep the prompt bounded: too many detections exceed Ollama's context
-        # window and get a 400. Prefer the most confident detections.
-        ordered = sorted(detections, key=lambda d: d.confidence, reverse=True)
-        shown = ordered[:MAX_DETECTIONS_IN_PROMPT]
-        det_lines = "\n".join(
-            f"- {d.label} (conf={d.confidence:.2f}, bbox={[round(v) for v in d.bbox]})"
-            for d in shown
-        ) or "- none"
-        if len(shown) < len(detections):
-            det_lines += (
-                f"\n- ... và {len(detections) - len(shown)} đối tượng khác "
-                "(đã ẩn để giữ prompt gọn)"
-            )
+    def _analyze_frames(
+        self,
+        frames: Sequence[np.ndarray],
+        detections: list[Detection],
+    ) -> SceneAnalysis:
+        det_lines = self._format_detections(detections)
         prompt = _PROMPT.format(detections=det_lines)
+        if len(frames) > 1:
+            prompt += (
+                "\nĐây là chuỗi khung hình theo thứ tự thời gian. Hãy phân tích diễn biến "
+                "giữa các khung hình, không chỉ một ảnh riêng lẻ."
+            )
 
         payload = {
             "model": self.model,
@@ -127,12 +103,16 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
                 {
                     "role": "user",
                     "content": prompt,
-                    "images": [self._frame_to_jpeg_b64(f) for f in frames],
+                    "images": [self._frame_to_jpeg_b64(frame) for frame in frames],
                 }
             ],
-            "stream": False,
+            "options": {
+                "num_ctx": self.num_ctx,
+                "num_predict": self.num_predict,
+                "temperature": 0,
+            },
             "keep_alive": self.keep_alive,
-            "options": {"num_ctx": self.num_ctx},
+            "stream": False,
         }
         try:
             resp = requests.post(
@@ -143,7 +123,12 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
             resp.raise_for_status()
         except requests.RequestException as exc:
             # Ollama down / unreachable — degrade instead of failing the request.
-            logger.warning("Ollama unreachable (%s); returning degraded result", exc)
+            detail = getattr(getattr(exc, "response", None), "text", "")
+            logger.warning(
+                "Ollama request failed (%s%s); returning degraded result",
+                exc,
+                f" response={detail[:500]}" if detail else "",
+            )
             return SceneAnalysis(
                 summary=f"Không kết nối được Ollama ({self.model}): {exc}. "
                         "Kết quả này không có phân tích VLM.",
@@ -153,8 +138,47 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
                 recommended_action="kiem_tra_dich_vu_ollama",
                 degraded=True,
             )
-        content = resp.json()["message"]["content"]
+        response_data = resp.json()
+        self._log_ollama_timing(response_data)
+        content = response_data["message"]["content"]
         return self._parse(content)
+
+    @staticmethod
+    def _format_detections(detections: list[Detection]) -> str:
+        grouped: dict[str, list[Detection]] = {}
+        for detection in detections:
+            grouped.setdefault(detection.label, []).append(detection)
+
+        lines: list[str] = []
+        for label_detections in grouped.values():
+            for detection in sorted(
+                label_detections,
+                key=lambda item: item.confidence,
+                reverse=True,
+            )[:3]:
+                lines.append(
+                    f"- {detection.label} (conf={detection.confidence:.2f}, "
+                    f"bbox={[round(value) for value in detection.bbox]})"
+                )
+                if len(lines) == 12:
+                    return "\n".join(lines)
+        return "\n".join(lines) or "- none"
+
+    @staticmethod
+    def _log_ollama_timing(response_data: dict) -> None:
+        def duration_ms(field: str) -> float:
+            return float(response_data.get(field, 0) or 0) / 1_000_000
+
+        logger.info(
+            "[ollama] total_ms=%.1f load_ms=%.1f prompt_tokens=%s "
+            "prompt_ms=%.1f output_tokens=%s output_ms=%.1f",
+            duration_ms("total_duration"),
+            duration_ms("load_duration"),
+            response_data.get("prompt_eval_count", 0),
+            duration_ms("prompt_eval_duration"),
+            response_data.get("eval_count", 0),
+            duration_ms("eval_duration"),
+        )
 
     @staticmethod
     def _frame_to_jpeg_b64(frame: np.ndarray) -> str:

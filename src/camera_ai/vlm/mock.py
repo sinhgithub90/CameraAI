@@ -13,7 +13,18 @@ from .base import VLMAnalyzer
 
 
 class MockAnalyzer(VLMAnalyzer):
-    def analyze(self, frames: list[np.ndarray], detections: list[Detection]) -> SceneAnalysis:
+    def __init__(self) -> None:
+        self.sequence_calls = 0
+
+    def analyze_sequence(
+        self,
+        frames: list[np.ndarray],
+        detections: list[Detection],
+    ) -> SceneAnalysis:
+        self.sequence_calls += 1
+        return self.analyze(frames[len(frames) // 2], detections)
+
+    def analyze(self, frame: np.ndarray, detections: list[Detection]) -> SceneAnalysis:
         if not detections:
             return SceneAnalysis(
                 summary="Cảnh bình thường, không phát hiện đối tượng đáng chú ý.",

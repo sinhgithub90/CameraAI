@@ -46,7 +46,7 @@ _FIRE_HSV_HIGH = np.array([35, 255, 255])
 
 class FireDetector(Detector):
     def __init__(self, model: str = "auto", conf: float = CONFIDENCE_THRESHOLD) -> None:
-        model = model if model != "auto" else os.getenv(FIRE_MODEL_ENV) or DEFAULT_FIRE_URL
+        model = model if model != "auto" else os.getenv(FIRE_MODEL_ENV) or "heuristic"
         self._force_heuristic = model == "heuristic"
         self.model_ref = None if model in ("none", "off", "heuristic") else model
         self.conf = conf

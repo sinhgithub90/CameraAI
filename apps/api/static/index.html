@@ -84,7 +84,7 @@
 
 <header>
   <h1>🎥 Camera AI Demo</h1>
-  <span>YOLO11 + Qwen-VL (Ollama) — phân tích ảnh / video</span>
+  <span>YOLO26n + Qwen-VL (Ollama) — phân tích ảnh / video</span>
 </header>
 
 <main>
@@ -121,6 +121,11 @@
       </div>
       <p class="muted" id="meta" style="margin:6px 0 12px"></p>
       <img id="result-img" alt="Kết quả annotate">
+    </div>
+
+    <div class="card" id="video-debug" hidden>
+      <h3 style="margin:0 0 10px;font-size:14px">Video / Qwen telemetry</h3>
+      <pre id="video-debug-text" class="muted" style="white-space:pre-wrap;margin:0"></pre>
     </div>
 
     <div class="card">
@@ -216,6 +221,25 @@ function render(data) {
   }
   $('result-title').textContent =
     data.media_type === 'video' ? 'Kết quả phân tích (frame tiêu biểu)' : 'Kết quả phân tích';
+
+  const debug = $('video-debug');
+  if (data.media_type === 'video' && data.video_stats) {
+    const s = data.video_stats;
+    const windows = (data.video_windows || []).map(w =>
+      `window ${w.window_index} [${w.start_seconds}-${w.end_seconds}s] | ` +
+      `Qwen frames: ${(w.qwen_input?.frame_indices || []).join(', ')} | ` +
+      `labels: ${(w.qwen_input?.detection_labels || []).join(', ') || 'none'} | ` +
+      `motion ${(w.timing?.motion_ms || 0).toFixed(1)}ms, ` +
+      `detector ${(w.timing?.detector_ms || 0).toFixed(1)}ms, ` +
+      `Qwen ${(w.timing?.qwen_ms || 0).toFixed(1)}ms`
+    ).join('\n');
+    $('video-debug-text').textContent =
+      `Read: ${s.frames_read} frames | windows: ${s.windows_processed} | ` +
+      `Qwen calls: ${s.vlm_calls} | total: ${(s.total_ms || 0).toFixed(1)}ms\n` + windows;
+    debug.hidden = false;
+  } else {
+    debug.hidden = true;
+  }
 
   const dets = data.detections || [];
   const tbody = $('det-tbody');

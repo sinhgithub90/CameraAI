@@ -13,12 +13,13 @@ import base64
 import logging
 import os
 import tempfile
+import time
 
 import cv2
 import numpy as np
 
 from .detectors.base import Detector
-from .detectors.fire import FireDetector
+from .detectors.motion import MotionDetector
 from .detectors.yolo import YOLODetector
 from .gate import VLMGate
 from .schemas import (
@@ -29,8 +30,14 @@ from .schemas import (
     PipelineResult,
     SceneAnalysis,
     SecurityDecision,
+    VideoAnalysisStats,
+    VideoFrameObservation,
+    QwenInputSummary,
+    StageTiming,
+    VideoWindowResult,
     VLMResult,
 )
+from .video_selection import select_keyframes
 from .vlm.base import VLMAnalyzer
 from .vlm.ollama_qwen import OllamaQwenAnalyzer
 
@@ -38,24 +45,30 @@ logger = logging.getLogger(__name__)
 
 IMAGE_MAX_SIDE = 1280
 VIDEO_MAX_SIDE = 1280
-VIDEO_SAMPLE_INTERVAL = 30  # analyse every Nth frame
-VIDEO_MAX_FRAMES = 60       # cap for long clips
-VLM_MAX_FRAMES = 8          # max frames sent to the VLM per video analysis
-VLM_MAX_SIDE = 640          # VLM frames downscaled to this to fit num_ctx
 
 
 class SecurityAIPipeline:
     def __init__(
         self,
         detector: Detector | None = None,
-        fire_detector: Detector | None = None,
         vlm: VLMAnalyzer | None = None,
         gate: VLMGate | None = None,
+        motion_detector: MotionDetector | None = None,
+        motion_fps: float = 5.0,
+        yolo_fps: float = 2.0,
+        max_keyframes: int = 2,
+        window_seconds: float = 5.0,
+        max_video_windows: int | None = 1,
     ) -> None:
         self.detector = detector or YOLODetector()
-        self.fire_detector = fire_detector or FireDetector()
         self.vlm = vlm or OllamaQwenAnalyzer()
         self.gate = gate or VLMGate()
+        self.motion_detector = motion_detector or MotionDetector()
+        self.motion_fps = motion_fps
+        self.yolo_fps = yolo_fps
+        self.max_keyframes = max_keyframes
+        self.window_seconds = window_seconds
+        self.max_video_windows = max_video_windows
 
     # -- public API -------------------------------------------------------
 
@@ -70,15 +83,11 @@ class SecurityAIPipeline:
         frame = self._load_image(event.image)
         frame = self._resize(frame, IMAGE_MAX_SIDE)
         detections = self.detector.detect(frame)
-        fire_detections = self.fire_detector.detect(frame)
-        if not self.gate.decide(detections, fire_detections):
-            return self._build_skipped(
-                event, MediaType.IMAGE, detections, fire_detections, frame
-            )
-        all_detections = detections + fire_detections
-        analysis = self.vlm.analyze([frame], all_detections)
-        annotated = self._annotate(frame, all_detections)
-        return self._build_result(event, MediaType.IMAGE, all_detections, analysis, annotated)
+        if not self.gate.decide(detections):
+            return self._build_skipped(event, MediaType.IMAGE, detections, frame)
+        analysis = self.vlm.analyze(frame, detections)
+        annotated = self._annotate(frame, detections)
+        return self._build_result(event, MediaType.IMAGE, detections, analysis, annotated)
 
     # -- video ------------------------------------------------------------
 
@@ -91,53 +100,207 @@ class SecurityAIPipeline:
             tmp.close()
             tmp_path = tmp.name
             source = tmp_path
+
+        windows: list[VideoWindowResult] = []
+        representatives: list[tuple[VideoWindowResult, np.ndarray, list[Detection]]] = []
+        frames_read = 0
+        motion_frames = 0
+        detector_frames = 0
+        total_motion_ms = 0.0
+        total_detector_ms = 0.0
+        total_qwen_ms = 0.0
+        video_started = time.perf_counter()
+        last_frame: np.ndarray | None = None
         try:
             cap = cv2.VideoCapture(source)
             if not cap.isOpened():
                 raise ValueError("cannot open video input")
-            sampled: list[tuple[np.ndarray, list[Detection], list[Detection]]] = []
+            source_fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+            motion_interval = max(1, round(source_fps / self.motion_fps))
+            detector_interval = max(1, round(source_fps / self.yolo_fps))
+            self.motion_detector.reset()
+            current_window: list[VideoFrameObservation] = []
+            current_window_index: int | None = None
+            last_detector_index: int | None = None
+            current_motion_ms = 0.0
+            current_detector_ms = 0.0
             idx = 0
-            while len(sampled) < VIDEO_MAX_FRAMES:
-                ok, frame = cap.read()
-                if not ok:
+
+            def flush_window(items: list[VideoFrameObservation]) -> None:
+                nonlocal motion_frames, detector_frames, current_motion_ms
+                nonlocal current_detector_ms, total_qwen_ms
+                if not items:
+                    return
+                motion_frames += sum(1 for item in items if item.motion.motion)
+                if not any(item.motion.motion for item in items):
+                    current_motion_ms = 0.0
+                    current_detector_ms = 0.0
+                    return
+                window_index = int(items[0].timestamp_seconds // self.window_seconds)
+                keyframes = select_keyframes(items, max_keyframes=self.max_keyframes)
+                frames = [item.frame for item in keyframes if item.frame is not None]
+                detections = [d for item in items for d in item.detections]
+                qwen_started = time.perf_counter()
+                analysis = self.vlm.analyze_sequence(frames, detections)
+                qwen_ms = (time.perf_counter() - qwen_started) * 1000
+                total_qwen_ms += qwen_ms
+                representative = max(
+                    keyframes,
+                    key=lambda item: item.motion.score
+                    + max((d.confidence for d in item.detections), default=0.0),
+                )
+                window_result = VideoWindowResult(
+                    window_index=window_index,
+                    start_seconds=window_index * self.window_seconds,
+                    end_seconds=(window_index + 1) * self.window_seconds,
+                    detections=detections,
+                    vlm=VLMResult(
+                        summary=analysis.summary,
+                        observations=analysis.observations,
+                        degraded=analysis.degraded,
+                    ),
+                    security=SecurityDecision(
+                        alert_level=analysis.alert_level,
+                        risks=analysis.risks,
+                        recommended_action=analysis.recommended_action,
+                    ),
+                    keyframes=len(frames),
+                    qwen_input=QwenInputSummary(
+                        frame_indices=[item.frame_index for item in keyframes],
+                        timestamps_seconds=[
+                            round(item.timestamp_seconds, 3) for item in keyframes
+                        ],
+                        frame_count=len(frames),
+                        detection_labels=sorted({d.label for d in detections}),
+                    ),
+                    timing=StageTiming(
+                        total_ms=current_motion_ms + current_detector_ms + qwen_ms,
+                        motion_ms=current_motion_ms,
+                        detector_ms=current_detector_ms,
+                        qwen_ms=qwen_ms,
+                    ),
+                )
+                windows.append(window_result)
+                representatives.append(
+                    (window_result, representative.frame, representative.detections)
+                )
+                logger.info(
+                    "[video] window=%s qwen_input_frames=%s labels=%s "
+                    "keyframes=%s motion_ms=%.1f detector_ms=%.1f qwen_ms=%.1f "
+                    "summary=%s",
+                    window_result.window_index,
+                    window_result.qwen_input.frame_indices,
+                    window_result.qwen_input.detection_labels,
+                    window_result.keyframes,
+                    window_result.timing.motion_ms,
+                    window_result.timing.detector_ms,
+                    window_result.timing.qwen_ms,
+                    analysis.summary[:200],
+                )
+                current_motion_ms = 0.0
+                current_detector_ms = 0.0
+
+            while True:
+                if (
+                    self.max_video_windows is not None
+                    and idx >= source_fps * self.window_seconds * self.max_video_windows
+                ):
                     break
-                if idx % VIDEO_SAMPLE_INTERVAL == 0:
+                if not cap.grab():
+                    break
+                frames_read += 1
+                if idx % motion_interval == 0:
+                    ok, frame = cap.retrieve()
+                    if not ok:
+                        break
+                    last_frame = frame
                     frame = self._resize(frame, VIDEO_MAX_SIDE)
-                    dets = self.detector.detect(frame)
-                    fires = self.fire_detector.detect(frame)
-                    sampled.append((frame, dets, fires))
+                    window_index = int((idx / source_fps) // self.window_seconds)
+                    if current_window_index is None:
+                        current_window_index = window_index
+                    elif window_index != current_window_index:
+                        flush_window(current_window)
+                        current_window = []
+                        current_window_index = window_index
+                    motion_started = time.perf_counter()
+                    motion = self.motion_detector.compare(frame)
+                    motion_ms = (time.perf_counter() - motion_started) * 1000
+                    total_motion_ms += motion_ms
+                    current_motion_ms += motion_ms
+                    observation = VideoFrameObservation(
+                        frame_index=idx,
+                        timestamp_seconds=idx / source_fps,
+                        motion=motion,
+                        frame=frame,
+                    )
+                    if motion.motion and (
+                        last_detector_index is None
+                        or idx - last_detector_index >= detector_interval
+                    ):
+                        try:
+                            detector_started = time.perf_counter()
+                            detections = self.detector.detect(frame)
+                            observation.detections = detections
+                            detector_frames += 1
+                            detector_ms = (time.perf_counter() - detector_started) * 1000
+                            total_detector_ms += detector_ms
+                            current_detector_ms += detector_ms
+                            last_detector_index = idx
+                        except Exception:  # noqa: BLE001 - preserve VLM path
+                            logger.exception("video detector failed at frame %s", idx)
+                    current_window.append(observation)
                 idx += 1
+            flush_window(current_window)
             cap.release()
         finally:
             if tmp_path:
                 os.unlink(tmp_path)
 
-        if not sampled:
+        if not frames_read or last_frame is None:
             raise ValueError("no readable frames in video")
-
-        rep_frame, rep_dets, rep_fires = max(
-            sampled, key=lambda item: len(item[1]) + len(item[2])
+        stats = VideoAnalysisStats(
+            frames_read=frames_read,
+            motion_frames=motion_frames,
+            detector_frames=detector_frames,
+            keyframes=sum(window.keyframes for window in windows),
+            windows_processed=max(
+                1, int((frames_read - 1) / (source_fps * self.window_seconds)) + 1
+            ),
+            windows_with_motion=len(windows),
+            vlm_calls=len(windows),
+            total_ms=(time.perf_counter() - video_started) * 1000,
+            motion_ms=total_motion_ms,
+            detector_ms=total_detector_ms,
+            qwen_ms=total_qwen_ms,
         )
-        all_detections = [d for _, dets, _ in sampled for d in dets]
-        all_fire = [d for _, _, fires in sampled for d in fires]
-        if not self.gate.decide(all_detections, all_fire):
+        all_detections = [d for window in windows for d in window.detections]
+        if not windows:
             return self._build_skipped(
-                event, MediaType.VIDEO, all_detections, all_fire, rep_frame
+                event, MediaType.VIDEO, all_detections, last_frame, stats
             )
-        combined = all_detections + all_fire
-        # Send a spread of frames to the VLM so it sees the clip's motion, not
-        # just the representative frame. Downscale to keep image tokens within
-        # num_ctx. Detections fed are the rep frame's (the full aggregated list
-        # is still returned below) — dumping every sampled frame's detections
-        # would overflow Ollama's context window and return HTTP 400.
-        vlm_frames = [f for f, _, _ in sampled]
-        if len(vlm_frames) > VLM_MAX_FRAMES:
-            step = len(vlm_frames) / VLM_MAX_FRAMES
-            vlm_frames = [vlm_frames[int(i * step)] for i in range(VLM_MAX_FRAMES)]
-        vlm_frames = [self._resize(f, VLM_MAX_SIDE) for f in vlm_frames]
-        analysis = self.vlm.analyze(vlm_frames, rep_dets + rep_fires)
-        annotated = self._annotate(rep_frame, rep_dets + rep_fires)
-        return self._build_result(event, MediaType.VIDEO, combined, analysis, annotated)
+
+        alert_rank = {AlertLevel.LOW: 0, AlertLevel.MEDIUM: 1, AlertLevel.HIGH: 2}
+        best_window, representative_frame, representative_detections = max(
+            representatives,
+            key=lambda item: alert_rank[item[0].security.alert_level],
+        )
+        analysis = SceneAnalysis(
+            summary=best_window.vlm.summary,
+            observations=best_window.vlm.observations,
+            alert_level=best_window.security.alert_level,
+            risks=best_window.security.risks,
+            recommended_action=best_window.security.recommended_action,
+            degraded=best_window.vlm.degraded,
+        )
+        return self._build_result(
+            event,
+            MediaType.VIDEO,
+            all_detections,
+            analysis,
+            self._annotate(representative_frame, representative_detections),
+            stats,
+            windows,
+        )
 
     # -- helpers ----------------------------------------------------------
 
@@ -200,21 +363,21 @@ class SecurityAIPipeline:
         event: EventObject,
         media_type: MediaType,
         detections: list[Detection],
-        fire_detections: list[Detection],
         frame: np.ndarray,
+        video_stats: VideoAnalysisStats | None = None,
     ) -> PipelineResult:
         """Result when the gate skipped the VLM — no expensive analysis ran."""
-        all_detections = detections + fire_detections
         return PipelineResult(
             media_type=media_type,
             camera_id=event.camera_id,
-            detections=all_detections,
+            detections=detections,
             vlm=VLMResult(
                 summary="Không có tín hiệu đáng chú ý — không kích hoạt phân tích VLM.",
                 skipped=True,
             ),
             security=SecurityDecision(alert_level=AlertLevel.LOW),
-            annotated_image=self._annotate(frame, all_detections),
+            annotated_image=self._annotate(frame, detections),
+            video_stats=video_stats,
         )
 
     @staticmethod
@@ -224,6 +387,8 @@ class SecurityAIPipeline:
         detections: list[Detection],
         analysis: SceneAnalysis,
         annotated: str | None = None,
+        video_stats: VideoAnalysisStats | None = None,
+        video_windows: list[VideoWindowResult] | None = None,
     ) -> PipelineResult:
         return PipelineResult(
             media_type=media_type,
@@ -240,4 +405,6 @@ class SecurityAIPipeline:
                 recommended_action=analysis.recommended_action,
             ),
             annotated_image=annotated,
+            video_stats=video_stats,
+            video_windows=video_windows or [],
         )
