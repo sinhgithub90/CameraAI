@@ -58,7 +58,7 @@ class SecurityAIPipeline:
         motion_detector: MotionDetector | None = None,
         motion_fps: float = 5.0,
         yolo_fps: float = 2.0,
-        max_keyframes: int = 8,
+        max_keyframes: int = 4,
         window_seconds: float = 5.0,
         max_video_windows: int | None = 1,
     ) -> None:

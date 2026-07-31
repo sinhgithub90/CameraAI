@@ -138,7 +138,7 @@ def make_video_pipeline(detector, fire_detector, vlm):
         vlm=vlm,
         motion_fps=5.0,
         yolo_fps=2.0,
-        max_keyframes=8,
+        max_keyframes=4,
     )
 
 
@@ -175,7 +175,7 @@ def test_video_integration_motion_calls_vlm_once_with_bounded_keyframes(tmp_path
     assert detector.calls < 8
     assert fire_detector.calls < 8
     assert vlm.sequence_calls == 1
-    assert vlm.sequence_lengths[0] <= 8
+    assert vlm.sequence_lengths[0] <= 4
     assert result.vlm.skipped is False
     assert result.video_stats is not None
 
@@ -200,7 +200,7 @@ def test_video_integration_processes_all_frames_in_five_second_windows(tmp_path)
         yolo_fps=1.0,
         window_seconds=5.0,
         max_video_windows=None,
-        max_keyframes=8,
+        max_keyframes=4,
     )
     result = pipeline.analyze_event(
         EventObject(image=str(path), media_type=MediaType.VIDEO)
@@ -212,6 +212,7 @@ def test_video_integration_processes_all_frames_in_five_second_windows(tmp_path)
     assert len(result.video_windows) == 3
     assert vlm.sequence_calls == 3
     assert result.video_windows[0].qwen_input.frame_indices
+    assert result.video_windows[0].keyframes <= 4
     assert result.video_windows[0].timing.qwen_ms >= 0
 
 

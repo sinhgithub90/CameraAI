@@ -55,7 +55,8 @@ pipeline to process the complete video. Frames are grouped into five-second
 windows (`window_seconds=5.0`), and each active window produces one VLM
 analysis in `PipelineResult.video_windows`.
 
-Each window reports the keyframe indices sent to Qwen and stage timings in
+Each window sends at most four keyframes to Qwen and reports their indices and
+stage timings in
 `qwen_input` and `timing`; the same information is logged to the terminal.
 
 The defaults can be overridden when constructing `SecurityAIPipeline` with
