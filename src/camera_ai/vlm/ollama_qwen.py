@@ -89,10 +89,7 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
         frames: Sequence[np.ndarray],
         detections: list[Detection],
     ) -> SceneAnalysis:
-        det_lines = "\n".join(
-            f"- {d.label} (conf={d.confidence:.2f}, bbox={[round(v) for v in d.bbox]})"
-            for d in detections
-        ) or "- none"
+        det_lines = self._format_detections(detections)
         prompt = _PROMPT.format(detections=det_lines)
         if len(frames) > 1:
             prompt += (
@@ -145,6 +142,27 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
         self._log_ollama_timing(response_data)
         content = response_data["message"]["content"]
         return self._parse(content)
+
+    @staticmethod
+    def _format_detections(detections: list[Detection]) -> str:
+        grouped: dict[str, list[Detection]] = {}
+        for detection in detections:
+            grouped.setdefault(detection.label, []).append(detection)
+
+        lines: list[str] = []
+        for label_detections in grouped.values():
+            for detection in sorted(
+                label_detections,
+                key=lambda item: item.confidence,
+                reverse=True,
+            )[:3]:
+                lines.append(
+                    f"- {detection.label} (conf={detection.confidence:.2f}, "
+                    f"bbox={[round(value) for value in detection.bbox]})"
+                )
+                if len(lines) == 12:
+                    return "\n".join(lines)
+        return "\n".join(lines) or "- none"
 
     @staticmethod
     def _log_ollama_timing(response_data: dict) -> None:

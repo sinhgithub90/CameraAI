@@ -8,7 +8,9 @@ The upload endpoints use these defaults:
 YOLO_WEIGHTS=yolo26n.pt
 OLLAMA_MODEL=qwen3-vl:4b-instruct-q4_K_M
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_NUM_CTX=8192
+OLLAMA_NUM_CTX=4096
+OLLAMA_NUM_PREDICT=160
+OLLAMA_KEEP_ALIVE=10m
 ```
 
 `yolo26n.pt` is downloaded automatically by Ultralytics on first detection.
@@ -32,7 +34,9 @@ To run the upload API:
 ```powershell
 $env:YOLO_WEIGHTS = "yolo26n.pt"
 $env:OLLAMA_MODEL = "qwen3-vl:4b-instruct-q4_K_M"
-$env:OLLAMA_NUM_CTX = "8192"
+$env:OLLAMA_NUM_CTX = "4096"
+$env:OLLAMA_NUM_PREDICT = "160"
+$env:OLLAMA_KEEP_ALIVE = "10m"
 python -m uvicorn apps.api.main:app --reload
 ```
 
@@ -42,7 +46,7 @@ Video analysis uses a lightweight motion stage before the expensive detectors:
 
 ```text
 Video frames -> Motion (default 5 FPS) -> YOLO/Fire (default 2 FPS)
-             -> candidate/keyframe selection (max 8) -> one VLM call
+             -> candidate/keyframe selection (max 4) -> one VLM call
 ```
 
 Static video skips YOLO and VLM. If motion is detected but YOLO finds no
@@ -110,11 +114,14 @@ VLM là tầng đắt — chỉ chạy khi tầng detect rẻ báo có tín hi�
 
 | Biến | Mặc định | Ý nghĩa |
 |---|---|---|
-| `OLLAMA_MODEL` | `qwen3-vl:2b-instruct-q8_0` | Model VLM trên Ollama (bạn bè dùng model Qwen khác thì đổi cái này) |
+| `OLLAMA_MODEL` | `qwen3-vl:4b-instruct-q4_K_M` | Model VLM trên Ollama (bạn bè dùng model Qwen khác thì đổi cái này) |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Endpoint Ollama |
+| `OLLAMA_NUM_CTX` | `4096` | Context phù hợp để Qwen 4B nằm hoàn toàn trên GPU 6 GB |
+| `OLLAMA_NUM_PREDICT` | `160` | Giới hạn độ dài JSON trả về |
+| `OLLAMA_KEEP_ALIVE` | `10m` | Giữ model trong Ollama giữa các lần test |
 | `CAMERA_AI_VLM_POLICY` | `gated` | `gated`: chỉ gọi VLM khi có trigger · `always`: gọi mọi input |
 | `CAMERA_AI_VLM` | `ollama` | `mock`: dùng VLM giả, không cần Ollama |
-| `FIRE_MODEL` | (URL fire YOLO11n) | Path/URL model fire/smoke · `none`/`off`: tắt tầng fire |
+| `FIRE_MODEL` | `heuristic` | Path/URL model fire/smoke tùy chọn · `none`/`off`: tắt tầng fire |
 
 ## Cài đặt
 

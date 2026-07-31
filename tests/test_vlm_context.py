@@ -4,6 +4,7 @@ import logging
 
 import numpy as np
 
+from camera_ai.schemas import Detection
 from camera_ai.vlm.ollama_qwen import OllamaQwenAnalyzer
 
 
@@ -97,3 +98,39 @@ def test_ollama_logs_server_timing_and_token_counts(monkeypatch, caplog):
     assert "prompt_ms=2000.0" in caplog.text
     assert "output_tokens=45" in caplog.text
     assert "output_ms=1500.0" in caplog.text
+
+
+def test_detection_prompt_keeps_top_three_per_label_and_twelve_total():
+    detections = []
+    for label in ("person", "car", "dog", "truck"):
+        for confidence in (0.40, 0.95, 0.70, 0.80):
+            detections.append(
+                Detection(
+                    label=label,
+                    confidence=confidence,
+                    bbox=[10, 20, 30, 40],
+                )
+            )
+    detections.append(
+        Detection(label="bicycle", confidence=0.99, bbox=[1, 2, 3, 4])
+    )
+
+    lines = OllamaQwenAnalyzer._format_detections(detections).splitlines()
+
+    assert len(lines) == 12
+    assert [line.split()[1] for line in lines] == [
+        "person",
+        "person",
+        "person",
+        "car",
+        "car",
+        "car",
+        "dog",
+        "dog",
+        "dog",
+        "truck",
+        "truck",
+        "truck",
+    ]
+    assert all("conf=0.40" not in line for line in lines)
+    assert OllamaQwenAnalyzer._format_detections([]) == "- none"
