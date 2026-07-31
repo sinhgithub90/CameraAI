@@ -49,6 +49,7 @@ VLM là tầng đắt — chỉ chạy khi tầng detect rẻ báo có tín hi�
 | `OLLAMA_MODEL` | `qwen3-vl:2b-instruct-q8_0` | Model VLM trên Ollama (bạn bè dùng model Qwen khác thì đổi cái này) |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Endpoint Ollama |
 | `OLLAMA_KEEP_ALIVE` | `30m` | Giữ model trong VRAM sau mỗi request (giây hoặc `30m`/`-1`). `30m`: tự unload sau 30 phút rảnh · `-1`: giữ mãi (~2.7GB VRAM cố định) — tránh reload + kernel-warmup khi có khoảng nghỉ |
+| `OLLAMA_NUM_CTX` | `12288` | Context window Ollama (token). Đủ cho ~8 frame video @640px trên GPU 6GB; quá cao → KV cache tràn CPU, sinh token chậm |
 | `CAMERA_AI_VLM_POLICY` | `gated` | `gated`: chỉ gọi VLM khi có trigger · `always`: gọi mọi input |
 | `CAMERA_AI_VLM` | `ollama` | `mock`: dùng VLM giả, không cần Ollama |
 | `FIRE_MODEL` | (URL fire YOLO11n) | Path/URL model fire/smoke · `none`/`off`: tắt tầng fire |

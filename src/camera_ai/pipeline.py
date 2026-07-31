@@ -40,6 +40,8 @@ IMAGE_MAX_SIDE = 1280
 VIDEO_MAX_SIDE = 1280
 VIDEO_SAMPLE_INTERVAL = 30  # analyse every Nth frame
 VIDEO_MAX_FRAMES = 60       # cap for long clips
+VLM_MAX_FRAMES = 8          # max frames sent to the VLM per video analysis
+VLM_MAX_SIDE = 640          # VLM frames downscaled to this to fit num_ctx
 
 
 class SecurityAIPipeline:
@@ -74,7 +76,7 @@ class SecurityAIPipeline:
                 event, MediaType.IMAGE, detections, fire_detections, frame
             )
         all_detections = detections + fire_detections
-        analysis = self.vlm.analyze(frame, all_detections)
+        analysis = self.vlm.analyze([frame], all_detections)
         annotated = self._annotate(frame, all_detections)
         return self._build_result(event, MediaType.IMAGE, all_detections, analysis, annotated)
 
@@ -123,7 +125,17 @@ class SecurityAIPipeline:
                 event, MediaType.VIDEO, all_detections, all_fire, rep_frame
             )
         combined = all_detections + all_fire
-        analysis = self.vlm.analyze(rep_frame, combined)
+        # Send a spread of frames to the VLM so it sees the clip's motion, not
+        # just the representative frame. Downscale to keep image tokens within
+        # num_ctx. Detections fed are the rep frame's (the full aggregated list
+        # is still returned below) — dumping every sampled frame's detections
+        # would overflow Ollama's context window and return HTTP 400.
+        vlm_frames = [f for f, _, _ in sampled]
+        if len(vlm_frames) > VLM_MAX_FRAMES:
+            step = len(vlm_frames) / VLM_MAX_FRAMES
+            vlm_frames = [vlm_frames[int(i * step)] for i in range(VLM_MAX_FRAMES)]
+        vlm_frames = [self._resize(f, VLM_MAX_SIDE) for f in vlm_frames]
+        analysis = self.vlm.analyze(vlm_frames, rep_dets + rep_fires)
         annotated = self._annotate(rep_frame, rep_dets + rep_fires)
         return self._build_result(event, MediaType.VIDEO, combined, analysis, annotated)
 

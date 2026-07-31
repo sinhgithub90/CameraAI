@@ -31,6 +31,15 @@ DEFAULT_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 # -1 keeps it loaded indefinitely (pin VRAM ~2.7GB). Override per-instance via
 # OLLAMA_KEEP_ALIVE (e.g. "30m", 300, or -1).
 DEFAULT_KEEP_ALIVE = "30m"
+# Cap detections listed in the prompt so it never exceeds Ollama's num_ctx
+# (4096). Listing 100+ detections each with a bbox pushes the request over the
+# context window and Ollama rejects it with HTTP 400 "exceeds the available
+# context size".
+MAX_DETECTIONS_IN_PROMPT = 40
+# Context window Ollama uses for the model. Enough for ~8 video frames at 640px
+# while staying fully on the 6GB GPU (12288 measured 100% GPU; 16384+ spills KV
+# cache to CPU and slows generation). Override via OLLAMA_NUM_CTX.
+DEFAULT_NUM_CTX = 12288
 
 _PROMPT = (
     "Bạn là nhà phân tích camera an ninh. Hãy nhìn vào khung hình camera được đính kèm.\n"
@@ -58,21 +67,58 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
         base_url: str | None = None,
         timeout: float = 120.0,
         keep_alive: int | str | None = None,
+        num_ctx: int | None = None,
     ) -> None:
         self.model = model or os.getenv("OLLAMA_MODEL") or DEFAULT_MODEL
         self.base_url = (
             base_url or os.getenv("OLLAMA_BASE_URL") or DEFAULT_BASE_URL
         ).rstrip("/")
         self.timeout = timeout
-        self.keep_alive = keep_alive if keep_alive is not None else (
-            os.getenv("OLLAMA_KEEP_ALIVE") or DEFAULT_KEEP_ALIVE
+        self.keep_alive = self._normalize_keep_alive(
+            keep_alive if keep_alive is not None else (
+                os.getenv("OLLAMA_KEEP_ALIVE") or DEFAULT_KEEP_ALIVE
+            )
         )
+        if num_ctx is not None:
+            self.num_ctx = num_ctx
+        else:
+            env = os.getenv("OLLAMA_NUM_CTX")
+            try:
+                self.num_ctx = int(env) if env else DEFAULT_NUM_CTX
+            except ValueError:
+                logger.warning("Invalid OLLAMA_NUM_CTX=%r; using default %s", env, DEFAULT_NUM_CTX)
+                self.num_ctx = DEFAULT_NUM_CTX
 
-    def analyze(self, frame: np.ndarray, detections: list[Detection]) -> SceneAnalysis:
+    @staticmethod
+    def _normalize_keep_alive(value: object) -> int | str:
+        """Ollama's /api/chat rejects keep_alive values without a time unit.
+
+        A string like "-1" or "300" is parsed by Go's time.ParseDuration and
+        fails with "missing unit". Send plain integers as seconds instead
+        (int -1 = keep the model loaded forever) and leave duration strings
+        ("30m", "1h") untouched.
+        """
+        if isinstance(value, int):
+            return value
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return str(value)
+
+    def analyze(self, frames: list[np.ndarray], detections: list[Detection]) -> SceneAnalysis:
+        # Keep the prompt bounded: too many detections exceed Ollama's context
+        # window and get a 400. Prefer the most confident detections.
+        ordered = sorted(detections, key=lambda d: d.confidence, reverse=True)
+        shown = ordered[:MAX_DETECTIONS_IN_PROMPT]
         det_lines = "\n".join(
             f"- {d.label} (conf={d.confidence:.2f}, bbox={[round(v) for v in d.bbox]})"
-            for d in detections
+            for d in shown
         ) or "- none"
+        if len(shown) < len(detections):
+            det_lines += (
+                f"\n- ... và {len(detections) - len(shown)} đối tượng khác "
+                "(đã ẩn để giữ prompt gọn)"
+            )
         prompt = _PROMPT.format(detections=det_lines)
 
         payload = {
@@ -81,11 +127,12 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
                 {
                     "role": "user",
                     "content": prompt,
-                    "images": [self._frame_to_jpeg_b64(frame)],
+                    "images": [self._frame_to_jpeg_b64(f) for f in frames],
                 }
             ],
             "stream": False,
             "keep_alive": self.keep_alive,
+            "options": {"num_ctx": self.num_ctx},
         }
         try:
             resp = requests.post(
