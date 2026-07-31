@@ -87,6 +87,10 @@ class VideoAnalysisStats(BaseModel):
     windows_processed: int = 0
     windows_with_motion: int = 0
     vlm_calls: int = 0
+    total_ms: float = 0.0
+    motion_ms: float = 0.0
+    detector_ms: float = 0.0
+    qwen_ms: float = 0.0
 
 
 class SceneAnalysis(BaseModel):
@@ -133,6 +137,26 @@ class VideoWindowResult(BaseModel):
     vlm: VLMResult
     security: SecurityDecision
     keyframes: int = 0
+    qwen_input: "QwenInputSummary"
+    timing: "StageTiming"
+
+
+class QwenInputSummary(BaseModel):
+    """Safe-to-log description of the visual input sent to Qwen."""
+
+    frame_indices: list[int] = Field(default_factory=list)
+    timestamps_seconds: list[float] = Field(default_factory=list)
+    frame_count: int = 0
+    detection_labels: list[str] = Field(default_factory=list)
+
+
+class StageTiming(BaseModel):
+    """Processing duration in milliseconds for one video window."""
+
+    total_ms: float = 0.0
+    motion_ms: float = 0.0
+    detector_ms: float = 0.0
+    qwen_ms: float = 0.0
 
 
 class PipelineResult(BaseModel):

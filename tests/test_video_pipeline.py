@@ -199,6 +199,7 @@ def test_video_integration_processes_all_frames_in_five_second_windows(tmp_path)
         motion_fps=1.0,
         yolo_fps=1.0,
         window_seconds=5.0,
+        max_video_windows=None,
         max_keyframes=8,
     )
     result = pipeline.analyze_event(
@@ -210,3 +211,24 @@ def test_video_integration_processes_all_frames_in_five_second_windows(tmp_path)
     assert result.video_stats.vlm_calls == 3
     assert len(result.video_windows) == 3
     assert vlm.sequence_calls == 3
+    assert result.video_windows[0].qwen_input.frame_indices
+    assert result.video_windows[0].timing.qwen_ms >= 0
+
+
+def test_video_integration_defaults_to_first_five_second_window(tmp_path):
+    frame = np.zeros((64, 64, 3), dtype=np.uint8)
+    path = tmp_path / "first-window-only.mp4"
+    write_test_video(path, [frame] * 15, fps=1.0)
+    vlm = RecordingVLM()
+    result = SecurityAIPipeline(
+        detector=RecordingDetector(),
+        fire_detector=RecordingDetector(),
+        vlm=vlm,
+        motion_fps=1.0,
+        yolo_fps=1.0,
+        window_seconds=5.0,
+    ).analyze_event(EventObject(image=str(path), media_type=MediaType.VIDEO))
+    assert result.video_stats is not None
+    assert result.video_stats.frames_read == 5
+    assert result.video_stats.windows_processed == 1
+    assert vlm.sequence_calls == 0

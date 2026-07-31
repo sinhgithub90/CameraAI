@@ -13,6 +13,7 @@ import base64
 import logging
 import os
 import tempfile
+import time
 
 import cv2
 import numpy as np
@@ -32,6 +33,8 @@ from .schemas import (
     SecurityDecision,
     VideoAnalysisStats,
     VideoFrameObservation,
+    QwenInputSummary,
+    StageTiming,
     VideoWindowResult,
     VLMResult,
 )
@@ -57,6 +60,7 @@ class SecurityAIPipeline:
         yolo_fps: float = 2.0,
         max_keyframes: int = 8,
         window_seconds: float = 5.0,
+        max_video_windows: int | None = 1,
     ) -> None:
         self.detector = detector or YOLODetector()
         self.fire_detector = fire_detector or FireDetector()
@@ -67,6 +71,7 @@ class SecurityAIPipeline:
         self.yolo_fps = yolo_fps
         self.max_keyframes = max_keyframes
         self.window_seconds = window_seconds
+        self.max_video_windows = max_video_windows
 
     # -- public API -------------------------------------------------------
 
@@ -108,6 +113,10 @@ class SecurityAIPipeline:
         frames_read = 0
         motion_frames = 0
         detector_frames = 0
+        total_motion_ms = 0.0
+        total_detector_ms = 0.0
+        total_qwen_ms = 0.0
+        video_started = time.perf_counter()
         last_frame: np.ndarray | None = None
         try:
             cap = cv2.VideoCapture(source)
@@ -120,20 +129,28 @@ class SecurityAIPipeline:
             current_window: list[VideoFrameObservation] = []
             current_window_index: int | None = None
             last_detector_index: int | None = None
+            current_motion_ms = 0.0
+            current_detector_ms = 0.0
             idx = 0
 
             def flush_window(items: list[VideoFrameObservation]) -> None:
-                nonlocal motion_frames, detector_frames
+                nonlocal motion_frames, detector_frames, current_motion_ms
+                nonlocal current_detector_ms, total_qwen_ms
                 if not items:
                     return
                 motion_frames += sum(1 for item in items if item.motion.motion)
                 if not any(item.motion.motion for item in items):
+                    current_motion_ms = 0.0
+                    current_detector_ms = 0.0
                     return
                 window_index = int(items[0].timestamp_seconds // self.window_seconds)
                 keyframes = select_keyframes(items, max_keyframes=self.max_keyframes)
                 frames = [item.frame for item in keyframes if item.frame is not None]
                 detections = [d for item in items for d in item.detections]
+                qwen_started = time.perf_counter()
                 analysis = self.vlm.analyze_sequence(frames, detections)
+                qwen_ms = (time.perf_counter() - qwen_started) * 1000
+                total_qwen_ms += qwen_ms
                 representative = max(
                     keyframes,
                     key=lambda item: item.motion.score
@@ -155,13 +172,47 @@ class SecurityAIPipeline:
                         recommended_action=analysis.recommended_action,
                     ),
                     keyframes=len(frames),
+                    qwen_input=QwenInputSummary(
+                        frame_indices=[item.frame_index for item in keyframes],
+                        timestamps_seconds=[
+                            round(item.timestamp_seconds, 3) for item in keyframes
+                        ],
+                        frame_count=len(frames),
+                        detection_labels=sorted({d.label for d in detections}),
+                    ),
+                    timing=StageTiming(
+                        total_ms=current_motion_ms + current_detector_ms + qwen_ms,
+                        motion_ms=current_motion_ms,
+                        detector_ms=current_detector_ms,
+                        qwen_ms=qwen_ms,
+                    ),
                 )
                 windows.append(window_result)
                 representatives.append(
                     (window_result, representative.frame, representative.detections)
                 )
+                logger.info(
+                    "[video] window=%s qwen_input_frames=%s labels=%s "
+                    "keyframes=%s motion_ms=%.1f detector_ms=%.1f qwen_ms=%.1f "
+                    "summary=%s",
+                    window_result.window_index,
+                    window_result.qwen_input.frame_indices,
+                    window_result.qwen_input.detection_labels,
+                    window_result.keyframes,
+                    window_result.timing.motion_ms,
+                    window_result.timing.detector_ms,
+                    window_result.timing.qwen_ms,
+                    analysis.summary[:200],
+                )
+                current_motion_ms = 0.0
+                current_detector_ms = 0.0
 
             while True:
+                if (
+                    self.max_video_windows is not None
+                    and idx >= source_fps * self.window_seconds * self.max_video_windows
+                ):
+                    break
                 ok, frame = cap.read()
                 if not ok:
                     break
@@ -176,7 +227,11 @@ class SecurityAIPipeline:
                         flush_window(current_window)
                         current_window = []
                         current_window_index = window_index
+                    motion_started = time.perf_counter()
                     motion = self.motion_detector.compare(frame)
+                    motion_ms = (time.perf_counter() - motion_started) * 1000
+                    total_motion_ms += motion_ms
+                    current_motion_ms += motion_ms
                     observation = VideoFrameObservation(
                         frame_index=idx,
                         timestamp_seconds=idx / source_fps,
@@ -188,10 +243,14 @@ class SecurityAIPipeline:
                         or idx - last_detector_index >= detector_interval
                     ):
                         try:
+                            detector_started = time.perf_counter()
                             detections = self.detector.detect(frame)
                             detections += self.fire_detector.detect(frame)
                             observation.detections = detections
                             detector_frames += 1
+                            detector_ms = (time.perf_counter() - detector_started) * 1000
+                            total_detector_ms += detector_ms
+                            current_detector_ms += detector_ms
                             last_detector_index = idx
                         except Exception:  # noqa: BLE001 - preserve VLM path
                             logger.exception("video detector failed at frame %s", idx)
@@ -215,6 +274,10 @@ class SecurityAIPipeline:
             ),
             windows_with_motion=len(windows),
             vlm_calls=len(windows),
+            total_ms=(time.perf_counter() - video_started) * 1000,
+            motion_ms=total_motion_ms,
+            detector_ms=total_detector_ms,
+            qwen_ms=total_qwen_ms,
         )
         all_detections = [d for window in windows for d in window.detections]
         if not windows:

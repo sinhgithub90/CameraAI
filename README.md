@@ -49,11 +49,14 @@ objects, the keyframes are still sent to the VLM so smoke, fire, obstruction,
 spills, or fallen objects are not filtered out by object detection.
 `PipelineResult.video_stats` exposes frame and keyframe counters.
 
-The complete video is processed; it is not truncated to a fixed frame count.
-Frames are grouped into five-second windows (`window_seconds=5.0`). Each
-active window produces one VLM analysis and appears in `PipelineResult.video_windows`.
-For example, a one-minute video can produce up to 12 window analyses while
-static windows are skipped.
+The current test mode reads only the first five-second window by default
+(`max_video_windows=1`). Set `max_video_windows=None` when constructing the
+pipeline to process the complete video. Frames are grouped into five-second
+windows (`window_seconds=5.0`), and each active window produces one VLM
+analysis in `PipelineResult.video_windows`.
+
+Each window reports the keyframe indices sent to Qwen and stage timings in
+`qwen_input` and `timing`; the same information is logged to the terminal.
 
 The defaults can be overridden when constructing `SecurityAIPipeline` with
 `motion_fps`, `yolo_fps`, and `max_keyframes`. Stage boundaries remain
