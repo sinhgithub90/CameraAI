@@ -10,8 +10,9 @@ class VLMAnalyzer(ABC):
     """Pluggable scene-analysis tier (Qwen-VL via Ollama, mock, ...)."""
 
     @abstractmethod
-    def analyze(self, frame: np.ndarray, detections: list[Detection]) -> SceneAnalysis:
-        """Analyse a frame given its detections; return a SceneAnalysis."""
+    def analyze(self, frames: list[np.ndarray], detections: list[Detection]) -> SceneAnalysis:
+        """Analyse one or more frames (image: 1 frame; video: several sampled
+        frames) given their detections; return a SceneAnalysis."""
         raise NotImplementedError
 
     def analyze_sequence(

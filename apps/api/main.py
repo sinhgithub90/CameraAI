@@ -12,6 +12,7 @@ Env knobs:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from pathlib import Path
@@ -67,7 +68,9 @@ async def analyze_image(
         raise HTTPException(status_code=400, detail="empty upload")
     event = EventObject(camera_id=camera_id, image=content, media_type=MediaType.IMAGE)
     try:
-        return pipeline.analyze_event(event)
+        # pipeline.analyze_event is blocking (YOLO + VLM, ~5s) — run it off the
+        # event loop so a slow request doesn't freeze every other endpoint.
+        return await asyncio.to_thread(pipeline.analyze_event, event)
     except Exception as exc:
         logger.exception("image analysis failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -83,7 +86,7 @@ async def analyze_video(
         raise HTTPException(status_code=400, detail="empty upload")
     event = EventObject(camera_id=camera_id, image=content, media_type=MediaType.VIDEO)
     try:
-        return pipeline.analyze_event(event)
+        return await asyncio.to_thread(pipeline.analyze_event, event)
     except Exception as exc:
         logger.exception("video analysis failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
