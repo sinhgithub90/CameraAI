@@ -86,6 +86,18 @@ def test_keyframe_selector_includes_first_and_last_for_calm_video():
     assert indices[-1] == 4
 
 
+def test_two_keyframes_prioritize_temporally_separated_event_frames():
+    observations = make_observations(
+        25,
+        motion_indices={10, 15},
+        detection_indices={10},
+    )
+
+    selected = select_keyframes(observations, max_keyframes=2)
+
+    assert [item.frame_index for item in selected] == [10, 15]
+
+
 def test_vlm_sequence_analysis_is_called_once():
     vlm = MockAnalyzer()
     frame = np.zeros((16, 16, 3), dtype=np.uint8)
@@ -192,7 +204,6 @@ def make_video_pipeline(detector, vlm):
         vlm=vlm,
         motion_fps=5.0,
         yolo_fps=2.0,
-        max_keyframes=4,
     )
 
 
@@ -225,7 +236,7 @@ def test_video_integration_motion_calls_vlm_once_with_bounded_keyframes(tmp_path
     )
     assert detector.calls < 8
     assert vlm.sequence_calls == 1
-    assert vlm.sequence_lengths[0] <= 4
+    assert vlm.sequence_lengths[0] == 2
     assert result.vlm.skipped is False
     assert result.video_stats is not None
 

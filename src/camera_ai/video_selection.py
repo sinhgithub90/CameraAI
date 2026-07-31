@@ -38,6 +38,44 @@ def select_keyframes(
     if len(observations) <= max_keyframes:
         return list(observations)
 
+    if max_keyframes == 2:
+        ranked = [item for _, item in score_observations(observations)]
+        event_ranked = [
+            item for item in ranked if item.motion.motion or item.detections
+        ]
+        if event_ranked:
+            primary = event_ranked[0]
+            separated_events = [
+                item
+                for item in event_ranked[1:]
+                if abs(item.timestamp_seconds - primary.timestamp_seconds) >= 1.0
+            ]
+            separated_frames = [
+                item
+                for item in ranked
+                if item.frame_index != primary.frame_index
+                and abs(item.timestamp_seconds - primary.timestamp_seconds) >= 1.0
+            ]
+            if separated_events:
+                secondary = separated_events[0]
+            elif separated_frames:
+                secondary = separated_frames[0]
+            else:
+                secondary = max(
+                    (
+                        item
+                        for item in observations
+                        if item.frame_index != primary.frame_index
+                    ),
+                    key=lambda item: abs(
+                        item.timestamp_seconds - primary.timestamp_seconds
+                    ),
+                )
+            return sorted(
+                [primary, secondary],
+                key=lambda item: item.frame_index,
+            )
+
     selected: dict[int, VideoFrameObservation] = {}
 
     def add(item: VideoFrameObservation | None) -> None:

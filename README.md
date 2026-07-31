@@ -46,7 +46,7 @@ Video analysis uses a lightweight motion stage before the expensive detectors:
 
 ```text
 Video frames -> Motion (default 5 FPS) -> YOLO26n (default 2 FPS)
-             -> candidate/keyframe selection (max 4) -> one VLM call
+             -> event-aware keyframe selection (max 2) -> one VLM call
 ```
 
 Static video skips YOLO and VLM. If motion is detected but YOLO finds no
@@ -60,7 +60,7 @@ pipeline to process the complete video. Frames are grouped into five-second
 windows (`window_seconds=5.0`), and each active window produces one VLM
 analysis in `PipelineResult.video_windows`.
 
-Each window sends at most four keyframes to Qwen and reports their indices and
+Each window sends at most two event-aware keyframes to Qwen and reports their indices and
 stage timings in
 `qwen_input` and `timing`; the same information is logged to the terminal.
 
