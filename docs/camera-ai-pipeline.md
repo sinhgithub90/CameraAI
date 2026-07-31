@@ -34,7 +34,7 @@ Video
   │     ├─ Frame có điểm Motion/YOLO cao nhất
   │     └─ Frame tốt tiếp theo, cách frame đầu ít nhất 1 giây
   │
-  ├─ Gửi 2 frame và nhãn YOLO vào Qwen-VL
+  ├─ Ghép 2 frame TRƯỚC/SAU và gửi cùng nhãn YOLO vào Qwen-VL
   │
   └─ Trả về cảnh báo, detection, timing và ảnh minh họa
 ```
@@ -88,7 +88,9 @@ cùng một cảnh báo.
 
 - Model hiện tại: `qwen3-vl:4b-instruct-q4_K_M`.
 - Context: 4096.
-- Nhận hai ảnh keyframe riêng theo thứ tự thời gian.
+- Mặc định ghép hai keyframe thành một ảnh 960x1080: TRƯỚC ở nửa trên,
+  SAU ở nửa dưới. Ảnh giữ tỷ lệ và được letterbox bằng nền đen.
+- Có thể đặt `OLLAMA_FRAME_MODE=separate` để quay lại gửi hai ảnh riêng.
 - Giới hạn output: 96 token.
 - Giữ model trong Ollama: 10 phút.
 - Dùng JSON Schema để trả về alert level, summary, risks và recommended action.
@@ -118,6 +120,7 @@ cùng một cảnh báo.
 | Ollama context | 4096 |
 | Ollama output limit | 96 token |
 | Ollama keep-alive | 10 phút |
+| Chế độ ảnh Qwen | `composite` |
 
 Mặc định upload video chỉ đọc cửa sổ 5 giây đầu tiên
 (`max_video_windows=1`). Đặt `max_video_windows=None` khi khởi tạo pipeline để
@@ -153,7 +156,15 @@ các timer luôn khớp với `total_ms`.
 $env:OLLAMA_NUM_CTX="4096"
 $env:OLLAMA_NUM_PREDICT="96"
 $env:OLLAMA_KEEP_ALIVE="10m"
+$env:OLLAMA_FRAME_MODE="composite"
 python -m uvicorn apps.api.main:app --reload
+```
+
+Log `[qwen-input]` cho biết chế độ ảnh, số frame nguồn, số ảnh thật sự gửi
+đến Ollama và kích thước ảnh ghép. Để so sánh hoặc quay lui nhanh:
+
+```powershell
+$env:OLLAMA_FRAME_MODE="separate"
 ```
 
 Sau khi upload video, kiểm tra Ollama:
