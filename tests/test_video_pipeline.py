@@ -178,3 +178,35 @@ def test_video_integration_motion_calls_vlm_once_with_bounded_keyframes(tmp_path
     assert vlm.sequence_lengths[0] <= 8
     assert result.vlm.skipped is False
     assert result.video_stats is not None
+
+
+def test_video_integration_processes_all_frames_in_five_second_windows(tmp_path):
+    calm = np.zeros((64, 64, 3), dtype=np.uint8)
+    changed = calm.copy()
+    changed[15:45, 20:50] = 255
+    frames = []
+    for _ in range(3):
+        frames.extend([calm, changed, changed, calm, calm])
+    path = tmp_path / "long-motion.mp4"
+    write_test_video(path, frames, fps=1.0)
+    detector = RecordingDetector()
+    fire_detector = RecordingDetector()
+    vlm = RecordingVLM()
+    pipeline = SecurityAIPipeline(
+        detector=detector,
+        fire_detector=fire_detector,
+        vlm=vlm,
+        motion_fps=1.0,
+        yolo_fps=1.0,
+        window_seconds=5.0,
+        max_keyframes=8,
+    )
+    result = pipeline.analyze_event(
+        EventObject(image=str(path), media_type=MediaType.VIDEO)
+    )
+    assert result.video_stats is not None
+    assert result.video_stats.frames_read == 15
+    assert result.video_stats.windows_processed == 3
+    assert result.video_stats.vlm_calls == 3
+    assert len(result.video_windows) == 3
+    assert vlm.sequence_calls == 3

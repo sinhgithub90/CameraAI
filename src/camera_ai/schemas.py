@@ -84,6 +84,9 @@ class VideoAnalysisStats(BaseModel):
     motion_frames: int = 0
     detector_frames: int = 0
     keyframes: int = 0
+    windows_processed: int = 0
+    windows_with_motion: int = 0
+    vlm_calls: int = 0
 
 
 class SceneAnalysis(BaseModel):
@@ -120,6 +123,18 @@ class SecurityDecision(BaseModel):
     recommended_action: str = ""
 
 
+class VideoWindowResult(BaseModel):
+    """One five-second video window analyzed as a temporal event."""
+
+    window_index: int
+    start_seconds: float
+    end_seconds: float
+    detections: list[Detection] = Field(default_factory=list)
+    vlm: VLMResult
+    security: SecurityDecision
+    keyframes: int = 0
+
+
 class PipelineResult(BaseModel):
     """Aggregated output of one analyze call."""
 
@@ -134,3 +149,4 @@ class PipelineResult(BaseModel):
         description="Base64 JPEG of the analysed frame with bounding boxes drawn.",
     )
     video_stats: VideoAnalysisStats | None = None
+    video_windows: list[VideoWindowResult] = Field(default_factory=list)

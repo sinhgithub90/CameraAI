@@ -40,6 +40,12 @@ objects, the keyframes are still sent to the VLM so smoke, fire, obstruction,
 spills, or fallen objects are not filtered out by object detection.
 `PipelineResult.video_stats` exposes frame and keyframe counters.
 
+The complete video is processed; it is not truncated to a fixed frame count.
+Frames are grouped into five-second windows (`window_seconds=5.0`). Each
+active window produces one VLM analysis and appears in `PipelineResult.video_windows`.
+For example, a one-minute video can produce up to 12 window analyses while
+static windows are skipped.
+
 The defaults can be overridden when constructing `SecurityAIPipeline` with
 `motion_fps`, `yolo_fps`, and `max_keyframes`. Stage boundaries remain
 framework-agnostic so the synchronous MVP can later move to worker queues.
