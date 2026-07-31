@@ -5,7 +5,6 @@ import cv2
 
 from camera_ai.schemas import MotionResult, VideoFrameObservation
 from camera_ai.detectors.motion import MotionDetector
-from camera_ai.schemas import Detection
 from camera_ai.video_selection import select_keyframes
 from camera_ai.vlm.mock import MockAnalyzer
 from camera_ai import SecurityAIPipeline

@@ -50,8 +50,13 @@ def select_keyframes(
     if motion_items:
         peak_motion = max(motion_items, key=lambda item: item.motion.score)
         add(peak_motion)
-        first_motion_position = observations.index(motion_items[0])
-        last_motion_position = observations.index(motion_items[-1])
+        motion_positions = [
+            position
+            for position, item in enumerate(observations)
+            if item.motion.motion
+        ]
+        first_motion_position = motion_positions[0]
+        last_motion_position = motion_positions[-1]
         if first_motion_position > 0:
             add(observations[first_motion_position - 1])
         if last_motion_position + 1 < len(observations):

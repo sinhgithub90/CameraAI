@@ -30,7 +30,6 @@ from .schemas import (
     PipelineResult,
     SceneAnalysis,
     SecurityDecision,
-    MotionResult,
     VideoAnalysisStats,
     VideoFrameObservation,
     VLMResult,

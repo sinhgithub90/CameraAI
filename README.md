@@ -1,5 +1,23 @@
 # CameraAI
 
+## Video motion-first pipeline
+
+Video analysis uses a lightweight motion stage before the expensive detectors:
+
+```text
+Video frames -> Motion (default 5 FPS) -> YOLO/Fire (default 2 FPS)
+             -> candidate/keyframe selection (max 8) -> one VLM call
+```
+
+Static video skips YOLO and VLM. If motion is detected but YOLO finds no
+objects, the keyframes are still sent to the VLM so smoke, fire, obstruction,
+spills, or fallen objects are not filtered out by object detection.
+`PipelineResult.video_stats` exposes frame and keyframe counters.
+
+The defaults can be overridden when constructing `SecurityAIPipeline` with
+`motion_fps`, `yolo_fps`, and `max_keyframes`. Stage boundaries remain
+framework-agnostic so the synchronous MVP can later move to worker queues.
+
 > Camera-AI sub-module (YOLO11 + Qwen-VL): `src/camera_ai/` + `apps/api/`. Chi tiết bên dưới.
 
 ---
