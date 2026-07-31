@@ -136,9 +136,14 @@ Ví dụ log:
 
 ```text
 Read: 150 frames | windows: 1 | Qwen calls: 1 | total: ...ms
+overhead | open ...ms, grab ...ms, retrieve ...ms, resize ...ms, window ...ms, untracked ...ms
 window 0 [0-5s] | Qwen frames: 24, 120 | labels: car, person |
 motion ...ms, detector ...ms, Qwen ...ms
 ```
+
+Các trường overhead tách phần thời gian ngoài Motion, YOLO và Qwen. `window`
+bao gồm chọn keyframe và dựng kết quả cửa sổ; `untracked` là phần dư để tổng
+các timer luôn khớp với `total_ms`.
 
 ## 8. Chạy thử
 

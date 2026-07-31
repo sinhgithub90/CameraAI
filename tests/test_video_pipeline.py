@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import cv2
 
@@ -239,6 +241,44 @@ def test_video_integration_motion_calls_vlm_once_with_bounded_keyframes(tmp_path
     assert vlm.sequence_lengths[0] == 2
     assert result.vlm.skipped is False
     assert result.video_stats is not None
+
+
+def test_video_stats_break_down_non_stage_overhead(tmp_path, caplog):
+    calm = np.zeros((64, 64, 3), dtype=np.uint8)
+    changed = calm.copy()
+    changed[15:45, 20:50] = 255
+    path = tmp_path / "profiled-motion.mp4"
+    write_test_video(path, [calm, calm, changed, changed, calm], fps=1.0)
+
+    with caplog.at_level(logging.INFO, logger="camera_ai.pipeline"):
+        result = make_video_pipeline(
+            RecordingDetector(),
+            RecordingVLM(),
+        ).analyze_event(
+            EventObject(image=str(path), media_type=MediaType.VIDEO)
+        )
+
+    stats = result.video_stats
+    assert stats is not None
+    detailed_ms = (
+        stats.video_open_ms
+        + stats.frame_grab_ms
+        + stats.frame_retrieve_ms
+        + stats.frame_resize_ms
+        + stats.motion_ms
+        + stats.detector_ms
+        + stats.qwen_ms
+        + stats.window_overhead_ms
+        + stats.untracked_ms
+    )
+    assert abs(stats.total_ms - detailed_ms) < 0.1
+    assert stats.video_open_ms >= 0
+    assert stats.frame_grab_ms >= 0
+    assert stats.frame_retrieve_ms >= 0
+    assert stats.frame_resize_ms >= 0
+    assert stats.window_overhead_ms >= 0
+    assert stats.untracked_ms >= 0
+    assert "[video-overhead]" in caplog.text
 
 
 def test_video_integration_processes_all_frames_in_five_second_windows(tmp_path):

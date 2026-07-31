@@ -109,15 +109,24 @@ class SecurityAIPipeline:
         total_motion_ms = 0.0
         total_detector_ms = 0.0
         total_qwen_ms = 0.0
+        total_video_open_ms = 0.0
+        total_frame_grab_ms = 0.0
+        total_frame_retrieve_ms = 0.0
+        total_frame_resize_ms = 0.0
+        total_window_overhead_ms = 0.0
         video_started = time.perf_counter()
         last_frame: np.ndarray | None = None
         try:
+            video_open_started = time.perf_counter()
             cap = cv2.VideoCapture(source)
             if not cap.isOpened():
                 raise ValueError("cannot open video input")
             source_fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
             motion_interval = max(1, round(source_fps / self.motion_fps))
             detector_interval = max(1, round(source_fps / self.yolo_fps))
+            total_video_open_ms += (
+                time.perf_counter() - video_open_started
+            ) * 1000
             self.motion_detector.reset()
             current_window: list[VideoFrameObservation] = []
             current_window_index: int | None = None
@@ -129,12 +138,18 @@ class SecurityAIPipeline:
             def flush_window(items: list[VideoFrameObservation]) -> None:
                 nonlocal motion_frames, detector_frames, current_motion_ms
                 nonlocal current_detector_ms, total_qwen_ms
+                nonlocal total_window_overhead_ms
+                flush_started = time.perf_counter()
+                flush_qwen_ms = 0.0
                 if not items:
                     return
                 motion_frames += sum(1 for item in items if item.motion.motion)
                 if not any(item.motion.motion for item in items):
                     current_motion_ms = 0.0
                     current_detector_ms = 0.0
+                    total_window_overhead_ms += (
+                        time.perf_counter() - flush_started
+                    ) * 1000
                     return
                 window_index = int(items[0].timestamp_seconds // self.window_seconds)
                 keyframes = select_keyframes(items, max_keyframes=self.max_keyframes)
@@ -143,6 +158,7 @@ class SecurityAIPipeline:
                 qwen_started = time.perf_counter()
                 analysis = self.vlm.analyze_sequence(frames, detections)
                 qwen_ms = (time.perf_counter() - qwen_started) * 1000
+                flush_qwen_ms = qwen_ms
                 total_qwen_ms += qwen_ms
                 representative = max(
                     keyframes,
@@ -199,6 +215,10 @@ class SecurityAIPipeline:
                 )
                 current_motion_ms = 0.0
                 current_detector_ms = 0.0
+                total_window_overhead_ms += max(
+                    0.0,
+                    (time.perf_counter() - flush_started) * 1000 - flush_qwen_ms,
+                )
 
             while True:
                 if (
@@ -206,15 +226,28 @@ class SecurityAIPipeline:
                     and idx >= source_fps * self.window_seconds * self.max_video_windows
                 ):
                     break
-                if not cap.grab():
+                grab_started = time.perf_counter()
+                grabbed = cap.grab()
+                total_frame_grab_ms += (
+                    time.perf_counter() - grab_started
+                ) * 1000
+                if not grabbed:
                     break
                 frames_read += 1
                 if idx % motion_interval == 0:
+                    retrieve_started = time.perf_counter()
                     ok, frame = cap.retrieve()
+                    total_frame_retrieve_ms += (
+                        time.perf_counter() - retrieve_started
+                    ) * 1000
                     if not ok:
                         break
                     last_frame = frame
+                    resize_started = time.perf_counter()
                     frame = self._resize(frame, VIDEO_MAX_SIDE)
+                    total_frame_resize_ms += (
+                        time.perf_counter() - resize_started
+                    ) * 1000
                     window_index = int((idx / source_fps) // self.window_seconds)
                     if current_window_index is None:
                         current_window_index = window_index
@@ -258,6 +291,18 @@ class SecurityAIPipeline:
 
         if not frames_read or last_frame is None:
             raise ValueError("no readable frames in video")
+        total_ms = (time.perf_counter() - video_started) * 1000
+        tracked_ms = (
+            total_motion_ms
+            + total_detector_ms
+            + total_qwen_ms
+            + total_video_open_ms
+            + total_frame_grab_ms
+            + total_frame_retrieve_ms
+            + total_frame_resize_ms
+            + total_window_overhead_ms
+        )
+        untracked_ms = max(0.0, total_ms - tracked_ms)
         stats = VideoAnalysisStats(
             frames_read=frames_read,
             motion_frames=motion_frames,
@@ -268,10 +313,26 @@ class SecurityAIPipeline:
             ),
             windows_with_motion=len(windows),
             vlm_calls=len(windows),
-            total_ms=(time.perf_counter() - video_started) * 1000,
+            total_ms=total_ms,
             motion_ms=total_motion_ms,
             detector_ms=total_detector_ms,
             qwen_ms=total_qwen_ms,
+            video_open_ms=total_video_open_ms,
+            frame_grab_ms=total_frame_grab_ms,
+            frame_retrieve_ms=total_frame_retrieve_ms,
+            frame_resize_ms=total_frame_resize_ms,
+            window_overhead_ms=total_window_overhead_ms,
+            untracked_ms=untracked_ms,
+        )
+        logger.info(
+            "[video-overhead] open_ms=%.1f grab_ms=%.1f retrieve_ms=%.1f "
+            "resize_ms=%.1f window_ms=%.1f untracked_ms=%.1f",
+            stats.video_open_ms,
+            stats.frame_grab_ms,
+            stats.frame_retrieve_ms,
+            stats.frame_resize_ms,
+            stats.window_overhead_ms,
+            stats.untracked_ms,
         )
         all_detections = [d for window in windows for d in window.detections]
         if not windows:
