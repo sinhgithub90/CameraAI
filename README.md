@@ -18,6 +18,13 @@ model is already available in the local Ollama installation; verify it with:
 ollama list
 ```
 
+YOLO26 requires Ultralytics `8.4.0` or newer. If an existing environment
+still reports an older version, upgrade it with:
+
+```powershell
+python -m pip install --upgrade "ultralytics>=8.4.0"
+```
+
 To run the upload API:
 
 ```powershell
