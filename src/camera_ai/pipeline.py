@@ -19,6 +19,7 @@ import numpy as np
 
 from .detectors.base import Detector
 from .detectors.fire import FireDetector
+from .detectors.motion import MotionDetector
 from .detectors.yolo import YOLODetector
 from .gate import VLMGate
 from .schemas import (
@@ -29,8 +30,12 @@ from .schemas import (
     PipelineResult,
     SceneAnalysis,
     SecurityDecision,
+    MotionResult,
+    VideoAnalysisStats,
+    VideoFrameObservation,
     VLMResult,
 )
+from .video_selection import select_keyframes
 from .vlm.base import VLMAnalyzer
 from .vlm.ollama_qwen import OllamaQwenAnalyzer
 
@@ -38,7 +43,6 @@ logger = logging.getLogger(__name__)
 
 IMAGE_MAX_SIDE = 1280
 VIDEO_MAX_SIDE = 1280
-VIDEO_SAMPLE_INTERVAL = 30  # analyse every Nth frame
 VIDEO_MAX_FRAMES = 60       # cap for long clips
 
 
@@ -49,11 +53,19 @@ class SecurityAIPipeline:
         fire_detector: Detector | None = None,
         vlm: VLMAnalyzer | None = None,
         gate: VLMGate | None = None,
+        motion_detector: MotionDetector | None = None,
+        motion_fps: float = 5.0,
+        yolo_fps: float = 2.0,
+        max_keyframes: int = 8,
     ) -> None:
         self.detector = detector or YOLODetector()
         self.fire_detector = fire_detector or FireDetector()
         self.vlm = vlm or OllamaQwenAnalyzer()
         self.gate = gate or VLMGate()
+        self.motion_detector = motion_detector or MotionDetector()
+        self.motion_fps = motion_fps
+        self.yolo_fps = yolo_fps
+        self.max_keyframes = max_keyframes
 
     # -- public API -------------------------------------------------------
 
@@ -93,39 +105,88 @@ class SecurityAIPipeline:
             cap = cv2.VideoCapture(source)
             if not cap.isOpened():
                 raise ValueError("cannot open video input")
-            sampled: list[tuple[np.ndarray, list[Detection], list[Detection]]] = []
+            source_fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+            motion_interval = max(1, round(source_fps / self.motion_fps))
+            detector_interval = max(1, round(source_fps / self.yolo_fps))
+            self.motion_detector.reset()
+            observations: list[VideoFrameObservation] = []
+            last_detector_index: int | None = None
+            frames_read = 0
+            motion_frames = 0
+            detector_frames = 0
             idx = 0
-            while len(sampled) < VIDEO_MAX_FRAMES:
+            while frames_read < VIDEO_MAX_FRAMES:
                 ok, frame = cap.read()
                 if not ok:
                     break
-                if idx % VIDEO_SAMPLE_INTERVAL == 0:
+                frames_read += 1
+                if idx % motion_interval == 0:
                     frame = self._resize(frame, VIDEO_MAX_SIDE)
-                    dets = self.detector.detect(frame)
-                    fires = self.fire_detector.detect(frame)
-                    sampled.append((frame, dets, fires))
+                    motion = self.motion_detector.compare(frame)
+                    observation = VideoFrameObservation(
+                        frame_index=idx,
+                        timestamp_seconds=idx / source_fps,
+                        motion=motion,
+                        frame=frame,
+                    )
+                    if motion.motion:
+                        motion_frames += 1
+                        if (
+                            last_detector_index is None
+                            or idx - last_detector_index >= detector_interval
+                        ):
+                            try:
+                                detections = self.detector.detect(frame)
+                                detections += self.fire_detector.detect(frame)
+                                observation.detections = detections
+                                detector_frames += 1
+                                last_detector_index = idx
+                            except Exception:  # noqa: BLE001 - preserve VLM path
+                                logger.exception("video detector failed at frame %s", idx)
+                    observations.append(observation)
                 idx += 1
             cap.release()
         finally:
             if tmp_path:
                 os.unlink(tmp_path)
 
-        if not sampled:
+        stats = VideoAnalysisStats(
+            frames_read=frames_read,
+            motion_frames=motion_frames,
+            detector_frames=detector_frames,
+        )
+        if not observations:
             raise ValueError("no readable frames in video")
 
-        rep_frame, rep_dets, rep_fires = max(
-            sampled, key=lambda item: len(item[1]) + len(item[2])
-        )
-        all_detections = [d for _, dets, _ in sampled for d in dets]
-        all_fire = [d for _, _, fires in sampled for d in fires]
-        if not self.gate.decide(all_detections, all_fire):
+        all_detections = [d for item in observations for d in item.detections]
+        if not any(item.motion.motion for item in observations):
             return self._build_skipped(
-                event, MediaType.VIDEO, all_detections, all_fire, rep_frame
+                event,
+                MediaType.VIDEO,
+                all_detections,
+                [],
+                observations[-1].frame,
+                stats,
             )
-        combined = all_detections + all_fire
-        analysis = self.vlm.analyze(rep_frame, combined)
-        annotated = self._annotate(rep_frame, rep_dets + rep_fires)
-        return self._build_result(event, MediaType.VIDEO, combined, analysis, annotated)
+
+        keyframes = select_keyframes(observations, max_keyframes=self.max_keyframes)
+        frames = [item.frame for item in keyframes if item.frame is not None]
+        stats.keyframes = len(frames)
+        analysis = self.vlm.analyze_sequence(frames, all_detections)
+        representative = max(
+            keyframes,
+            key=lambda item: item.motion.score
+            + max((d.confidence for d in item.detections), default=0.0),
+        )
+        annotated = self._annotate(representative.frame, representative.detections)
+        return self._build_result(
+            event,
+            MediaType.VIDEO,
+            all_detections,
+            analysis,
+            annotated,
+            stats,
+        )
 
     # -- helpers ----------------------------------------------------------
 
@@ -190,6 +251,7 @@ class SecurityAIPipeline:
         detections: list[Detection],
         fire_detections: list[Detection],
         frame: np.ndarray,
+        video_stats: VideoAnalysisStats | None = None,
     ) -> PipelineResult:
         """Result when the gate skipped the VLM — no expensive analysis ran."""
         all_detections = detections + fire_detections
@@ -203,6 +265,7 @@ class SecurityAIPipeline:
             ),
             security=SecurityDecision(alert_level=AlertLevel.LOW),
             annotated_image=self._annotate(frame, all_detections),
+            video_stats=video_stats,
         )
 
     @staticmethod
@@ -212,6 +275,7 @@ class SecurityAIPipeline:
         detections: list[Detection],
         analysis: SceneAnalysis,
         annotated: str | None = None,
+        video_stats: VideoAnalysisStats | None = None,
     ) -> PipelineResult:
         return PipelineResult(
             media_type=media_type,
@@ -228,4 +292,5 @@ class SecurityAIPipeline:
                 recommended_action=analysis.recommended_action,
             ),
             annotated_image=annotated,
+            video_stats=video_stats,
         )
