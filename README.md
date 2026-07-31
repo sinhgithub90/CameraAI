@@ -12,8 +12,9 @@ OLLAMA_NUM_CTX=8192
 ```
 
 `yolo26n.pt` is downloaded automatically by Ultralytics on first detection.
-The FireDetector remains a separate fire/smoke trigger. The configured Qwen
-model is already available in the local Ollama installation; verify it with:
+FireDetector uses a lightweight colour heuristic by default, so no separate
+fire YOLO weights are downloaded. The configured Qwen model is already
+available in the local Ollama installation; verify it with:
 
 ```powershell
 ollama list
