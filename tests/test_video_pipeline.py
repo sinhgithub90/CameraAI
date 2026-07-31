@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import cv2
 
@@ -198,6 +200,32 @@ def test_video_retrieves_only_motion_sample_frames(monkeypatch):
     assert capture.retrieve_calls == 2
 
 
+def test_video_resize_uses_fast_linear_interpolation(monkeypatch):
+    frame = np.zeros((720, 1600, 3), dtype=np.uint8)
+    capture = GrabOnlyCapture([frame, frame], fps=1.0)
+    interpolation_modes: list[int] = []
+    original_resize = cv2.resize
+
+    def recording_resize(source, size, *, interpolation):
+        interpolation_modes.append(interpolation)
+        return original_resize(source, size, interpolation=interpolation)
+
+    monkeypatch.setattr(
+        "camera_ai.pipeline.cv2.VideoCapture",
+        lambda source: capture,
+    )
+    monkeypatch.setattr("camera_ai.pipeline.cv2.resize", recording_resize)
+
+    SecurityAIPipeline(
+        detector=RecordingDetector(),
+        vlm=RecordingVLM(),
+        motion_fps=1.0,
+        yolo_fps=1.0,
+    ).analyze_event(EventObject(image="fake.mp4", media_type=MediaType.VIDEO))
+
+    assert interpolation_modes == [cv2.INTER_LINEAR, cv2.INTER_LINEAR]
+
+
 def make_video_pipeline(detector, vlm):
     return SecurityAIPipeline(
         detector=detector,
@@ -239,6 +267,44 @@ def test_video_integration_motion_calls_vlm_once_with_bounded_keyframes(tmp_path
     assert vlm.sequence_lengths[0] == 2
     assert result.vlm.skipped is False
     assert result.video_stats is not None
+
+
+def test_video_stats_break_down_non_stage_overhead(tmp_path, caplog):
+    calm = np.zeros((64, 64, 3), dtype=np.uint8)
+    changed = calm.copy()
+    changed[15:45, 20:50] = 255
+    path = tmp_path / "profiled-motion.mp4"
+    write_test_video(path, [calm, calm, changed, changed, calm], fps=1.0)
+
+    with caplog.at_level(logging.INFO, logger="camera_ai.pipeline"):
+        result = make_video_pipeline(
+            RecordingDetector(),
+            RecordingVLM(),
+        ).analyze_event(
+            EventObject(image=str(path), media_type=MediaType.VIDEO)
+        )
+
+    stats = result.video_stats
+    assert stats is not None
+    detailed_ms = (
+        stats.video_open_ms
+        + stats.frame_grab_ms
+        + stats.frame_retrieve_ms
+        + stats.frame_resize_ms
+        + stats.motion_ms
+        + stats.detector_ms
+        + stats.qwen_ms
+        + stats.window_overhead_ms
+        + stats.untracked_ms
+    )
+    assert abs(stats.total_ms - detailed_ms) < 0.1
+    assert stats.video_open_ms >= 0
+    assert stats.frame_grab_ms >= 0
+    assert stats.frame_retrieve_ms >= 0
+    assert stats.frame_resize_ms >= 0
+    assert stats.window_overhead_ms >= 0
+    assert stats.untracked_ms >= 0
+    assert "[video-overhead]" in caplog.text
 
 
 def test_video_integration_processes_all_frames_in_five_second_windows(tmp_path):

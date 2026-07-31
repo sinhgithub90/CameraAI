@@ -27,26 +27,33 @@ logger = logging.getLogger(__name__)
 DEFAULT_MODEL = "qwen3-vl:4b-instruct-q4_K_M"
 DEFAULT_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 DEFAULT_NUM_CTX = 4096
-DEFAULT_NUM_PREDICT = 160
+DEFAULT_NUM_PREDICT = 96
 DEFAULT_KEEP_ALIVE = "10m"
+DEFAULT_FRAME_MODE = "composite"
+VALID_FRAME_MODES = {"composite", "separate"}
+PANEL_WIDTH = 960
+PANEL_HEIGHT = 540
 
 _PROMPT = (
-    "Bạn là nhà phân tích camera an ninh. Hãy nhìn vào khung hình camera được đính kèm.\n"
-    "Kết quả nhận diện đối tượng từ tầng detector:\n{detections}\n"
-    "Trả lời bằng STRICT JSON, KHÔNG dùng markdown fences, đúng schema sau:\n"
-    '{{"summary": "...", "observations": [...], '
-    '"alert_level": "low"|"medium"|"high", "risks": [...], '
-    '"recommended_action": "..."}}\n'
-    "Quy tắc:\n"
-    "- Tất cả giá trị text (summary, observations, risks, recommended_action) PHẢI viết bằng "
-    "TIẾNG VIỆT, có dấu đầy đủ. Chỉ key JSON giữ nguyên tiếng Anh.\n"
-    "- alert_level: low nếu cảnh bình thường, medium nếu đáng chú ý, high nếu nguy hiểm "
-    "(cháy nổ, gây gổ, đánh lộn, xâm nhập, tai nạn, nghi vấn an ninh...).\n"
-    "- observations: danh sách chuỗi ngắn, mỗi chuỗi mô tả một đối tượng/hiện tượng đáng chú ý.\n"
-    "- risks: các rủi ro an ninh cụ thể (vd: \"phát_hiện_người\", \"nghi_chay_no\", "
-    "\"xam_nhap\", \"ganh_go\").\n"
-    "- recommended_action: hành động đề xuất ngắn gọn cho người trực."
+    "Phân tích ảnh camera và trả về cảnh báo an ninh ngắn gọn bằng tiếng Việt. "
+    "Mức cảnh báo: low nếu bình thường, medium nếu đáng chú ý, high nếu nguy hiểm.\n"
+    "Dữ liệu YOLO:\n{detections}"
 )
+
+_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "alert_level": {
+            "type": "string",
+            "enum": ["low", "medium", "high"],
+        },
+        "summary": {"type": "string"},
+        "risks": {"type": "array", "items": {"type": "string"}},
+        "recommended_action": {"type": "string"},
+    },
+    "required": ["alert_level", "summary", "risks", "recommended_action"],
+    "additionalProperties": False,
+}
 
 
 class OllamaQwenAnalyzer(VLMAnalyzer):
@@ -58,6 +65,7 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
         num_ctx: int | None = None,
         num_predict: int | None = None,
         keep_alive: str | None = None,
+        frame_mode: str | None = None,
     ) -> None:
         self.model = model or os.getenv("OLLAMA_MODEL") or DEFAULT_MODEL
         self.base_url = (
@@ -71,6 +79,13 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
         self.keep_alive = (
             keep_alive or os.getenv("OLLAMA_KEEP_ALIVE") or DEFAULT_KEEP_ALIVE
         )
+        self.frame_mode = (
+            frame_mode or os.getenv("OLLAMA_FRAME_MODE") or DEFAULT_FRAME_MODE
+        ).strip().lower()
+        if self.frame_mode not in VALID_FRAME_MODES:
+            raise ValueError(
+                "OLLAMA_FRAME_MODE must be 'composite' or 'separate'"
+            )
 
     def analyze(self, frame: np.ndarray, detections: list[Detection]) -> SceneAnalysis:
         return self._analyze_frames([frame], detections)
@@ -91,11 +106,28 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
     ) -> SceneAnalysis:
         det_lines = self._format_detections(detections)
         prompt = _PROMPT.format(detections=det_lines)
-        if len(frames) > 1:
+        prepared_images = self._prepare_images(frames)
+        is_composite = self.frame_mode == "composite" and len(frames) == 2
+        if is_composite:
             prompt += (
-                "\nĐây là chuỗi khung hình theo thứ tự thời gian. Hãy phân tích diễn biến "
-                "giữa các khung hình, không chỉ một ảnh riêng lẻ."
+                "\nẢnh ghép theo thời gian: nửa trên là TRƯỚC, "
+                "nửa dưới là SAU. Hãy xét thay đổi giữa hai nửa."
             )
+        elif len(frames) > 1:
+            prompt += "\nCác ảnh theo thứ tự thời gian; hãy xét thay đổi giữa chúng."
+
+        composite_shape = "none"
+        if is_composite:
+            height, width = prepared_images[0].shape[:2]
+            composite_shape = f"{width}x{height}"
+        logger.info(
+            "[qwen-input] frame_mode=%s source_frames=%s sent_images=%s "
+            "composite_shape=%s",
+            self.frame_mode,
+            len(frames),
+            len(prepared_images),
+            composite_shape,
+        )
 
         payload = {
             "model": self.model,
@@ -103,7 +135,10 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
                 {
                     "role": "user",
                     "content": prompt,
-                    "images": [self._frame_to_jpeg_b64(frame) for frame in frames],
+                    "images": [
+                        self._frame_to_jpeg_b64(frame)
+                        for frame in prepared_images
+                    ],
                 }
             ],
             "options": {
@@ -111,6 +146,7 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
                 "num_predict": self.num_predict,
                 "temperature": 0,
             },
+            "format": _OUTPUT_SCHEMA,
             "keep_alive": self.keep_alive,
             "stream": False,
         }
@@ -149,20 +185,68 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
         for detection in detections:
             grouped.setdefault(detection.label, []).append(detection)
 
-        lines: list[str] = []
-        for label_detections in grouped.values():
-            for detection in sorted(
-                label_detections,
-                key=lambda item: item.confidence,
-                reverse=True,
-            )[:3]:
-                lines.append(
-                    f"- {detection.label} (conf={detection.confidence:.2f}, "
-                    f"bbox={[round(value) for value in detection.bbox]})"
-                )
-                if len(lines) == 12:
-                    return "\n".join(lines)
-        return "\n".join(lines) or "- none"
+        return "\n".join(
+            f"- {label}: count={len(items)}, "
+            f"max_conf={max(item.confidence for item in items):.2f}"
+            for label, items in grouped.items()
+        ) or "- none"
+
+    def _prepare_images(
+        self,
+        frames: Sequence[np.ndarray],
+    ) -> list[np.ndarray]:
+        if self.frame_mode == "composite" and len(frames) == 2:
+            return [self._compose_two_frames(frames)]
+        return list(frames)
+
+    @classmethod
+    def _compose_two_frames(
+        cls,
+        frames: Sequence[np.ndarray],
+    ) -> np.ndarray:
+        if len(frames) != 2:
+            raise ValueError("exactly two frames are required for a composite")
+        return np.vstack(
+            (
+                cls._fit_panel(frames[0], "TRUOC"),
+                cls._fit_panel(frames[1], "SAU"),
+            )
+        )
+
+    @staticmethod
+    def _fit_panel(frame: np.ndarray, label: str) -> np.ndarray:
+        height, width = frame.shape[:2]
+        scale = min(PANEL_WIDTH / width, PANEL_HEIGHT / height, 1.0)
+        resized_width = max(1, round(width * scale))
+        resized_height = max(1, round(height * scale))
+        if (resized_width, resized_height) == (width, height):
+            fitted = frame
+        else:
+            fitted = cv2.resize(
+                frame,
+                (resized_width, resized_height),
+                interpolation=cv2.INTER_LINEAR,
+            )
+
+        panel = np.zeros((PANEL_HEIGHT, PANEL_WIDTH, 3), dtype=np.uint8)
+        offset_x = (PANEL_WIDTH - resized_width) // 2
+        offset_y = (PANEL_HEIGHT - resized_height) // 2
+        panel[
+            offset_y : offset_y + resized_height,
+            offset_x : offset_x + resized_width,
+        ] = fitted
+        cv2.rectangle(panel, (0, 0), (150, 44), (0, 0, 0), -1)
+        cv2.putText(
+            panel,
+            label,
+            (10, 32),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.9,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+        return panel
 
     @staticmethod
     def _log_ollama_timing(response_data: dict) -> None:
@@ -194,9 +278,16 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
             # Model refused / returned prose instead of JSON — degrade gracefully.
             logger.warning("VLM did not return JSON; treating text as summary: %r", content[:200])
             return SceneAnalysis(summary=content.strip())
+        summary = str(data.get("summary", ""))
+        raw_observations = data.get("observations")
+        observations = (
+            cls._normalize_strings(raw_observations)
+            if raw_observations is not None
+            else ([summary] if summary else [])
+        )
         return SceneAnalysis(
-            summary=str(data.get("summary", "")),
-            observations=cls._normalize_strings(data.get("observations", [])),
+            summary=summary,
+            observations=observations,
             alert_level=cls._coerce_alert(data.get("alert_level")),
             risks=cls._normalize_strings(data.get("risks", [])),
             recommended_action=str(data.get("recommended_action", "")),

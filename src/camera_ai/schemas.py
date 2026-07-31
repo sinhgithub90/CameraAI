@@ -91,6 +91,12 @@ class VideoAnalysisStats(BaseModel):
     motion_ms: float = 0.0
     detector_ms: float = 0.0
     qwen_ms: float = 0.0
+    video_open_ms: float = 0.0
+    frame_grab_ms: float = 0.0
+    frame_retrieve_ms: float = 0.0
+    frame_resize_ms: float = 0.0
+    window_overhead_ms: float = 0.0
+    untracked_ms: float = 0.0
 
 
 class SceneAnalysis(BaseModel):

@@ -34,7 +34,7 @@ Video
   │     ├─ Frame có điểm Motion/YOLO cao nhất
   │     └─ Frame tốt tiếp theo, cách frame đầu ít nhất 1 giây
   │
-  ├─ Gửi 2 frame và nhãn YOLO vào Qwen-VL
+  ├─ Ghép 2 frame TRƯỚC/SAU và gửi cùng nhãn YOLO vào Qwen-VL
   │
   └─ Trả về cảnh báo, detection, timing và ảnh minh họa
 ```
@@ -67,14 +67,16 @@ cùng một cảnh báo.
 - Tần suất mặc định: 5 FPS.
 - Là tầng rẻ nhất và quyết định cửa sổ có cần xử lý tiếp hay không.
 - Video tĩnh dừng tại đây.
+- Frame video được thu về cạnh tối đa 1280 bằng nội suy tuyến tính để giảm chi
+  phí resize; ảnh tĩnh vẫn dùng nội suy area.
 
 ### YOLO26n
 
 - Model: `yolo26n.pt`.
 - Chỉ chạy khi có Motion, tối đa 2 FPS.
-- Cung cấp nhãn, confidence và bounding box cho Qwen.
-- Các detection lặp trong prompt Qwen được giới hạn tối đa ba mẫu mỗi nhãn và
-  mười hai dòng tổng cộng.
+- Cung cấp cho Qwen một dòng mỗi nhãn gồm số lượng và confidence cao nhất.
+- Bounding box và các detection đầy đủ vẫn có trong output pipeline, nhưng
+  không được lặp trong prompt Qwen.
 
 ### Keyframe selector
 
@@ -86,9 +88,13 @@ cùng một cảnh báo.
 
 - Model hiện tại: `qwen3-vl:4b-instruct-q4_K_M`.
 - Context: 4096.
-- Giới hạn output: 160 token.
+- Mặc định ghép hai keyframe thành một ảnh 960x1080: TRƯỚC ở nửa trên,
+  SAU ở nửa dưới. Ảnh giữ tỷ lệ và được letterbox bằng nền đen.
+- Có thể đặt `OLLAMA_FRAME_MODE=separate` để quay lại gửi hai ảnh riêng.
+- Giới hạn output: 96 token.
 - Giữ model trong Ollama: 10 phút.
-- Trả về summary, observations, alert level, risks và recommended action.
+- Dùng JSON Schema để trả về alert level, summary, risks và recommended action.
+- `observations` của API được suy ra từ summary để giữ tương thích.
 
 ## 5. Luồng xử lý ảnh tĩnh
 
@@ -112,8 +118,9 @@ cùng một cảnh báo.
 | YOLO model | `yolo26n.pt` |
 | Qwen model | `qwen3-vl:4b-instruct-q4_K_M` |
 | Ollama context | 4096 |
-| Ollama output limit | 160 token |
+| Ollama output limit | 96 token |
 | Ollama keep-alive | 10 phút |
+| Chế độ ảnh Qwen | `composite` |
 
 Mặc định upload video chỉ đọc cửa sổ 5 giây đầu tiên
 (`max_video_windows=1`). Đặt `max_video_windows=None` khi khởi tạo pipeline để
@@ -134,17 +141,30 @@ Ví dụ log:
 
 ```text
 Read: 150 frames | windows: 1 | Qwen calls: 1 | total: ...ms
+overhead | open ...ms, grab ...ms, retrieve ...ms, resize ...ms, window ...ms, untracked ...ms
 window 0 [0-5s] | Qwen frames: 24, 120 | labels: car, person |
 motion ...ms, detector ...ms, Qwen ...ms
 ```
+
+Các trường overhead tách phần thời gian ngoài Motion, YOLO và Qwen. `window`
+bao gồm chọn keyframe và dựng kết quả cửa sổ; `untracked` là phần dư để tổng
+các timer luôn khớp với `total_ms`.
 
 ## 8. Chạy thử
 
 ```powershell
 $env:OLLAMA_NUM_CTX="4096"
-$env:OLLAMA_NUM_PREDICT="160"
+$env:OLLAMA_NUM_PREDICT="96"
 $env:OLLAMA_KEEP_ALIVE="10m"
+$env:OLLAMA_FRAME_MODE="composite"
 python -m uvicorn apps.api.main:app --reload
+```
+
+Log `[qwen-input]` cho biết chế độ ảnh, số frame nguồn, số ảnh thật sự gửi
+đến Ollama và kích thước ảnh ghép. Để so sánh hoặc quay lui nhanh:
+
+```powershell
+$env:OLLAMA_FRAME_MODE="separate"
 ```
 
 Sau khi upload video, kiểm tra Ollama:

@@ -9,8 +9,9 @@ YOLO_WEIGHTS=yolo26n.pt
 OLLAMA_MODEL=qwen3-vl:4b-instruct-q4_K_M
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_NUM_CTX=4096
-OLLAMA_NUM_PREDICT=160
+OLLAMA_NUM_PREDICT=96
 OLLAMA_KEEP_ALIVE=10m
+OLLAMA_FRAME_MODE=composite
 ```
 
 `yolo26n.pt` is downloaded automatically by Ultralytics on first detection.
@@ -35,8 +36,9 @@ To run the upload API:
 $env:YOLO_WEIGHTS = "yolo26n.pt"
 $env:OLLAMA_MODEL = "qwen3-vl:4b-instruct-q4_K_M"
 $env:OLLAMA_NUM_CTX = "4096"
-$env:OLLAMA_NUM_PREDICT = "160"
+$env:OLLAMA_NUM_PREDICT = "96"
 $env:OLLAMA_KEEP_ALIVE = "10m"
+$env:OLLAMA_FRAME_MODE = "composite"
 python -m uvicorn apps.api.main:app --reload
 ```
 
@@ -60,9 +62,13 @@ pipeline to process the complete video. Frames are grouped into five-second
 windows (`window_seconds=5.0`), and each active window produces one VLM
 analysis in `PipelineResult.video_windows`.
 
-Each window sends at most two event-aware keyframes to Qwen and reports their indices and
-stage timings in
-`qwen_input` and `timing`; the same information is logged to the terminal.
+Each window selects at most two event-aware keyframes and reports their indices
+and stage timings in `qwen_input` and `timing`; the same information is logged
+to the terminal. By default, two keyframes are fitted into a single 960x1080
+image: `TRUOC` on top and `SAU` below. Qwen receives compact YOLO context
+(label, count and maximum confidence) and is constrained by an Ollama JSON
+schema to return alert level, summary, risks and recommended action. Set
+`OLLAMA_FRAME_MODE=separate` to send the two keyframes as separate images.
 
 The defaults can be overridden when constructing `SecurityAIPipeline` with
 `motion_fps`, `yolo_fps`, and `max_keyframes`. Stage boundaries remain
@@ -115,8 +121,9 @@ VLM là tầng đắt — chỉ chạy khi tầng detect rẻ báo có tín hi�
 | `OLLAMA_MODEL` | `qwen3-vl:4b-instruct-q4_K_M` | Model VLM trên Ollama (bạn bè dùng model Qwen khác thì đổi cái này) |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Endpoint Ollama |
 | `OLLAMA_NUM_CTX` | `4096` | Context phù hợp để Qwen 4B nằm hoàn toàn trên GPU 6 GB |
-| `OLLAMA_NUM_PREDICT` | `160` | Giới hạn độ dài JSON trả về |
+| `OLLAMA_NUM_PREDICT` | `96` | Giới hạn độ dài JSON cảnh báo ngắn trả về |
 | `OLLAMA_KEEP_ALIVE` | `10m` | Giữ model trong Ollama giữa các lần test |
+| `OLLAMA_FRAME_MODE` | `composite` | `composite`: ghép hai keyframe thành một ảnh; `separate`: gửi hai ảnh riêng |
 | `CAMERA_AI_VLM_POLICY` | `gated` | `gated`: chỉ gọi VLM khi có trigger · `always`: gọi mọi input |
 | `CAMERA_AI_VLM` | `ollama` | `mock`: dùng VLM giả, không cần Ollama |
 

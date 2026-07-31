@@ -19,4 +19,5 @@ VMS-Center/recordings.db-*
 # Camera-AI sub-module
 .venv/
 *.onnx
+*.pt
 *.egg-info/

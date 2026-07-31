@@ -235,7 +235,13 @@ function render(data) {
     ).join('\n');
     $('video-debug-text').textContent =
       `Read: ${s.frames_read} frames | windows: ${s.windows_processed} | ` +
-      `Qwen calls: ${s.vlm_calls} | total: ${(s.total_ms || 0).toFixed(1)}ms\n` + windows;
+      `Qwen calls: ${s.vlm_calls} | total: ${(s.total_ms || 0).toFixed(1)}ms\n` +
+      `overhead | open ${(s.video_open_ms || 0).toFixed(1)}ms, ` +
+      `grab ${(s.frame_grab_ms || 0).toFixed(1)}ms, ` +
+      `retrieve ${(s.frame_retrieve_ms || 0).toFixed(1)}ms, ` +
+      `resize ${(s.frame_resize_ms || 0).toFixed(1)}ms, ` +
+      `window ${(s.window_overhead_ms || 0).toFixed(1)}ms, ` +
+      `untracked ${(s.untracked_ms || 0).toFixed(1)}ms\n` + windows;
     debug.hidden = false;
   } else {
     debug.hidden = true;
