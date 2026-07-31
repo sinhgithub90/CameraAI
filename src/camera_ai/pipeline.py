@@ -244,7 +244,11 @@ class SecurityAIPipeline:
                         break
                     last_frame = frame
                     resize_started = time.perf_counter()
-                    frame = self._resize(frame, VIDEO_MAX_SIDE)
+                    frame = self._resize(
+                        frame,
+                        VIDEO_MAX_SIDE,
+                        interpolation=cv2.INTER_LINEAR,
+                    )
                     total_frame_resize_ms += (
                         time.perf_counter() - resize_started
                     ) * 1000
@@ -379,7 +383,11 @@ class SecurityAIPipeline:
         return frame
 
     @staticmethod
-    def _resize(frame: np.ndarray, max_side: int) -> np.ndarray:
+    def _resize(
+        frame: np.ndarray,
+        max_side: int,
+        interpolation: int = cv2.INTER_AREA,
+    ) -> np.ndarray:
         h, w = frame.shape[:2]
         if max(h, w) <= max_side:
             return frame
@@ -387,7 +395,7 @@ class SecurityAIPipeline:
         return cv2.resize(
             frame,
             (int(w * scale), int(h * scale)),
-            interpolation=cv2.INTER_AREA,
+            interpolation=interpolation,
         )
 
     @staticmethod

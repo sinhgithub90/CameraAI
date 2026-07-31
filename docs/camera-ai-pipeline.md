@@ -67,6 +67,8 @@ cùng một cảnh báo.
 - Tần suất mặc định: 5 FPS.
 - Là tầng rẻ nhất và quyết định cửa sổ có cần xử lý tiếp hay không.
 - Video tĩnh dừng tại đây.
+- Frame video được thu về cạnh tối đa 1280 bằng nội suy tuyến tính để giảm chi
+  phí resize; ảnh tĩnh vẫn dùng nội suy area.
 
 ### YOLO26n
 

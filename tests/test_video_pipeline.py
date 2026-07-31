@@ -200,6 +200,32 @@ def test_video_retrieves_only_motion_sample_frames(monkeypatch):
     assert capture.retrieve_calls == 2
 
 
+def test_video_resize_uses_fast_linear_interpolation(monkeypatch):
+    frame = np.zeros((720, 1600, 3), dtype=np.uint8)
+    capture = GrabOnlyCapture([frame, frame], fps=1.0)
+    interpolation_modes: list[int] = []
+    original_resize = cv2.resize
+
+    def recording_resize(source, size, *, interpolation):
+        interpolation_modes.append(interpolation)
+        return original_resize(source, size, interpolation=interpolation)
+
+    monkeypatch.setattr(
+        "camera_ai.pipeline.cv2.VideoCapture",
+        lambda source: capture,
+    )
+    monkeypatch.setattr("camera_ai.pipeline.cv2.resize", recording_resize)
+
+    SecurityAIPipeline(
+        detector=RecordingDetector(),
+        vlm=RecordingVLM(),
+        motion_fps=1.0,
+        yolo_fps=1.0,
+    ).analyze_event(EventObject(image="fake.mp4", media_type=MediaType.VIDEO))
+
+    assert interpolation_modes == [cv2.INTER_LINEAR, cv2.INTER_LINEAR]
+
+
 def make_video_pipeline(detector, vlm):
     return SecurityAIPipeline(
         detector=detector,
