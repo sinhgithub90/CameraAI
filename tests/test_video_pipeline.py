@@ -131,10 +131,9 @@ def write_test_video(path, frames: list[np.ndarray], fps: float = 5.0) -> None:
     writer.release()
 
 
-def make_video_pipeline(detector, fire_detector, vlm):
+def make_video_pipeline(detector, vlm):
     return SecurityAIPipeline(
         detector=detector,
-        fire_detector=fire_detector,
         vlm=vlm,
         motion_fps=5.0,
         yolo_fps=2.0,
@@ -147,13 +146,11 @@ def test_video_integration_static_skips_expensive_stages(tmp_path):
     path = tmp_path / "static.mp4"
     write_test_video(path, [frame] * 8)
     detector = RecordingDetector()
-    fire_detector = RecordingDetector()
     vlm = RecordingVLM()
-    result = make_video_pipeline(detector, fire_detector, vlm).analyze_event(
+    result = make_video_pipeline(detector, vlm).analyze_event(
         EventObject(image=str(path), media_type=MediaType.VIDEO)
     )
     assert detector.calls == 0
-    assert fire_detector.calls == 0
     assert vlm.sequence_calls == 0
     assert result.vlm.skipped is True
 
@@ -167,13 +164,11 @@ def test_video_integration_motion_calls_vlm_once_with_bounded_keyframes(tmp_path
     detector = RecordingDetector(
         [Detection(label="person", confidence=0.9, bbox=[15, 15, 50, 45])]
     )
-    fire_detector = RecordingDetector()
     vlm = RecordingVLM()
-    result = make_video_pipeline(detector, fire_detector, vlm).analyze_event(
+    result = make_video_pipeline(detector, vlm).analyze_event(
         EventObject(image=str(path), media_type=MediaType.VIDEO)
     )
     assert detector.calls < 8
-    assert fire_detector.calls < 8
     assert vlm.sequence_calls == 1
     assert vlm.sequence_lengths[0] <= 4
     assert result.vlm.skipped is False
@@ -190,11 +185,9 @@ def test_video_integration_processes_all_frames_in_five_second_windows(tmp_path)
     path = tmp_path / "long-motion.mp4"
     write_test_video(path, frames, fps=1.0)
     detector = RecordingDetector()
-    fire_detector = RecordingDetector()
     vlm = RecordingVLM()
     pipeline = SecurityAIPipeline(
         detector=detector,
-        fire_detector=fire_detector,
         vlm=vlm,
         motion_fps=1.0,
         yolo_fps=1.0,
@@ -223,7 +216,6 @@ def test_video_integration_defaults_to_first_five_second_window(tmp_path):
     vlm = RecordingVLM()
     result = SecurityAIPipeline(
         detector=RecordingDetector(),
-        fire_detector=RecordingDetector(),
         vlm=vlm,
         motion_fps=1.0,
         yolo_fps=1.0,

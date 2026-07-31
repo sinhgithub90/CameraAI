@@ -19,7 +19,6 @@ import cv2
 import numpy as np
 
 from .detectors.base import Detector
-from .detectors.fire import FireDetector
 from .detectors.motion import MotionDetector
 from .detectors.yolo import YOLODetector
 from .gate import VLMGate
@@ -52,7 +51,6 @@ class SecurityAIPipeline:
     def __init__(
         self,
         detector: Detector | None = None,
-        fire_detector: Detector | None = None,
         vlm: VLMAnalyzer | None = None,
         gate: VLMGate | None = None,
         motion_detector: MotionDetector | None = None,
@@ -63,7 +61,6 @@ class SecurityAIPipeline:
         max_video_windows: int | None = 1,
     ) -> None:
         self.detector = detector or YOLODetector()
-        self.fire_detector = fire_detector or FireDetector()
         self.vlm = vlm or OllamaQwenAnalyzer()
         self.gate = gate or VLMGate()
         self.motion_detector = motion_detector or MotionDetector()
@@ -86,15 +83,11 @@ class SecurityAIPipeline:
         frame = self._load_image(event.image)
         frame = self._resize(frame, IMAGE_MAX_SIDE)
         detections = self.detector.detect(frame)
-        fire_detections = self.fire_detector.detect(frame)
-        if not self.gate.decide(detections, fire_detections):
-            return self._build_skipped(
-                event, MediaType.IMAGE, detections, fire_detections, frame
-            )
-        all_detections = detections + fire_detections
-        analysis = self.vlm.analyze(frame, all_detections)
-        annotated = self._annotate(frame, all_detections)
-        return self._build_result(event, MediaType.IMAGE, all_detections, analysis, annotated)
+        if not self.gate.decide(detections):
+            return self._build_skipped(event, MediaType.IMAGE, detections, frame)
+        analysis = self.vlm.analyze(frame, detections)
+        annotated = self._annotate(frame, detections)
+        return self._build_result(event, MediaType.IMAGE, detections, analysis, annotated)
 
     # -- video ------------------------------------------------------------
 
@@ -245,7 +238,6 @@ class SecurityAIPipeline:
                         try:
                             detector_started = time.perf_counter()
                             detections = self.detector.detect(frame)
-                            detections += self.fire_detector.detect(frame)
                             observation.detections = detections
                             detector_frames += 1
                             detector_ms = (time.perf_counter() - detector_started) * 1000
@@ -282,7 +274,7 @@ class SecurityAIPipeline:
         all_detections = [d for window in windows for d in window.detections]
         if not windows:
             return self._build_skipped(
-                event, MediaType.VIDEO, all_detections, [], last_frame, stats
+                event, MediaType.VIDEO, all_detections, last_frame, stats
             )
 
         alert_rank = {AlertLevel.LOW: 0, AlertLevel.MEDIUM: 1, AlertLevel.HIGH: 2}
@@ -369,22 +361,20 @@ class SecurityAIPipeline:
         event: EventObject,
         media_type: MediaType,
         detections: list[Detection],
-        fire_detections: list[Detection],
         frame: np.ndarray,
         video_stats: VideoAnalysisStats | None = None,
     ) -> PipelineResult:
         """Result when the gate skipped the VLM — no expensive analysis ran."""
-        all_detections = detections + fire_detections
         return PipelineResult(
             media_type=media_type,
             camera_id=event.camera_id,
-            detections=all_detections,
+            detections=detections,
             vlm=VLMResult(
                 summary="Không có tín hiệu đáng chú ý — không kích hoạt phân tích VLM.",
                 skipped=True,
             ),
             security=SecurityDecision(alert_level=AlertLevel.LOW),
-            annotated_image=self._annotate(frame, all_detections),
+            annotated_image=self._annotate(frame, detections),
             video_stats=video_stats,
         )
 

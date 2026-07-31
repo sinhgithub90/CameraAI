@@ -1,7 +1,7 @@
 """Smoke tests for the core pipeline, no external services needed.
 
-Uses dummy detectors + MockAnalyzer so tests run without YOLO weights, fire
-model downloads, or a running Ollama instance.
+Uses dummy detectors + MockAnalyzer so tests run without YOLO weights or a
+running Ollama instance.
 """
 from __future__ import annotations
 
@@ -25,15 +25,23 @@ class EmptyDetector:
         return []
 
 
-class NoFireDetector:
-    def detect(self, frame: np.ndarray) -> list[Detection]:
-        return []
+def test_pipeline_does_not_construct_fire_detector(monkeypatch):
+    class UnexpectedFireDetector:
+        def __init__(self):
+            raise AssertionError("runtime pipeline must not construct FireDetector")
+
+    monkeypatch.setattr(
+        "camera_ai.pipeline.FireDetector",
+        UnexpectedFireDetector,
+        raising=False,
+    )
+
+    SecurityAIPipeline(detector=EmptyDetector(), vlm=MockAnalyzer())
 
 
 def _make_pipeline(detector=EmptyDetector(), gate=None) -> SecurityAIPipeline:
     return SecurityAIPipeline(
         detector=detector,
-        fire_detector=NoFireDetector(),
         vlm=MockAnalyzer(),
         gate=gate,
     )

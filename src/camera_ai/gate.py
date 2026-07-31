@@ -1,10 +1,10 @@
 """VLM gate — decides whether the expensive VLM tier should run.
 
-The whole point of the cheap detector tier (object + fire) is to avoid calling
+The whole point of the cheap object-detector tier is to avoid calling
 the VLM on every input. The gate enforces that:
 
   - "gated" (default): the VLM runs only when a cheap trigger fires — the
-    object detector found anything, or the fire detector found fire/smoke.
+    object detector found anything.
     Otherwise the VLM is skipped and a cheap result is returned.
   - "always": run the VLM for every input (demo mode).
 
@@ -30,12 +30,12 @@ class VLMGate:
             policy = DEFAULT_POLICY
         self.policy = policy
 
-    def decide(self, detections: list[Detection], fire_detections: list[Detection]) -> bool:
+    def decide(self, detections: list[Detection]) -> bool:
         """Return True when the VLM tier should run."""
         if self.policy == "always":
             return True
         # gated: any cheap trigger wakes the VLM.
-        return bool(detections or fire_detections)
+        return bool(detections)
 
     def __repr__(self) -> str:
         return f"VLMGate(policy={self.policy!r})"
