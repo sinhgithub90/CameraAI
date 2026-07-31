@@ -14,8 +14,8 @@ OLLAMA_KEEP_ALIVE=10m
 ```
 
 `yolo26n.pt` is downloaded automatically by Ultralytics on first detection.
-FireDetector uses a lightweight colour heuristic by default, so no separate
-fire YOLO weights are downloaded. The configured Qwen model is already
+The runtime pipeline uses only YOLO26n before Qwen; no fire heuristic or
+separate fire weights are loaded. The configured Qwen model is already
 available in the local Ollama installation; verify it with:
 
 ```powershell
@@ -45,7 +45,7 @@ python -m uvicorn apps.api.main:app --reload
 Video analysis uses a lightweight motion stage before the expensive detectors:
 
 ```text
-Video frames -> Motion (default 5 FPS) -> YOLO/Fire (default 2 FPS)
+Video frames -> Motion (default 5 FPS) -> YOLO26n (default 2 FPS)
              -> candidate/keyframe selection (max 4) -> one VLM call
 ```
 
@@ -68,7 +68,7 @@ The defaults can be overridden when constructing `SecurityAIPipeline` with
 `motion_fps`, `yolo_fps`, and `max_keyframes`. Stage boundaries remain
 framework-agnostic so the synchronous MVP can later move to worker queues.
 
-> Camera-AI sub-module (YOLO11 + Qwen-VL): `src/camera_ai/` + `apps/api/`. Chi tiết bên dưới.
+> Camera-AI sub-module (YOLO26n + Qwen-VL): `src/camera_ai/` + `apps/api/`. Chi tiết bên dưới.
 
 ---
 
@@ -85,8 +85,8 @@ src/camera_ai/
   gate.py                # VLMGate — quyết định có gọi VLM hay không (gated | always)
   detectors/
     base.py              # Detector interface (pluggable)
-    yolo.py              # YOLO11 COCO (ultralytics), lazy-load singleton
-    fire.py              # FireDetector — fire YOLO nhẹ + heuristic fallback
+    yolo.py              # YOLO26n COCO (ultralytics), lazy-load singleton
+    fire.py              # FireDetector standalone (không dùng trong pipeline mặc định)
   vlm/
     base.py              # VLMAnalyzer interface (pluggable)
     ollama_qwen.py       # Qwen-VL qua Ollama /api/chat (model configurable)
@@ -101,11 +101,9 @@ tests/                   # Smoke test core (không cần model/Ollama)
 ## Luồng xử lý
 
 ```
-Input → YOLO11 (COCO) ──┐
-                        ├─→ VLMGate: có trigger nào không?
-       FireDetector ────┘      │
-      (fire YOLO / heuristic)  ├─ Có  → Qwen-VL phân tích → PipelineResult đầy đủ
-                               └─ Không → skip VLM → PipelineResult nhẹ (vlm.skipped=true)
+Input → YOLO26n (COCO) → VLMGate: có detection nào không?
+                              ├─ Có  → Qwen-VL phân tích → PipelineResult đầy đủ
+                              └─ Không → skip VLM → PipelineResult nhẹ (vlm.skipped=true)
 ```
 
 VLM là tầng đắt — chỉ chạy khi tầng detect rẻ báo có tín hiệu (người/xe/lửa/khói). Với luồng camera sau này, thêm motion gate làm trigger 24/7.
@@ -121,7 +119,6 @@ VLM là tầng đắt — chỉ chạy khi tầng detect rẻ báo có tín hi�
 | `OLLAMA_KEEP_ALIVE` | `10m` | Giữ model trong Ollama giữa các lần test |
 | `CAMERA_AI_VLM_POLICY` | `gated` | `gated`: chỉ gọi VLM khi có trigger · `always`: gọi mọi input |
 | `CAMERA_AI_VLM` | `ollama` | `mock`: dùng VLM giả, không cần Ollama |
-| `FIRE_MODEL` | `heuristic` | Path/URL model fire/smoke tùy chọn · `none`/`off`: tắt tầng fire |
 
 ## Cài đặt
 
@@ -166,5 +163,5 @@ python -m pytest tests/ -v
 
 ## Điểm cần model (chạy lần đầu)
 
-- `yolo11n.pt` và model fire được tự tải về khi có request đầu tiên.
-- Ollama phải đang chạy với model vision, VD: `ollama pull qwen3-vl:2b-instruct-q8_0`.
+- `yolo26n.pt` được tự tải về khi có request đầu tiên.
+- Ollama phải đang chạy với model vision: `qwen3-vl:4b-instruct-q4_K_M`.
