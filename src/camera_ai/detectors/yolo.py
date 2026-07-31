@@ -8,6 +8,7 @@ but no images have been analysed yet.
 from __future__ import annotations
 
 import threading
+import os
 
 import numpy as np
 from ultralytics import YOLO
@@ -16,19 +17,19 @@ from ultralytics.utils.downloads import attempt_download_asset
 from ..schemas import Detection
 from .base import Detector
 
-# Default COCO-pretrained weights. The "n" (nano) variant is small and fast,
-# a good fit for the demo tier. Swap for yolo11s / yolo11m for more accuracy.
-DEFAULT_WEIGHTS = "yolo11n.pt"
+# Default COCO-pretrained weights. YOLO26n is the current nano detector;
+# override it with YOLO_WEIGHTS for a local/custom model.
+DEFAULT_WEIGHTS = "yolo26n.pt"
 CONFIDENCE_THRESHOLD = 0.35
 
 
 class YOLODetector(Detector):
     def __init__(
         self,
-        weights: str = DEFAULT_WEIGHTS,
+        weights: str | None = None,
         conf: float = CONFIDENCE_THRESHOLD,
     ) -> None:
-        self.weights = weights
+        self.weights = weights or os.getenv("YOLO_WEIGHTS") or DEFAULT_WEIGHTS
         self.conf = conf
         self._model: YOLO | None = None
         self._lock = threading.Lock()

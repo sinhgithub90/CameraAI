@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # Model + endpoint are overridable via env so a different Qwen (or any Ollama
 # vision model) can be used without touching code.
-DEFAULT_MODEL = os.getenv("OLLAMA_MODEL", "qwen3-vl:2b-instruct-q8_0")
+DEFAULT_MODEL = "qwen3-vl:4b-instruct-q4_K_M"
 DEFAULT_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
 _PROMPT = (
