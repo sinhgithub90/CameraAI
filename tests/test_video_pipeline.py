@@ -6,6 +6,7 @@ from camera_ai.schemas import MotionResult, VideoFrameObservation
 from camera_ai.detectors.motion import MotionDetector
 from camera_ai.schemas import Detection
 from camera_ai.video_selection import select_keyframes
+from camera_ai.vlm.mock import MockAnalyzer
 
 
 def test_motion_result_and_video_observation_contracts():
@@ -81,3 +82,11 @@ def test_keyframe_selector_includes_first_and_last_for_calm_video():
     indices = [item.frame_index for item in selected]
     assert indices[0] == 0
     assert indices[-1] == 4
+
+
+def test_vlm_sequence_analysis_is_called_once():
+    vlm = MockAnalyzer()
+    frame = np.zeros((16, 16, 3), dtype=np.uint8)
+    result = vlm.analyze_sequence([frame, frame.copy()], [])
+    assert vlm.sequence_calls == 1
+    assert result.degraded is True

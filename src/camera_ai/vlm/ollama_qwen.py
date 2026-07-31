@@ -11,6 +11,7 @@ import base64
 import json
 import logging
 import os
+from collections.abc import Sequence
 
 import cv2
 import numpy as np
@@ -59,11 +60,32 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
         self.timeout = timeout
 
     def analyze(self, frame: np.ndarray, detections: list[Detection]) -> SceneAnalysis:
+        return self._analyze_frames([frame], detections)
+
+    def analyze_sequence(
+        self,
+        frames: Sequence[np.ndarray],
+        detections: list[Detection],
+    ) -> SceneAnalysis:
+        if not frames:
+            raise ValueError("at least one frame is required")
+        return self._analyze_frames(frames, detections)
+
+    def _analyze_frames(
+        self,
+        frames: Sequence[np.ndarray],
+        detections: list[Detection],
+    ) -> SceneAnalysis:
         det_lines = "\n".join(
             f"- {d.label} (conf={d.confidence:.2f}, bbox={[round(v) for v in d.bbox]})"
             for d in detections
         ) or "- none"
         prompt = _PROMPT.format(detections=det_lines)
+        if len(frames) > 1:
+            prompt += (
+                "\nĐây là chuỗi khung hình theo thứ tự thời gian. Hãy phân tích diễn biến "
+                "giữa các khung hình, không chỉ một ảnh riêng lẻ."
+            )
 
         payload = {
             "model": self.model,
@@ -71,7 +93,7 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
                 {
                     "role": "user",
                     "content": prompt,
-                    "images": [self._frame_to_jpeg_b64(frame)],
+                    "images": [self._frame_to_jpeg_b64(frame) for frame in frames],
                 }
             ],
             "stream": False,
