@@ -49,6 +49,43 @@ class Detection(BaseModel):
     )
 
 
+class MotionRegion(BaseModel):
+    """A rectangular image region that changed between video frames."""
+
+    x: int
+    y: int
+    w: int
+    h: int
+
+
+class MotionResult(BaseModel):
+    """Cheap frame-to-frame motion signal used before expensive detectors."""
+
+    motion: bool = False
+    changed_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
+    regions: list[MotionRegion] = Field(default_factory=list)
+    score: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class VideoFrameObservation(BaseModel):
+    """One sampled video frame and the analysis gathered for it."""
+
+    frame_index: int = Field(ge=0)
+    timestamp_seconds: float = Field(default=0.0, ge=0.0)
+    motion: MotionResult = Field(default_factory=MotionResult)
+    detections: list[Detection] = Field(default_factory=list)
+    frame: Any = Field(default=None, exclude=True)
+
+
+class VideoAnalysisStats(BaseModel):
+    """Counters that make video sampling behavior observable."""
+
+    frames_read: int = 0
+    motion_frames: int = 0
+    detector_frames: int = 0
+    keyframes: int = 0
+
+
 class SceneAnalysis(BaseModel):
     """Raw scene-level output produced by the VLM tier."""
 
@@ -96,3 +133,4 @@ class PipelineResult(BaseModel):
         default=None,
         description="Base64 JPEG of the analysed frame with bounding boxes drawn.",
     )
+    video_stats: VideoAnalysisStats | None = None
