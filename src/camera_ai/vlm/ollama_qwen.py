@@ -27,26 +27,29 @@ logger = logging.getLogger(__name__)
 DEFAULT_MODEL = "qwen3-vl:4b-instruct-q4_K_M"
 DEFAULT_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 DEFAULT_NUM_CTX = 4096
-DEFAULT_NUM_PREDICT = 160
+DEFAULT_NUM_PREDICT = 96
 DEFAULT_KEEP_ALIVE = "10m"
 
 _PROMPT = (
-    "Bạn là nhà phân tích camera an ninh. Hãy nhìn vào khung hình camera được đính kèm.\n"
-    "Kết quả nhận diện đối tượng từ tầng detector:\n{detections}\n"
-    "Trả lời bằng STRICT JSON, KHÔNG dùng markdown fences, đúng schema sau:\n"
-    '{{"summary": "...", "observations": [...], '
-    '"alert_level": "low"|"medium"|"high", "risks": [...], '
-    '"recommended_action": "..."}}\n'
-    "Quy tắc:\n"
-    "- Tất cả giá trị text (summary, observations, risks, recommended_action) PHẢI viết bằng "
-    "TIẾNG VIỆT, có dấu đầy đủ. Chỉ key JSON giữ nguyên tiếng Anh.\n"
-    "- alert_level: low nếu cảnh bình thường, medium nếu đáng chú ý, high nếu nguy hiểm "
-    "(cháy nổ, gây gổ, đánh lộn, xâm nhập, tai nạn, nghi vấn an ninh...).\n"
-    "- observations: danh sách chuỗi ngắn, mỗi chuỗi mô tả một đối tượng/hiện tượng đáng chú ý.\n"
-    "- risks: các rủi ro an ninh cụ thể (vd: \"phát_hiện_người\", \"nghi_chay_no\", "
-    "\"xam_nhap\", \"ganh_go\").\n"
-    "- recommended_action: hành động đề xuất ngắn gọn cho người trực."
+    "Phân tích ảnh camera và trả về cảnh báo an ninh ngắn gọn bằng tiếng Việt. "
+    "Mức cảnh báo: low nếu bình thường, medium nếu đáng chú ý, high nếu nguy hiểm.\n"
+    "Dữ liệu YOLO:\n{detections}"
 )
+
+_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "alert_level": {
+            "type": "string",
+            "enum": ["low", "medium", "high"],
+        },
+        "summary": {"type": "string"},
+        "risks": {"type": "array", "items": {"type": "string"}},
+        "recommended_action": {"type": "string"},
+    },
+    "required": ["alert_level", "summary", "risks", "recommended_action"],
+    "additionalProperties": False,
+}
 
 
 class OllamaQwenAnalyzer(VLMAnalyzer):
@@ -92,10 +95,7 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
         det_lines = self._format_detections(detections)
         prompt = _PROMPT.format(detections=det_lines)
         if len(frames) > 1:
-            prompt += (
-                "\nĐây là chuỗi khung hình theo thứ tự thời gian. Hãy phân tích diễn biến "
-                "giữa các khung hình, không chỉ một ảnh riêng lẻ."
-            )
+            prompt += "\nCác ảnh theo thứ tự thời gian; hãy xét thay đổi giữa chúng."
 
         payload = {
             "model": self.model,
@@ -111,6 +111,7 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
                 "num_predict": self.num_predict,
                 "temperature": 0,
             },
+            "format": _OUTPUT_SCHEMA,
             "keep_alive": self.keep_alive,
             "stream": False,
         }
@@ -149,20 +150,11 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
         for detection in detections:
             grouped.setdefault(detection.label, []).append(detection)
 
-        lines: list[str] = []
-        for label_detections in grouped.values():
-            for detection in sorted(
-                label_detections,
-                key=lambda item: item.confidence,
-                reverse=True,
-            )[:3]:
-                lines.append(
-                    f"- {detection.label} (conf={detection.confidence:.2f}, "
-                    f"bbox={[round(value) for value in detection.bbox]})"
-                )
-                if len(lines) == 12:
-                    return "\n".join(lines)
-        return "\n".join(lines) or "- none"
+        return "\n".join(
+            f"- {label}: count={len(items)}, "
+            f"max_conf={max(item.confidence for item in items):.2f}"
+            for label, items in grouped.items()
+        ) or "- none"
 
     @staticmethod
     def _log_ollama_timing(response_data: dict) -> None:
@@ -194,9 +186,16 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
             # Model refused / returned prose instead of JSON — degrade gracefully.
             logger.warning("VLM did not return JSON; treating text as summary: %r", content[:200])
             return SceneAnalysis(summary=content.strip())
+        summary = str(data.get("summary", ""))
+        raw_observations = data.get("observations")
+        observations = (
+            cls._normalize_strings(raw_observations)
+            if raw_observations is not None
+            else ([summary] if summary else [])
+        )
         return SceneAnalysis(
-            summary=str(data.get("summary", "")),
-            observations=cls._normalize_strings(data.get("observations", [])),
+            summary=summary,
+            observations=observations,
             alert_level=cls._coerce_alert(data.get("alert_level")),
             risks=cls._normalize_strings(data.get("risks", [])),
             recommended_action=str(data.get("recommended_action", "")),

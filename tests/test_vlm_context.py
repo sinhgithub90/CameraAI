@@ -9,12 +9,21 @@ from camera_ai.vlm.ollama_qwen import OllamaQwenAnalyzer
 
 
 class FakeResponse:
+    def __init__(
+        self,
+        content: str = (
+            '{"alert_level":"low","summary":"Bình thường.","risks":[],'
+            '"recommended_action":"Tiếp tục giám sát."}'
+        ),
+    ):
+        self.content = content
+
     def raise_for_status(self):
         return None
 
     def json(self):
         return {
-            "message": {"content": '{"summary":"ok"}'},
+            "message": {"content": self.content},
             "total_duration": 5_000_000_000,
             "load_duration": 1_000_000_000,
             "prompt_eval_count": 123,
@@ -54,10 +63,34 @@ def test_ollama_uses_gpu_friendly_request_defaults(monkeypatch):
 
     assert captured["json"]["options"] == {
         "num_ctx": 4096,
-        "num_predict": 160,
+        "num_predict": 96,
         "temperature": 0,
     }
     assert captured["json"]["keep_alive"] == "10m"
+
+
+def test_ollama_sends_two_images_with_compact_json_schema(monkeypatch):
+    captured = {}
+
+    def fake_post(url, **kwargs):
+        captured.update(kwargs)
+        return FakeResponse()
+
+    monkeypatch.setattr("camera_ai.vlm.ollama_qwen.requests.post", fake_post)
+    frame = np.zeros((64, 64, 3), dtype=np.uint8)
+
+    OllamaQwenAnalyzer().analyze_sequence([frame, frame], [])
+
+    payload = captured["json"]
+    assert len(payload["messages"][0]["images"]) == 2
+    assert payload["format"]["type"] == "object"
+    assert set(payload["format"]["required"]) == {
+        "alert_level",
+        "summary",
+        "risks",
+        "recommended_action",
+    }
+    assert payload["format"]["additionalProperties"] is False
 
 
 def test_ollama_request_optimization_can_be_overridden(monkeypatch):
@@ -100,37 +133,32 @@ def test_ollama_logs_server_timing_and_token_counts(monkeypatch, caplog):
     assert "output_ms=1500.0" in caplog.text
 
 
-def test_detection_prompt_keeps_top_three_per_label_and_twelve_total():
-    detections = []
-    for label in ("person", "car", "dog", "truck"):
-        for confidence in (0.40, 0.95, 0.70, 0.80):
-            detections.append(
-                Detection(
-                    label=label,
-                    confidence=confidence,
-                    bbox=[10, 20, 30, 40],
-                )
-            )
-    detections.append(
-        Detection(label="bicycle", confidence=0.99, bbox=[1, 2, 3, 4])
-    )
-
-    lines = OllamaQwenAnalyzer._format_detections(detections).splitlines()
-
-    assert len(lines) == 12
-    assert [line.split()[1] for line in lines] == [
-        "person",
-        "person",
-        "person",
-        "car",
-        "car",
-        "car",
-        "dog",
-        "dog",
-        "dog",
-        "truck",
-        "truck",
-        "truck",
+def test_detection_prompt_summarizes_count_and_max_confidence_per_label():
+    detections = [
+        Detection(label="person", confidence=0.55, bbox=[10, 20, 30, 40]),
+        Detection(label="person", confidence=0.91, bbox=[11, 21, 31, 41]),
+        Detection(label="car", confidence=0.87, bbox=[1, 2, 3, 4]),
     ]
-    assert all("conf=0.40" not in line for line in lines)
+
+    text = OllamaQwenAnalyzer._format_detections(detections)
+
+    assert text == (
+        "- person: count=2, max_conf=0.91\n"
+        "- car: count=1, max_conf=0.87"
+    )
+    assert "bbox" not in text
     assert OllamaQwenAnalyzer._format_detections([]) == "- none"
+
+
+def test_compact_response_derives_observations_from_summary(monkeypatch):
+    monkeypatch.setattr(
+        "camera_ai.vlm.ollama_qwen.requests.post",
+        lambda url, **kwargs: FakeResponse(),
+    )
+    frame = np.zeros((64, 64, 3), dtype=np.uint8)
+
+    result = OllamaQwenAnalyzer().analyze(frame, [])
+
+    assert result.summary == "Bình thường."
+    assert result.observations == ["Bình thường."]
+    assert result.recommended_action == "Tiếp tục giám sát."
