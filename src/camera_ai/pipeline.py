@@ -652,11 +652,11 @@ class SecurityAIPipeline:
     def analyze_stream_window(self, task: VLMTask) -> dict:
         """Run all inference stages for one already-closed stream window."""
         motion_detector = MotionDetector(); dets: list[Detection] = []; motion_ms = detector_ms = 0.0
-        last_detector = -10_000
+        last_detector_seconds = float("-inf")
         for obs in task.raw_observations:
             started = time.perf_counter(); obs.motion = motion_detector.compare(obs.frame); motion_ms += (time.perf_counter()-started)*1000
-            if obs.motion.motion and obs.frame_index - last_detector >= max(1, round(self.motion_fps / self.yolo_fps)):
-                started = time.perf_counter(); obs.detections = self.detector.detect(obs.frame); detector_ms += (time.perf_counter()-started)*1000; last_detector = obs.frame_index
+            if obs.motion.motion and obs.timestamp_seconds - last_detector_seconds >= 1 / self.yolo_fps:
+                started = time.perf_counter(); obs.detections = self.detector.detect(obs.frame); detector_ms += (time.perf_counter()-started)*1000; last_detector_seconds = obs.timestamp_seconds
             dets.extend(obs.detections)
         keyframes = select_keyframes(task.raw_observations, max_keyframes=self.max_keyframes)
         frames = [item.frame for item in keyframes if item.frame is not None]

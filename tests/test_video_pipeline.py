@@ -11,6 +11,7 @@ from camera_ai.video_selection import select_keyframes
 from camera_ai.vlm.mock import MockAnalyzer
 from camera_ai import SecurityAIPipeline
 from camera_ai.schemas import EventObject, MediaType, SceneAnalysis, AlertLevel, Detection
+from camera_ai.queue import VLMTask
 
 
 def test_motion_result_and_video_observation_contracts():
@@ -409,3 +410,19 @@ def test_video_integration_defaults_to_first_five_second_window(tmp_path):
     assert result.video_stats.frames_read == 5
     assert result.video_stats.windows_processed == 1
     assert vlm.sequence_calls == 0
+
+
+def test_stream_window_runs_yolo_at_configured_rate(monkeypatch):
+    class AlwaysMotion:
+        def compare(self, frame):
+            return MotionResult(motion=True, score=1.0)
+
+    detector = RecordingDetector()
+    pipeline = SecurityAIPipeline(detector=detector, vlm=RecordingVLM(), motion_fps=5.0, yolo_fps=2.0)
+    monkeypatch.setattr("camera_ai.pipeline.MotionDetector", AlwaysMotion)
+    observations = [
+        VideoFrameObservation(frame_index=index * 6, timestamp_seconds=index / 5, frame=np.zeros((16, 16, 3), dtype=np.uint8))
+        for index in range(5)
+    ]
+    pipeline.analyze_stream_window(VLMTask(priority=3, enqueued_at=0, raw_observations=observations))
+    assert detector.calls == 2
