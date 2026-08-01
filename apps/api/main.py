@@ -30,7 +30,17 @@ from camera_ai import SecurityAIPipeline
 from camera_ai.alert_store import Alert, InMemoryAlertStore
 from camera_ai.events import InProcessEventBus
 from camera_ai.queue import VLMTask, VLMQueue, VLMWorker
-from camera_ai.schemas import AlertLevel, EventObject, MediaType, PipelineResult, SecurityDecision, VLMResult
+from camera_ai.schemas import (
+    AlertLevel,
+    EventObject,
+    MediaType,
+    PipelineResult,
+    QwenInputSummary,
+    SecurityDecision,
+    StageTiming,
+    VideoWindowResult,
+    VLMResult,
+)
 from camera_ai.vlm.mock import MockAnalyzer
 
 logging.basicConfig(level=logging.INFO)
@@ -228,12 +238,36 @@ async def analyze_video_async(
         ),
         security=SecurityDecision(alert_level=AlertLevel.LOW),
         annotated_image=pipeline._annotate(
-            windows[0]["frames"][0], all_detections
+            windows[0]["frames"][0], windows[0]["detections"]
         ) if windows[0]["frames"] else None,
     )
 
-    for i, w in enumerate(windows):
-        alert_id = result.request_id if i == 0 else str(uuid.uuid4())
+    result.alert_ids = [
+        result.request_id,
+        *(str(uuid.uuid4()) for _ in windows[1:]),
+    ]
+    result.video_windows = [
+        VideoWindowResult(
+            alert_id=alert_id,
+            window_index=window["window_index"],
+            start_seconds=window["start_seconds"],
+            end_seconds=window["start_seconds"] + pipeline.window_seconds,
+            detections=window["detections"],
+            vlm=VLMResult(summary="", status="pending"),
+            security=SecurityDecision(alert_level=AlertLevel.LOW),
+            keyframes=len(window["frames"]),
+            qwen_input=QwenInputSummary(
+                frame_indices=window["frame_indices"],
+                timestamps_seconds=window["timestamps_seconds"],
+                frame_count=len(window["frames"]),
+                detection_labels=sorted({d.label for d in window["detections"]}),
+            ),
+            timing=StageTiming(),
+        )
+        for alert_id, window in zip(result.alert_ids, windows, strict=True)
+    ]
+
+    for alert_id, w in zip(result.alert_ids, windows, strict=True):
         task = VLMTask(
             task_id=alert_id,
             camera_id=camera_id,

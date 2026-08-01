@@ -341,6 +341,34 @@ def test_video_integration_processes_all_frames_in_five_second_windows(tmp_path)
     assert result.video_windows[0].timing.qwen_ms >= 0
 
 
+def test_async_video_window_detection_preserves_keyframe_metadata(tmp_path):
+    calm = np.zeros((64, 64, 3), dtype=np.uint8)
+    changed = calm.copy()
+    changed[15:45, 20:50] = 255
+    path = tmp_path / "async-long-motion.mp4"
+    write_test_video(path, [calm, changed, changed, calm, calm] * 2, fps=1.0)
+    pipeline = SecurityAIPipeline(
+        detector=RecordingDetector(),
+        vlm=RecordingVLM(),
+        motion_fps=1.0,
+        yolo_fps=1.0,
+        window_seconds=5.0,
+        max_video_windows=None,
+        max_keyframes=2,
+    )
+
+    windows = pipeline.detect_video_windows(
+        EventObject(image=str(path), media_type=MediaType.VIDEO)
+    )
+
+    assert len(windows) == 2
+    for window in windows:
+        assert len(window["frames"]) <= 2
+        assert len(window["frames"]) == len(window["frame_indices"])
+        assert len(window["frames"]) == len(window["timestamps_seconds"])
+        assert window["frame_indices"] == sorted(window["frame_indices"])
+
+
 def test_video_integration_defaults_to_first_five_second_window(tmp_path):
     frame = np.zeros((64, 64, 3), dtype=np.uint8)
     path = tmp_path / "first-window-only.mp4"

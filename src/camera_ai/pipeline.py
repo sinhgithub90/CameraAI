@@ -547,6 +547,10 @@ class SecurityAIPipeline:
                                 "window_index": current_window_idx,
                                 "start_seconds": current_window_idx * self.window_seconds,
                                 "frames": frames,
+                                "frame_indices": [o.frame_index for o in keyframes],
+                                "timestamps_seconds": [
+                                    round(o.timestamp_seconds, 3) for o in keyframes
+                                ],
                                 "detections": dets,
                             })
                         current_obs = []
@@ -583,6 +587,10 @@ class SecurityAIPipeline:
                     "window_index": current_window_idx or 0,
                     "start_seconds": (current_window_idx or 0) * self.window_seconds,
                     "frames": frames,
+                    "frame_indices": [o.frame_index for o in keyframes],
+                    "timestamps_seconds": [
+                        round(o.timestamp_seconds, 3) for o in keyframes
+                    ],
                     "detections": dets,
                 })
             cap.release()

@@ -140,6 +140,10 @@ class SecurityDecision(BaseModel):
 class VideoWindowResult(BaseModel):
     """One five-second video window analyzed as a temporal event."""
 
+    alert_id: str | None = Field(
+        default=None,
+        description="Async alert identifier for polling this window's VLM result.",
+    )
     window_index: int
     start_seconds: float
     end_seconds: float
@@ -181,6 +185,10 @@ class PipelineResult(BaseModel):
     annotated_image: str | None = Field(
         default=None,
         description="Base64 JPEG of the analysed frame with bounding boxes drawn.",
+    )
+    alert_ids: list[str] = Field(
+        default_factory=list,
+        description="Async alert identifiers, one per queued analysis window.",
     )
     video_stats: VideoAnalysisStats | None = None
     video_windows: list[VideoWindowResult] = Field(default_factory=list)

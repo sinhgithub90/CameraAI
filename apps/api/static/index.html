@@ -258,7 +258,7 @@ analyzeBtn.addEventListener('click', async () => {
     if (useAsync && data.vlm.status === 'pending') {
       // Show detection immediately, poll for VLM
       renderDetection(data);
-      startPoll(data.request_id);
+      startPoll(data.alert_ids || [data.request_id], data);
     } else {
       // Sync mode or VLM already complete
       renderFinal(data, data.vlm.status === 'completed' ? 'completed' : 'completed');
@@ -273,7 +273,8 @@ analyzeBtn.addEventListener('click', async () => {
 });
 
 // --- polling ---
-function startPoll(alertId) {
+function startPoll(alertIds, initialData) {
+  alertIds = Array.isArray(alertIds) ? alertIds : [alertIds];
   let elapsed = 0;
   $('vlm-pending').hidden = false;
   $('vlm-degraded').hidden = true;
@@ -284,12 +285,26 @@ function startPoll(alertId) {
     elapsed++;
     $('poll-elapsed').textContent = elapsed;
     try {
-      const r = await fetch('/alerts/' + alertId);
-      if (!r.ok) return;
-      const alert = await r.json();
-      if (alert.vlm.status === 'completed') {
+      const alerts = await Promise.all(alertIds.map(async (alertId) => {
+        const r = await fetch('/alerts/' + alertId);
+        return r.ok ? r.json() : null;
+      }));
+      const completed = alerts.filter(alert =>
+        alert && ['completed', 'skipped'].includes(alert.vlm.status)
+      );
+      setStatus('pending', `Detection xong — VLM đã xử lý ${completed.length}/${alertIds.length} cửa sổ...`);
+      if (completed.length === alertIds.length) {
         clearPoll();
-        renderFinal(alert, alert.vlm.degraded ? 'degraded' : 'completed');
+        const rank = { low: 0, medium: 1, high: 2 };
+        const best = completed.reduce((current, alert) =>
+          (rank[alert.security.alert_level] || 0) > (rank[current.security.alert_level] || 0)
+            ? alert : current
+        );
+        renderFinal({
+          ...initialData,
+          vlm: best.vlm,
+          security: best.security,
+        }, best.vlm.degraded ? 'degraded' : 'completed');
       }
     } catch (_) {}
   }, 1000);
