@@ -417,35 +417,46 @@ Health endpoint: `GET /health` trả về trạng thái tất cả subsystem (DB
 └────────────────────────────────────────────┘
 ```
 
-### 6.2 Cloud SaaS (Multi-Tenant)
+### 6.2 Cloud SaaS (Multi-Tenant, Multi-Server)
+
+Multi-server topology với RabbitMQ làm event bus liên-server:
 
 ```
-                         ┌──────────────┐
-                         │  LB / Nginx  │
-                         └──────┬───────┘
-                                │
-         ┌──────────────────────┼──────────────────────┐
-         │                      │                      │
-  ┌──────▼──────┐      ┌───────▼──────┐      ┌───────▼──────┐
-  │ Ingestion   │      │  API Server  │      │  API Server  │
-  │ Gateway × N │      │   × 2        │      │   × 2        │
-  └──────┬──────┘      └──────────────┘      └──────────────┘
-         │
-  ┌──────▼──────┐      ┌──────────────┐      ┌──────────────┐
-  │ Detection   │      │   Redis /    │      │ PostgreSQL   │
-  │ Engine × M  │      │   PG Queue   │      │ (primary +   │
-  │ (mỗi cái    │      │              │      │  replica)    │
-  │  1 GPU)     │      └──────────────┘      └──────────────┘
-  └──────┬──────┘
-         │
-  ┌──────▼──────┐
-  │ VLM Worker  │
-  │ × K (1 GPU  │
-  │ mỗi worker) │
-  └─────────────┘
+                              ┌──────────────┐
+                              │  LB / Nginx  │
+                              └──────┬───────┘
+                                     │
+              ┌──────────────────────┼──────────────────────┐
+              │                      │                      │
+       ┌──────▼──────┐      ┌───────▼──────┐      ┌───────▼──────┐
+       │ Ingestion   │      │  API Server  │      │  API Server  │
+       │ Gateway × N │      │   × 2        │      │   × 2        │
+       └──────┬──────┘      └──────────────┘      └──────────────┘
+              │
+       ┌──────▼──────┐      ┌──────────────┐      ┌──────────────┐
+       │ Detection   │      │  RabbitMQ    │      │ PostgreSQL   │
+       │ Engine × M  │◀════▶│ (event bus)  │◀════▶│ (primary +   │
+       │ (mỗi cái    │      │              │      │  replica)    │
+       │  1 GPU)     │      └──────┬───────┘      └──────────────┘
+       └─────────────┘             │
+                            ┌──────▼──────┐
+                            │ VLM Worker  │
+                            │ × K (1 GPU  │
+                            │ mỗi worker) │
+                            └─────────────┘
 ```
 
-Scale ngang: thêm server GPU → thêm Detection Engine + VLM Worker instance. Queue (Redis/PG) làm buffer giữa các tầng.
+**Topology B — tách GPU chuyên biệt**: Detection Engine (YOLO) và VLM Worker
+(Qwen) chạy trên server GPU riêng, giao tiếp qua RabbitMQ. Scale ngang bằng
+cách thêm server Detection hoặc VLM độc lập.
+
+**Topology A — đơn giản hơn**: Mỗi server chạy pipeline đầy đủ, phụ trách 1
+nhóm camera. Không cần RabbitMQ liên-server — các server chia sẻ PostgreSQL
+để dashboard query alert.
+
+**DI cho Event Bus**: Code business logic inject `EventBus` interface, không
+biết implementation bên dưới. Phase 1 = `InProcessEventBus` (asyncio.Queue).
+Phase 2+ = `RabbitMQEventBus`. Swap qua config, không đụng code.
 
 ### 6.3 Edge + Cloud (Future)
 
@@ -461,7 +472,7 @@ Scale ngang: thêm server GPU → thêm Detection Engine + VLM Worker instance. 
 |---|---|
 | **Python** (backend core) | Hệ sinh thái AI/ML phong phú nhất; ultralytics, opencv, fastapi |
 | **PostgreSQL** (primary DB) | Đủ mạnh cho cả config + alerts; RLS cho multi-tenant |
-| **RabbitMQ** (event bus + task queue) | Persistence, ack, dead-letter, routing — bắt buộc cho hệ thống an ninh không được mất message |
+| **RabbitMQ** (event bus) | Event bus liên-server: persistence, ack, dead-letter. Che sau interface + DI, swap được với InProcessEventBus (asyncio.Queue) cho single-server |
 | **Ollama** (model serving) | Local-first, không cần cloud; API chuẩn; đủ cho inference 1-2 GPU |
 | **Ultralytics YOLO** | YOLO26n nhanh (15ms), hệ sinh thái trưởng thành, dễ fine-tune |
 | **Qwen-VL** (VLM) | Open-weight, tiếng Việt tốt, Ollama hỗ trợ chính thức |

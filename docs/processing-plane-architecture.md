@@ -392,7 +392,26 @@ VLM trả về JSON → map vào `SceneAnalysis`:
 
 ## 6. Event Bus — Hệ Thần Kinh
 
-### 6.1 Thiết kế
+### 6.1 Interface + DI (Bắt Buộc)
+
+Event Bus được che sau 1 interface. Code business logic chỉ inject `EventBus`,
+không biết và không quan tâm implementation bên dưới. Đổi implementation = đổi
+config, không đụng code.
+
+```
+interface EventBus:
+    async publish(event: Event) -> None
+    async subscribe(event_type: str, handler: Callable) -> None
+    async ack(event: Event) -> None         # (no-op với in-process)
+
+impl InProcessEventBus:                     # Phase 1
+    └── asyncio.Queue per event type, 0 dependency
+
+impl RabbitMQEventBus:                      # Phase 2+
+    └── Exchange + Queue + Ack + Dead-Letter
+```
+
+### 6.2 Event Routing
 
 ```
 Publisher                    Event                       Subscriber
@@ -406,28 +425,56 @@ VLM Worker ─────────────▶ alert.vlm_confirmed ──
 Ingestion Gateway ──────▶ camera.offline/online ─────▶ Health Monitor
 ```
 
-### 6.2 Implementation Evolution
+### 6.3 Implementation Evolution
 
-**Phase 1 — In-process**: `asyncio.Queue` per event type. Đơn giản, không
-dependency ngoài.
+**Phase 1 — InProcessEventBus**: `asyncio.Queue` per event type. 0 dependency
+ngoài process. Đủ cho 1 server với N camera (pipeline chạy trong 1 process).
+Alert đã persit vào DB trước khi publish → nếu process crash, alert vẫn trong
+DB và được query qua REST API.
 
-**Phase 2 — RabbitMQ**: Proper message broker với persistence, acknowledgment,
-routing (exchange/topic), dead-letter queue. Mỗi event type = 1 queue. Đảm bảo
-at-least-once delivery + message replay khi cần. Đủ cho production.
+**Phase 2+ — RabbitMQEventBus**: Khi cần scale ra nhiều server:
+- Tách Detection Engine + VLM Worker ra server riêng
+- Event bus liên-server bắt buộc phải là external broker
+- RabbitMQ với persistence, acknowledgment, dead-letter queue
+- Mỗi event type = 1 queue. Exchange type: `topic` để routing linh hoạt
+- InProcessEventBus và RabbitMQEventBus cùng implement 1 interface → swap qua config
 
-**Tại sao RabbitMQ thay vì Redis**: Redis Pub/Sub không có persistence (message
-mất nếu subscriber offline), không có ack (không biết đã xử lý thành công chưa),
-không có dead-letter (message lỗi mất luôn). Trong hệ thống an ninh, mất 1 alert
-fire là không chấp nhận được. RabbitMQ có đủ các guarantees này.
+**Tại sao RabbitMQ thay vì Redis Pub/Sub**: Redis Pub/Sub không có persistence
+(message mất nếu subscriber offline), không có ack, không có dead-letter. Trong
+hệ thống an ninh, mất alert fire là không chấp nhận được. RabbitMQ cung cấp đủ
+các guarantees này cho multi-server deployment.
 
-### 6.3 Guarantees
+### 6.4 Multi-Server Topology (Topology B)
 
-- **At-least-once delivery**: mỗi event được xử lý ít nhất 1 lần. Subscriber
+```
+┌─────────────────────┐     RabbitMQ      ┌─────────────────────┐
+│ Server 1 (Detection)│◀══════════════════▶│ Server 2 (VLM)      │
+│                     │                    │                     │
+│ Ingestion Gateway   │──▶ frame.captured  │                     │
+│ YOLO Engine         │──▶ detection.comp  │──▶ Rule Engine      │
+│ Frame Buffer        │                    │──▶ VLM Worker × K   │
+│ Motion Detector     │                    │──▶ Alert Service    │
+└─────────┬───────────┘                    └──────────┬──────────┘
+          │                                           │
+          └───────────── PostgreSQL ◀─────────────────┘
+                         (chung DB)
+```
+
+- **Server 1**: chuyên detection (YOLO) + ingestion — cần GPU cho YOLO
+- **Server 2**: chuyên VLM (Qwen) + Rule Engine + Alert Service — cần GPU cho Qwen
+- Giao tiếp qua RabbitMQ. Mỗi server có thể nhân bản (Server 1 × 2, Server 2 × 3)
+- Nếu chỉ có 1 server: vẫn chạy bình thường với InProcessEventBus (Phase 1)
+
+### 6.5 Guarantees
+
+- **At-least-once delivery**: RabbitMQ ack sau khi handler chạy xong. Subscriber
   phải idempotent (xử lý 2 lần không gây alert trùng).
-- **Ordering**: event từ cùng 1 camera được giữ thứ tự. Event khác camera có
-  thể xử lý song song.
+- **Ordering**: event từ cùng 1 camera được giữ thứ tự (RabbitMQ cùng queue).
+  Event khác camera có thể xử lý song song.
 - **Back-pressure**: nếu subscriber chậm → event queue dài → publisher bị
   throttle (giảm sample rate) hoặc drop event ưu tiên thấp.
+- **Dead-letter**: message bị reject hoặc hết retry → chuyển vào DLQ để audit
+  thủ công, không mất.
 
 ---
 
