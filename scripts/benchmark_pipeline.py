@@ -28,6 +28,7 @@ from camera_ai.schemas import StageTiming
 
 
 SUPPORTED_VIDEO_SUFFIXES = {".mp4", ".avi", ".mov", ".mkv"}
+_ALERT_LEVELS = {"low", "medium", "high"}
 
 
 def summarize_detections(detections: list[dict]) -> dict[str, dict[str, float | int]]:
@@ -88,6 +89,28 @@ def build_alert_report(
     }
 
 
+def resolve_window_alert_level(window: dict) -> str:
+    event_metadata = window.get("event_metadata", {})
+    alert = event_metadata.get("alert") or {}
+    security = window.get("security", {})
+    level = alert.get("severity") or security.get("alert_level", "low")
+    return level if level in _ALERT_LEVELS else "low"
+
+
+def primary_candidate_type(event_metadata: dict) -> str | None:
+    candidates = event_metadata.get("candidates") or []
+    if not candidates:
+        return None
+    vlm_call = event_metadata.get("vlm_call") or {}
+    decision = event_metadata.get("decision") or {}
+    primary_id = vlm_call.get("candidate_id") or decision.get("candidate_id")
+    if primary_id is not None:
+        for candidate in candidates:
+            if candidate.get("candidate_id") == primary_id:
+                return candidate.get("candidate_type")
+    return candidates[0].get("candidate_type")
+
+
 def build_video_report(
     video_path: str | Path, analysis_id: str, payload: dict
 ) -> dict:
@@ -97,13 +120,9 @@ def build_video_report(
     called_windows = 0
     counts = {"low": 0, "medium": 0, "high": 0}
     for window in payload.get("windows", []):
-        security = window.get("security", {})
-        level = security.get("alert_level", "low")
-        if level not in counts:
-            level = "low"
+        level = resolve_window_alert_level(window)
         counts[level] += 1
         event_metadata = window.get("event_metadata", {})
-        trace = event_metadata.get("vlm_trace") or {}
         vlm_call = event_metadata.get("vlm_call")
         if vlm_call is None:
             vlm_call = {
@@ -112,7 +131,10 @@ def build_video_report(
             }
         call_vlm = bool(vlm_call.get("call_vlm"))
         called_windows += call_vlm
-        total_ms = float(window.get("timing", {}).get("total_ms", 0.0))
+        timing = window.get("timing", {})
+        decision = event_metadata.get("decision") or {}
+        qwen_input = window.get("qwen_input", {})
+        total_ms = float(timing.get("total_ms", 0.0))
         processing_times.append(total_ms)
         windows.append(
             {
@@ -120,19 +142,26 @@ def build_video_report(
                 "start_seconds": window.get("start_seconds"),
                 "end_seconds": window.get("end_seconds"),
                 "alert_level": level,
-                "summary": window.get("vlm", {}).get("summary", ""),
-                "risks": security.get("risks", []),
-                "recommended_action": security.get("recommended_action", ""),
-                "detection_summary": summarize_detections(
-                    window.get("detections", [])
-                ),
-                "qwen_input": window.get("qwen_input", {}),
-                "timing": window.get("timing", {}),
-                "candidates": event_metadata.get("candidates", []),
-                "decision": event_metadata.get("decision"),
-                "raw_output_valid": trace.get("raw_output_valid", False),
-                "vlm_call": vlm_call,
-                "within_processing_budget": total_ms <= PROCESSING_BUDGET_MS,
+                "candidate_type": primary_candidate_type(event_metadata),
+                "qwen": {
+                    "called": call_vlm,
+                    "decision": decision.get("decision"),
+                    "event_type": decision.get("event_type"),
+                    "summary": window.get("vlm", {}).get("summary", ""),
+                    "timestamps_seconds": qwen_input.get(
+                        "timestamps_seconds", []
+                    ),
+                },
+                "timing": {
+                    "motion_ms": float(timing.get("motion_ms", 0.0)),
+                    "detector_ms": float(timing.get("detector_ms", 0.0)),
+                    "keyframe_ms": float(timing.get("keyframe_ms", 0.0)),
+                    "qwen_ms": float(timing.get("qwen_ms", 0.0)),
+                    "total_ms": total_ms,
+                    "queue_wait_ms": float(timing.get("queue_wait_ms", 0.0)),
+                    "wall_clock_ms": float(timing.get("wall_clock_ms", 0.0)),
+                    "within_budget": total_ms <= PROCESSING_BUDGET_MS,
+                },
             }
         )
     highest = "high" if counts["high"] else "medium" if counts["medium"] else "low"
