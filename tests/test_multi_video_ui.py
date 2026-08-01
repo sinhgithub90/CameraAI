@@ -16,10 +16,11 @@ def test_batch_ui_posts_all_videos_and_renders_analysis_rows():
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
 
     observed = json.loads(result.stdout)
     assert observed["endpoint"] == "/async/analyze/videos"
     assert observed["field_names"] == ["files", "files"]
     assert observed["row_count"] == 2
-    assert observed["detail_title"] == "Video detail: cam-a.mp4"
+    assert observed["detail_title"] == "Chi tiết video: cam-a.mp4"

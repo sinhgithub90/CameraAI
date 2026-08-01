@@ -215,6 +215,11 @@ function setFiles(files) {
   currentFiles = Array.from(files || []);
   $('error').textContent = '';
   analyzeBtn.disabled = currentFiles.length === 0;
+  const cameraInput = $('camera_id');
+  cameraInput.disabled = isBatch();
+  cameraInput.placeholder = isBatch()
+    ? 'Batch dùng camera_id từ tên file'
+    : 'camera_id (vd: cam_front_gate)';
   const origWrap = $('preview-orig-wrap'), preview = $('preview');
   $('preview-img').hidden = true; $('preview-video').hidden = true;
   if (!currentFiles.length || isBatch()) {
@@ -362,7 +367,7 @@ function batchWindowSummary(analysis) {
 function renderBatchList() {
   if (!batchState) return;
   const terminal = batchState.items.filter(item => isTerminal(item.analysis?.status)).length;
-  $('batch-meta').textContent = `Batch ${batchState.batch_id} | ${terminal}/${batchState.items.length} videos finished`;
+  $('batch-meta').textContent = `Batch ${batchState.batch_id} | ${terminal}/${batchState.items.length} video đã kết thúc`;
   const list = $('batch-list');
   list.innerHTML = '';
   batchState.items.forEach(item => {
@@ -382,7 +387,7 @@ function renderBatchList() {
     main.append(name, detail);
     const status = document.createElement('span');
     status.className = 'batch-item-status';
-    status.textContent = item.pollError || `${item.analysis?.status || 'pending'} | ${completed}/${windows.length} windows | ${level.toUpperCase()}`;
+    status.textContent = item.pollError || `${item.analysis?.status || 'pending'} | ${completed}/${windows.length} window | ${level.toUpperCase()}`;
     row.append(main, status);
     list.appendChild(row);
   });
@@ -396,9 +401,9 @@ function selectBatchItem(analysisId) {
   const item = batchState.items.find(candidate => candidate.analysis_id === analysisId);
   if (!item) return;
   const { windows, level } = batchWindowSummary(item.analysis);
-  $('result-title').textContent = `Video detail: ${item.filename}`;
+  $('result-title').textContent = `Chi tiết video: ${item.filename}`;
   $('meta').textContent = `analysis: ${item.analysis_id} | camera: ${item.camera_id}`;
-  $('alert-badge').textContent = 'Alert level: ' + level.toUpperCase();
+  $('alert-badge').textContent = 'Mức cảnh báo: ' + level.toUpperCase();
   $('alert-badge').className = 'badge ' + level;
   $('single-vlm').hidden = true;
   $('single-security').hidden = true;
@@ -413,11 +418,11 @@ async function pollBatch() {
     if (isTerminal(item.analysis?.status)) continue;
     try {
       const response = await fetch('/analyses/' + item.analysis_id);
-      if (!response.ok) throw new Error('Unable to get analysis status.');
+      if (!response.ok) throw new Error('Không lấy được trạng thái phân tích.');
       item.analysis = await response.json();
       item.pollError = null;
     } catch (error) {
-      item.pollError = error.message || 'Unable to get analysis status.';
+      item.pollError = error.message || 'Không lấy được trạng thái phân tích.';
     }
   }
   renderBatchList();
@@ -431,7 +436,7 @@ async function startBatchPoll(batch) {
     selectedAnalysisId: batch.items[0]?.analysis_id || null,
     items: batch.items.map(item => ({ ...item, analysis: null, pollError: null })),
   };
-  setStatus('pending', 'Batch submitted. Waiting for each video to be processed...');
+  setStatus('pending', 'Đã gửi batch — đang chờ xử lý từng video...');
   $('status-spinner').hidden = false;
   renderBatchList();
   selectBatchItem(batchState.selectedAnalysisId);
