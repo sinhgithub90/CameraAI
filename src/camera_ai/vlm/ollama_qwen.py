@@ -35,8 +35,12 @@ PANEL_WIDTH = 960
 PANEL_HEIGHT = 540
 
 _PROMPT = (
-    "Phân tích ảnh camera và trả về cảnh báo an ninh ngắn gọn bằng tiếng Việt. "
-    "Mức cảnh báo: low nếu bình thường, medium nếu đáng chú ý, high nếu nguy hiểm.\n"
+    "Phân tích ảnh camera và trả về đúng JSON bằng tiếng Việt.\n"
+    "- summary: bắt buộc, 1–2 câu mô tả cảnh và diễn biến quan sát được.\n"
+    "- alert_level: low nếu bình thường, medium nếu đáng chú ý, high nếu nguy hiểm.\n"
+    "- risks: mảng các rủi ro quan sát được; nếu không có, trả []. Không bịa rủi ro.\n"
+    "- recommended_action: bắt buộc, hành động ngắn phù hợp mức cảnh báo. "
+    "Nếu low và không có rủi ro, dùng chính xác: Tiếp tục giám sát.\n"
     "Dữ liệu YOLO:\n{detections}"
 )
 

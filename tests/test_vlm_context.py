@@ -7,6 +7,7 @@ import pytest
 
 from camera_ai.schemas import Detection
 from camera_ai.vlm.ollama_qwen import OllamaQwenAnalyzer
+from camera_ai.vlm.ollama_qwen import _PROMPT
 
 
 class FakeResponse:
@@ -262,3 +263,9 @@ def test_empty_qwen_summary_is_exposed_as_degraded_result():
 
     assert result.degraded is True
     assert result.summary == "VLM không trả nội dung phân tích cho window này."
+
+
+def test_prompt_requires_risks_and_recommended_action():
+    assert "recommended_action: bắt buộc" in _PROMPT
+    assert "risks: mảng" in _PROMPT
+    assert "Tiếp tục giám sát." in _PROMPT
