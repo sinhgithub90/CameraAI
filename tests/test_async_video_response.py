@@ -35,6 +35,8 @@ def _window(index: int, label: str) -> dict:
         "frames": [frame, frame.copy()],
         "frame_indices": [index * 10, index * 10 + 5],
         "timestamps_seconds": [index * 5.0, index * 5.0 + 1.0],
+        "motion_ms": 10.0 + index,
+        "detector_ms": 20.0 + index,
         "detections": [
             Detection(label=label, confidence=0.9, bbox=[1, 1, 8, 8])
         ],
@@ -58,6 +60,8 @@ async def test_async_video_enqueues_and_exposes_every_motion_window(monkeypatch)
     assert len(result.video_windows) == 2
     assert [window.alert_id for window in result.video_windows] == result.alert_ids
     assert [window.keyframes for window in result.video_windows] == [2, 2]
+    assert [window.timing.motion_ms for window in result.video_windows] == [10.0, 11.0]
+    assert [window.timing.detector_ms for window in result.video_windows] == [20.0, 21.0]
     assert [window.qwen_input.frame_indices for window in result.video_windows] == [
         [0, 5],
         [10, 15],

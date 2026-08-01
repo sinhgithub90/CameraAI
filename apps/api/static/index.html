@@ -158,16 +158,14 @@
       <pre id="video-debug-text" class="muted" style="white-space:pre-wrap;margin:0"></pre>
     </div>
 
-    <div class="card">
-      <h3 style="margin:0 0 10px;font-size:14px">📋 Đối tượng phát hiện (<span id="det-count">0</span>)</h3>
-      <table>
-        <thead><tr><th>Nhãn</th><th>Độ tin cậy</th><th>BBox (x1,y1,x2,y2)</th></tr></thead>
-        <tbody id="det-tbody"></tbody>
-      </table>
-      <p class="muted" id="det-empty" style="margin:8px 0 0">Chưa có kết quả.</p>
+    <div class="card" id="video-timing" hidden>
+      <h3 style="margin:0 0 10px;font-size:14px">⏱️ Tổng thời gian video</h3>
+      <p class="muted" id="video-timing-text" style="margin:0"></p>
     </div>
 
-    <div class="card">
+    <div id="window-results"></div>
+
+    <div class="card" id="single-vlm">
       <h3 style="margin:0 0 10px;font-size:14px">🤖 VLM — Qwen-VL <span id="vlm-status"></span></h3>
       <p class="summary" id="summary">…</p>
       <p class="muted" id="vlm-note" hidden>⚠️ VLM bị bỏ qua — không có tín hiệu kích hoạt (policy gated).</p>
@@ -176,7 +174,7 @@
       <p class="kv"><b>Observations:</b> <span id="observations">—</span></p>
     </div>
 
-    <div class="card">
+    <div class="card" id="single-security">
       <h3 style="margin:0 0 10px;font-size:14px">🛡️ Quyết định an ninh</h3>
       <p class="kv"><b>Risks:</b> <span id="risks">—</span></p>
       <p class="kv"><b>Hành động đề xuất:</b> <span id="action">—</span></p>
@@ -292,6 +290,9 @@ function startPoll(alertIds, initialData) {
       const completed = alerts.filter(alert =>
         alert && ['completed', 'skipped'].includes(alert.vlm.status)
       );
+      if (initialData.media_type === 'video') {
+        renderVideoWindows(initialData, alerts);
+      }
       setStatus('pending', `Detection xong — VLM đã xử lý ${completed.length}/${alertIds.length} cửa sổ...`);
       if (completed.length === alertIds.length) {
         clearPoll();
@@ -332,12 +333,19 @@ function renderDetection(data) {
   $('meta').textContent =
     `request: ${data.request_id} | camera: ${data.camera_id} | type: ${data.media_type}`;
 
-  if (data.annotated_image) {
+  if (data.annotated_image && data.media_type !== 'video') {
     $('result-img').src = 'data:image/jpeg;base64,' + data.annotated_image;
+    $('result-img').hidden = false;
+  } else {
+    $('result-img').hidden = true;
   }
-  $('result-title').textContent = 'Kết quả detection (VLM đang phân tích...)';
+  $('result-title').textContent = data.media_type === 'video'
+    ? 'Kết quả theo từng cửa sổ 5 giây'
+    : 'Đang chờ VLM phân tích...';
 
-  renderDetections(data);
+  $('single-vlm').hidden = data.media_type === 'video';
+  $('single-security').hidden = data.media_type === 'video';
+  if (data.media_type === 'video') renderVideoWindows(data, []);
   $('summary').textContent = '⏳ Đang chờ...';
   $('vlm-note').hidden = true;
   $('observations').textContent = '—';
@@ -363,12 +371,22 @@ function renderFinal(data, vlmStatus) {
     `request: ${data.request_id || data.id} | camera: ${data.camera_id} | type: ${data.media_type || 'image'}` +
     (data.vlm?.degraded ? ' | ⚠️ VLM degraded' : '');
 
-  if (data.annotated_image) {
+  if (data.annotated_image && data.media_type !== 'video') {
     $('result-img').src = 'data:image/jpeg;base64,' + data.annotated_image;
+    $('result-img').hidden = false;
+  } else {
+    $('result-img').hidden = true;
   }
-  $('result-title').textContent = 'Kết quả phân tích';
+  $('result-title').textContent = data.media_type === 'video'
+    ? 'Kết quả VLM theo từng cửa sổ 5 giây'
+    : 'Kết quả phân tích';
 
-  renderDetections(data);
+  $('single-vlm').hidden = data.media_type === 'video';
+  $('single-security').hidden = data.media_type === 'video';
+  if (data.media_type === 'video') {
+    $('result').hidden = false;
+    return;
+  }
 
   const vlm = data.vlm || {};
   $('summary').textContent = vlm.summary || '—';
@@ -383,44 +401,55 @@ function renderFinal(data, vlmStatus) {
   $('result').hidden = false;
 }
 
-function renderDetections(data) {
-  const dets = data.detections || [];
-  const tbody = $('det-tbody');
-  tbody.innerHTML = '';
-  dets.forEach(d => {
-    const tr = document.createElement('tr');
-    const bb = (d.bbox || []).map(v => Math.round(v)).join(', ');
-    tr.innerHTML = `<td>${d.label}</td><td>${(d.confidence * 100).toFixed(1)}%</td><td>[${bb}]</td>`;
-    tbody.appendChild(tr);
-  });
-  $('det-count').textContent = dets.length;
-  $('det-empty').hidden = dets.length > 0;
+function renderVideoWindows(data, alerts) {
+  const byId = new Map(alerts.filter(Boolean).map(alert => [alert.id, alert]));
+  const windows = data.video_windows || [];
+  const totals = windows.reduce((sum, window) => {
+    const timing = byId.get(window.alert_id)?.timing || window.timing || {};
+    sum.motion += timing.motion_ms || 0;
+    sum.detector += timing.detector_ms || 0;
+    sum.qwen += timing.qwen_ms || 0;
+    return sum;
+  }, { motion: 0, detector: 0, qwen: 0 });
+  const total = totals.motion + totals.detector + totals.qwen;
+  $('video-timing-text').textContent =
+    `Windows: ${windows.length} | Motion total: ${totals.motion.toFixed(1)}ms | ` +
+    `YOLO total: ${totals.detector.toFixed(1)}ms | VLM total: ${totals.qwen.toFixed(1)}ms | ` +
+    `Total stage time: ${total.toFixed(1)}ms`;
+  $('video-timing').hidden = false;
 
-  // Video debug
-  const debug = $('video-debug');
-  if (data.media_type === 'video' && data.video_stats) {
-    const s = data.video_stats;
-    const windows = (data.video_windows || []).map(w =>
-      `window ${w.window_index} [${w.start_seconds}-${w.end_seconds}s] | ` +
-      `Qwen frames: ${(w.qwen_input?.frame_indices || []).join(', ')} | ` +
-      `labels: ${(w.qwen_input?.detection_labels || []).join(', ') || 'none'} | ` +
-      `motion ${(w.timing?.motion_ms || 0).toFixed(1)}ms, ` +
-      `detector ${(w.timing?.detector_ms || 0).toFixed(1)}ms, ` +
-      `Qwen ${(w.timing?.qwen_ms || 0).toFixed(1)}ms`
-    ).join('\n');
-    $('video-debug-text').textContent =
-      `Read: ${s.frames_read} frames | windows: ${s.windows_processed} | ` +
-      `Qwen calls: ${s.vlm_calls} | total: ${(s.total_ms || 0).toFixed(1)}ms\n` +
-      `overhead | open ${(s.video_open_ms || 0).toFixed(1)}ms, ` +
-      `grab ${(s.frame_grab_ms || 0).toFixed(1)}ms, ` +
-      `retrieve ${(s.frame_retrieve_ms || 0).toFixed(1)}ms, ` +
-      `resize ${(s.frame_resize_ms || 0).toFixed(1)}ms, ` +
-      `window ${(s.window_overhead_ms || 0).toFixed(1)}ms, ` +
-      `untracked ${(s.untracked_ms || 0).toFixed(1)}ms\n` + windows;
-    debug.hidden = false;
-  } else {
-    debug.hidden = true;
-  }
+  const container = $('window-results');
+  container.innerHTML = '';
+  windows.forEach(window => {
+    const alert = byId.get(window.alert_id);
+    const timing = alert?.timing || window.timing || {};
+    const card = document.createElement('div');
+    card.className = 'card';
+    const status = alert?.vlm?.status || window.vlm?.status || 'pending';
+    const summary = alert?.vlm?.summary || (status === 'pending' ? 'Đang chờ VLM...' : '—');
+    const level = alert?.security?.alert_level || window.security?.alert_level || 'low';
+    const risks = (alert?.security?.risks || []).join(', ') || '—';
+    const action = alert?.security?.recommended_action || '—';
+    card.innerHTML = `<h3 style="margin:0 0 10px;font-size:14px">Window ${window.window_index} [${window.start_seconds}–${window.end_seconds}s] · ${status}</h3>`;
+    const lines = [
+      ['Qwen frames', (window.qwen_input?.frame_indices || []).join(', ') || '—'],
+      ['Timing', `Motion ${(timing.motion_ms || 0).toFixed(1)}ms | YOLO ${(timing.detector_ms || 0).toFixed(1)}ms | VLM ${(timing.qwen_ms || 0).toFixed(1)}ms`],
+      ['Alert level', level.toUpperCase()],
+      ['VLM', summary],
+      ['Risks', risks],
+      ['Action', action],
+    ];
+    lines.forEach(([label, value]) => {
+      const p = document.createElement('p');
+      p.className = label === 'VLM' ? 'summary' : 'kv';
+      const strong = document.createElement('b');
+      strong.textContent = label + ': ';
+      p.append(strong, document.createTextNode(value));
+      card.appendChild(p);
+    });
+    container.appendChild(card);
+  });
+  $('video-debug').hidden = true;
 }
 </script>
 </body>

@@ -149,10 +149,14 @@ class VLMWorker:
                     task.rule_id,
                 )
                 # analyze_vlm is sync (blocking Ollama I/O) — offload to thread
+                qwen_started = time.perf_counter()
                 analysis = await asyncio.to_thread(
                     self._pipeline.analyze_vlm, task
                 )
-                await self._alert_store.update_vlm(task.alert_id, analysis)
+                qwen_ms = (time.perf_counter() - qwen_started) * 1000
+                await self._alert_store.update_vlm(
+                    task.alert_id, analysis, qwen_ms=qwen_ms
+                )
                 logger.info(
                     "[vlm-worker] completed alert=%s level=%s",
                     task.alert_id,

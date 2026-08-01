@@ -6,7 +6,7 @@ import pytest
 
 from camera_ai.alert_store import Alert, AlertStore, InMemoryAlertStore
 from camera_ai.events import Event, InProcessEventBus
-from camera_ai.schemas import AlertLevel, SceneAnalysis, SecurityDecision, VLMResult
+from camera_ai.schemas import AlertLevel, SceneAnalysis, SecurityDecision, StageTiming, VLMResult
 
 
 def _make_alert(
@@ -80,6 +80,28 @@ class TestInMemoryAlertStore:
         assert updated is not None
         assert updated.vlm.status == "completed"
         assert updated.security.alert_level == AlertLevel.HIGH
+
+    @pytest.mark.asyncio
+    async def test_update_vlm_records_window_stage_timing(self, store):
+        alert = Alert(
+            id="timed",
+            camera_id="cam_01",
+            timing=StageTiming(motion_ms=12.0, detector_ms=34.0),
+        )
+        await store.create(alert)
+
+        await store.update_vlm(
+            "timed",
+            SceneAnalysis(summary="done", alert_level=AlertLevel.LOW),
+            qwen_ms=56.0,
+        )
+
+        saved = await store.get("timed")
+        assert saved is not None
+        assert saved.timing.motion_ms == 12.0
+        assert saved.timing.detector_ms == 34.0
+        assert saved.timing.qwen_ms == 56.0
+        assert saved.timing.total_ms == 102.0
 
     @pytest.mark.asyncio
     async def test_list_active(self, store):

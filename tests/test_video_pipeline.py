@@ -369,6 +369,30 @@ def test_async_video_window_detection_preserves_keyframe_metadata(tmp_path):
         assert window["frame_indices"] == sorted(window["frame_indices"])
 
 
+def test_async_video_windows_include_static_windows_and_stage_timing(tmp_path):
+    frame = np.zeros((64, 64, 3), dtype=np.uint8)
+    path = tmp_path / "async-static-windows.mp4"
+    write_test_video(path, [frame] * 10, fps=1.0)
+    pipeline = SecurityAIPipeline(
+        detector=RecordingDetector(),
+        vlm=RecordingVLM(),
+        motion_fps=1.0,
+        yolo_fps=1.0,
+        window_seconds=5.0,
+        max_keyframes=2,
+    )
+
+    windows = pipeline.detect_video_windows(
+        EventObject(image=str(path), media_type=MediaType.VIDEO)
+    )
+
+    assert len(windows) == 2
+    assert [window["window_index"] for window in windows] == [0, 1]
+    assert all(len(window["frames"]) == 2 for window in windows)
+    assert all(window["motion_ms"] >= 0 for window in windows)
+    assert all(window["detector_ms"] >= 0 for window in windows)
+
+
 def test_video_integration_defaults_to_first_five_second_window(tmp_path):
     frame = np.zeros((64, 64, 3), dtype=np.uint8)
     path = tmp_path / "first-window-only.mp4"

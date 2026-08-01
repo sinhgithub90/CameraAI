@@ -262,7 +262,11 @@ async def analyze_video_async(
                 frame_count=len(window["frames"]),
                 detection_labels=sorted({d.label for d in window["detections"]}),
             ),
-            timing=StageTiming(),
+            timing=StageTiming(
+                motion_ms=window["motion_ms"],
+                detector_ms=window["detector_ms"],
+                total_ms=window["motion_ms"] + window["detector_ms"],
+            ),
         )
         for alert_id, window in zip(result.alert_ids, windows, strict=True)
     ]
@@ -284,6 +288,11 @@ async def analyze_video_async(
             camera_id=camera_id,
             vlm=VLMResult(summary="", status="pending"),
             security=SecurityDecision(alert_level=AlertLevel.LOW),
+            timing=StageTiming(
+                motion_ms=w["motion_ms"],
+                detector_ms=w["detector_ms"],
+                total_ms=w["motion_ms"] + w["detector_ms"],
+            ),
         )
         await alert_store.create(alert)
         await vlm_queue.enqueue(task)

@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 
 from .events import Event, EventBus
-from .schemas import AlertLevel, SceneAnalysis, SecurityDecision, VLMResult
+from .schemas import AlertLevel, SceneAnalysis, SecurityDecision, StageTiming, VLMResult
 
 
 class Alert:
@@ -19,6 +19,7 @@ class Alert:
         rule_id: str = "default",
         vlm: VLMResult | None = None,
         security: SecurityDecision | None = None,
+        timing: StageTiming | None = None,
         created_at: datetime | None = None,
     ) -> None:
         self.id = id
@@ -26,9 +27,10 @@ class Alert:
         self.rule_id = rule_id
         self.vlm = vlm or VLMResult(summary="", status="pending")
         self.security = security or SecurityDecision(alert_level=AlertLevel.LOW)
+        self.timing = timing or StageTiming()
         self.created_at = created_at or datetime.now()
 
-    def update_vlm(self, analysis: SceneAnalysis) -> None:
+    def update_vlm(self, analysis: SceneAnalysis, qwen_ms: float = 0.0) -> None:
         """Apply VLM analysis to this alert."""
         self.vlm = VLMResult(
             summary=analysis.summary,
@@ -41,6 +43,10 @@ class Alert:
             risks=analysis.risks,
             recommended_action=analysis.recommended_action,
         )
+        self.timing.qwen_ms = qwen_ms
+        self.timing.total_ms = (
+            self.timing.motion_ms + self.timing.detector_ms + self.timing.qwen_ms
+        )
 
     def to_dict(self) -> dict:
         """Serialize for API response."""
@@ -50,6 +56,7 @@ class Alert:
             "rule_id": self.rule_id,
             "vlm": self.vlm.model_dump(),
             "security": self.security.model_dump(),
+            "timing": self.timing.model_dump(),
             "created_at": self.created_at.isoformat(),
         }
 
@@ -68,7 +75,9 @@ class AlertStore(ABC):
         ...
 
     @abstractmethod
-    async def update_vlm(self, alert_id: str, analysis: SceneAnalysis) -> None:
+    async def update_vlm(
+        self, alert_id: str, analysis: SceneAnalysis, qwen_ms: float = 0.0
+    ) -> None:
         """Apply VLM analysis result to an existing alert."""
         ...
 
@@ -103,11 +112,13 @@ class InMemoryAlertStore(AlertStore):
     async def get(self, alert_id: str) -> Alert | None:
         return self._alerts.get(alert_id)
 
-    async def update_vlm(self, alert_id: str, analysis: SceneAnalysis) -> None:
+    async def update_vlm(
+        self, alert_id: str, analysis: SceneAnalysis, qwen_ms: float = 0.0
+    ) -> None:
         alert = self._alerts.get(alert_id)
         if alert is None:
             return
-        alert.update_vlm(analysis)
+        alert.update_vlm(analysis, qwen_ms=qwen_ms)
         await self.event_bus.publish(
             Event(
                 type="alert.vlm_confirmed",

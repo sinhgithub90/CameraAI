@@ -166,7 +166,10 @@ class TestVLMWorker:
 
         # Verify
         mock_pipeline.analyze_vlm.assert_called_once_with(task)
-        mock_alert_store.update_vlm.assert_called_once_with("alert-worker-test", analysis)
+        mock_alert_store.update_vlm.assert_awaited_once()
+        args, kwargs = mock_alert_store.update_vlm.call_args
+        assert args == ("alert-worker-test", analysis)
+        assert kwargs["qwen_ms"] >= 0
 
     @pytest.mark.asyncio
     async def test_worker_handles_pipeline_error(self):

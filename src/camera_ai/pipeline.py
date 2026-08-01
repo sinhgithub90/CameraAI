@@ -485,12 +485,14 @@ class SecurityAIPipeline:
         )
 
     def detect_video_windows(
-        self, event: EventObject
+        self,
+        event: EventObject,
+        max_windows: int | None = None,
     ) -> list[dict]:
-        """Read video in 5s windows. Return per-window keyframes+detections.
+        """Read every video window and return per-window keyframes+detections.
 
-        Each dict: {window_index, start_seconds, frames, detections}.
-        The caller enqueues one VLMTask per window with motion.
+        Each dict includes Motion/YOLO timing and is queued for VLM regardless
+        of motion so the caller gets one VLM result for every time window.
         """
         source = event.image
         tmp_path: str | None = None
@@ -513,13 +515,39 @@ class SecurityAIPipeline:
             current_obs: list[VideoFrameObservation] = []
             current_window_idx: int | None = None
             last_detector_idx: int | None = None
+            current_motion_ms = 0.0
+            current_detector_ms = 0.0
             idx = 0
+
+            def flush_window() -> None:
+                nonlocal current_motion_ms, current_detector_ms
+                if not current_obs or current_window_idx is None:
+                    return
+                keyframes = select_keyframes(
+                    current_obs, max_keyframes=self.max_keyframes
+                )
+                frames = [o.frame for o in keyframes if o.frame is not None]
+                dets = [d for o in current_obs for d in o.detections]
+                windows_out.append({
+                    "window_index": current_window_idx,
+                    "start_seconds": current_window_idx * self.window_seconds,
+                    "frames": frames,
+                    "frame_indices": [o.frame_index for o in keyframes],
+                    "timestamps_seconds": [
+                        round(o.timestamp_seconds, 3) for o in keyframes
+                    ],
+                    "detections": dets,
+                    "motion_ms": current_motion_ms,
+                    "detector_ms": current_detector_ms,
+                })
+                current_motion_ms = 0.0
+                current_detector_ms = 0.0
 
             while True:
                 if (
-                    self.max_video_windows is not None
+                    max_windows is not None
                     and current_window_idx is not None
-                    and current_window_idx >= self.max_video_windows
+                    and current_window_idx >= max_windows
                 ):
                     break
                 grabbed = cap.grab()
@@ -534,30 +562,14 @@ class SecurityAIPipeline:
                     if current_window_idx is None:
                         current_window_idx = window_idx
                     elif window_idx != current_window_idx:
-                        # Flush current window
-                        if current_obs and any(o.motion.motion for o in current_obs):
-                            keyframes = select_keyframes(
-                                current_obs, max_keyframes=self.max_keyframes
-                            )
-                            frames = [
-                                o.frame for o in keyframes if o.frame is not None
-                            ]
-                            dets = [d for o in current_obs for d in o.detections]
-                            windows_out.append({
-                                "window_index": current_window_idx,
-                                "start_seconds": current_window_idx * self.window_seconds,
-                                "frames": frames,
-                                "frame_indices": [o.frame_index for o in keyframes],
-                                "timestamps_seconds": [
-                                    round(o.timestamp_seconds, 3) for o in keyframes
-                                ],
-                                "detections": dets,
-                            })
+                        flush_window()
                         current_obs = []
                         current_window_idx = window_idx
                         last_detector_idx = None
 
+                    motion_started = time.perf_counter()
                     motion = motion_detector.compare(frame)
+                    current_motion_ms += (time.perf_counter() - motion_started) * 1000
                     obs = VideoFrameObservation(
                         frame_index=idx,
                         timestamp_seconds=idx / source_fps,
@@ -569,30 +581,18 @@ class SecurityAIPipeline:
                         or idx - last_detector_idx >= detector_interval
                     ):
                         try:
+                            detector_started = time.perf_counter()
                             obs.detections = self.detector.detect(frame)
+                            current_detector_ms += (
+                                time.perf_counter() - detector_started
+                            ) * 1000
                         except Exception:
                             logger.exception("video detector failed at frame %s", idx)
                         last_detector_idx = idx
                     current_obs.append(obs)
                 idx += 1
 
-            # Flush last window
-            if current_obs and any(o.motion.motion for o in current_obs):
-                keyframes = select_keyframes(
-                    current_obs, max_keyframes=self.max_keyframes
-                )
-                frames = [o.frame for o in keyframes if o.frame is not None]
-                dets = [d for o in current_obs for d in o.detections]
-                windows_out.append({
-                    "window_index": current_window_idx or 0,
-                    "start_seconds": (current_window_idx or 0) * self.window_seconds,
-                    "frames": frames,
-                    "frame_indices": [o.frame_index for o in keyframes],
-                    "timestamps_seconds": [
-                        round(o.timestamp_seconds, 3) for o in keyframes
-                    ],
-                    "detections": dets,
-                })
+            flush_window()
             cap.release()
         finally:
             if tmp_path:
