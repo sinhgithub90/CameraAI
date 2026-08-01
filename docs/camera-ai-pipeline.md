@@ -316,6 +316,17 @@ rules; raw coordinates are not added to the Qwen prompt. A fire candidate only
 comes from the optional specialized detector after temporal confirmation, not
 from the default COCO YOLO model.
 
+Router candidates describe scene composition and only control whether Qwen is
+called. They are `person_vehicle_scene`, `multi_person_scene`, `person_scene`,
+`vehicle_scene`, `unexplained_motion`, and the specialized
+`temporally_confirmed_fire_signal`. They are not final event classifications.
+
+With the default two-keyframe configuration, the selector sends temporal
+context followed by change: the latest frame at least one second before the
+strongest motion/detection change, then the strongest-change frame. If no
+change exists it uses the first and last observations. This requires no extra
+detector or model call.
+
 The processing target is p95 at or below 5,000 ms per window, excluding queue
 wait. This is an observed benchmark target rather than a guarantee: real API +
 Ollama measurements determine whether the target is met.
@@ -326,3 +337,12 @@ For a routed candidate, Qwen returns only `decision`, `event_type`, and a short
 `unknown_event`. Valid `no` pairs with `no_event`; valid `uncertain` pairs with
 `unknown_event`; valid `yes` pairs with a concrete event. Invalid or inconsistent
 JSON becomes low/degraded `uncertain + unknown_event` and cannot create an alert.
+
+For a valid affirmative decision, `event_type` alone determines UI severity:
+
+- green/low: `no_event`, `person_vehicle_interaction`, `unknown_event`;
+- orange/medium: `person_fall`, `camera_tamper`;
+- red/high: `traffic_accident`, `fighting`, `fire_smoke`.
+
+Router candidate priority remains useful for queue ordering and primary
+candidate selection, but cannot raise or lower the final alert severity.

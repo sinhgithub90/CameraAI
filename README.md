@@ -48,7 +48,7 @@ Video analysis uses a lightweight motion stage before the expensive detectors:
 
 ```text
 Video frames -> Motion (default 5 FPS) -> YOLO26n (default 2 FPS)
-             -> event-aware keyframe selection (max 2) -> one VLM call
+             -> before/change keyframe selection (max 2) -> one VLM call
 ```
 
 Static video skips YOLO and VLM. If motion is detected but YOLO finds no
@@ -62,12 +62,13 @@ pipeline to process the complete video. Frames are grouped into five-second
 windows (`window_seconds=5.0`), and each active window produces one VLM
 analysis in `PipelineResult.video_windows`.
 
-Each window selects at most two event-aware keyframes and reports their indices
+Each window selects at most two temporal keyframes: context before the strongest
+change and the strongest change itself. It reports their indices
 and stage timings in `qwen_input` and `timing`; the same information is logged
 to the terminal. By default, two keyframes are fitted into a single 960x1080
 image: `TRUOC` on top and `SAU` below. Qwen receives compact YOLO context
 (label, count and maximum confidence) and is constrained by an Ollama JSON
-schema to return alert level, summary, risks and recommended action. Set
+schema to return only `decision`, `event_type`, and a short `summary`. Set
 `OLLAMA_FRAME_MODE=separate` to send the two keyframes as separate images.
 
 The defaults can be overridden when constructing `SecurityAIPipeline` with
@@ -182,3 +183,11 @@ Candidate-aware Qwen responses contain `decision`, `event_type`, and `summary`.
 `traffic_accident`, `person_fall`, `fighting`, `fire_smoke`, `camera_tamper`, or
 `unknown_event`. The router candidate guides the question but is not treated as
 the final event classification.
+
+Router candidates describe scene composition and decide whether Qwen runs:
+`person_vehicle_scene`, `multi_person_scene`, `person_scene`, `vehicle_scene`,
+`unexplained_motion`, or the specialized `temporally_confirmed_fire_signal`.
+Validated Qwen `event_type` determines the final UI severity independently of
+router priority: `no_event`, `person_vehicle_interaction`, and `unknown_event`
+are green; `person_fall` and `camera_tamper` are orange; `traffic_accident`,
+`fighting`, and `fire_smoke` are red.
