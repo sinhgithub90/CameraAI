@@ -14,7 +14,7 @@ import logging
 import os
 import tempfile
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 import cv2
 import numpy as np
@@ -488,6 +488,8 @@ class SecurityAIPipeline:
         self,
         event: EventObject,
         max_windows: int | None = None,
+        on_window: Callable[[dict], None] | None = None,
+        collect: bool = True,
     ) -> list[dict]:
         """Read every video window and return per-window keyframes+detections.
 
@@ -528,7 +530,7 @@ class SecurityAIPipeline:
                 )
                 frames = [o.frame for o in keyframes if o.frame is not None]
                 dets = [d for o in current_obs for d in o.detections]
-                windows_out.append({
+                window = {
                     "window_index": current_window_idx,
                     "start_seconds": current_window_idx * self.window_seconds,
                     "frames": frames,
@@ -539,7 +541,11 @@ class SecurityAIPipeline:
                     "detections": dets,
                     "motion_ms": current_motion_ms,
                     "detector_ms": current_detector_ms,
-                })
+                }
+                if collect:
+                    windows_out.append(window)
+                if on_window is not None:
+                    on_window(window)
                 current_motion_ms = 0.0
                 current_detector_ms = 0.0
 
@@ -598,6 +604,17 @@ class SecurityAIPipeline:
             if tmp_path:
                 os.unlink(tmp_path)
         return windows_out
+
+    def stream_video_windows(
+        self,
+        event: EventObject,
+        on_window: Callable[[dict], None],
+        max_windows: int | None = None,
+    ) -> None:
+        """Emit each completed 5-second window before reading the next one."""
+        self.detect_video_windows(
+            event, max_windows=max_windows, on_window=on_window, collect=False
+        )
 
     def analyze_vlm(self, task: VLMTask) -> SceneAnalysis:
         """Run VLM analysis on pre-detected frames. Called by VLMWorker (via asyncio.to_thread)."""
