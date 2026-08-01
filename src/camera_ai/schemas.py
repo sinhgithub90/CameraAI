@@ -123,6 +123,10 @@ class VLMResult(BaseModel):
         default=False,
         description="True when the gate skipped the VLM (no cheap trigger fired).",
     )
+    status: str = Field(
+        default="completed",
+        description="'pending' | 'completed' | 'skipped' — lifecycle state.",
+    )
 
 
 class SecurityDecision(BaseModel):
