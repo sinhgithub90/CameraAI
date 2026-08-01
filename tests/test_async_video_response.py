@@ -11,6 +11,7 @@ from fastapi import UploadFile
 from apps.api import main
 from camera_ai.analysis_store import InMemoryAnalysisStore
 from camera_ai.schemas import VideoFrameObservation
+from camera_ai.video_windows import RawVideoWindow
 
 
 class RecordingQueue:
@@ -31,14 +32,14 @@ class RecordingAlertStore:
 
 def _window(index: int, label: str) -> dict:
     frame = np.zeros((24, 32, 3), dtype=np.uint8)
-    return {
-        "window_index": index,
-        "start_seconds": index * 5.0,
-        "observations": [
+    return RawVideoWindow(
+        window_index=index,
+        start_seconds=index * 5.0,
+        observations=[
             VideoFrameObservation(frame_index=index * 10, timestamp_seconds=index * 5.0, frame=frame),
             VideoFrameObservation(frame_index=index * 10 + 5, timestamp_seconds=index * 5.0 + 1.0, frame=frame.copy()),
         ],
-    }
+    )
 
 
 @pytest.mark.asyncio

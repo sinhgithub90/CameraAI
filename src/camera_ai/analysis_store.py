@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from pydantic import BaseModel, Field
 
 from .schemas import SceneAnalysis, StageTiming, VideoWindowResult, VLMResult, SecurityDecision
+from .video_windows import ProcessedVideoWindow
 
 
 class VideoAnalysis(BaseModel):
@@ -52,7 +53,7 @@ class AnalysisStore(ABC):
     async def mark_producer_failed(self, analysis_id: str, detail: str) -> None: ...
 
     @abstractmethod
-    async def complete_processed_window(self, analysis_id: str, alert_id: str, processed: dict, qwen_ms: float) -> None: ...
+    async def complete_processed_window(self, analysis_id: str, alert_id: str, processed: ProcessedVideoWindow, qwen_ms: float) -> None: ...
 
 
 class InMemoryAnalysisStore(AnalysisStore):
@@ -108,15 +109,15 @@ class InMemoryAnalysisStore(AnalysisStore):
         analysis.status = "failed"
         analysis.error = detail
 
-    async def complete_processed_window(self, analysis_id: str, alert_id: str, processed: dict, qwen_ms: float) -> None:
+    async def complete_processed_window(self, analysis_id: str, alert_id: str, processed: ProcessedVideoWindow, qwen_ms: float) -> None:
         analysis = self._analyses[analysis_id]
         for window in analysis.windows:
             if window.alert_id == alert_id:
-                window.detections = processed["detections"]
-                window.qwen_input = processed["qwen_input"]
-                window.timing = processed["timing"]
-                window.vlm = VLMResult(summary=processed["scene"].summary, observations=processed["scene"].observations, degraded=processed["scene"].degraded, status="completed")
-                window.security = SecurityDecision(alert_level=processed["scene"].alert_level, risks=processed["scene"].risks, recommended_action=processed["scene"].recommended_action)
+                window.detections = processed.detections
+                window.qwen_input = processed.qwen_input
+                window.timing = processed.timing
+                window.vlm = VLMResult(summary=processed.scene.summary, observations=processed.scene.observations, degraded=processed.scene.degraded, status="completed")
+                window.security = SecurityDecision(alert_level=processed.scene.alert_level, risks=processed.scene.risks, recommended_action=processed.scene.recommended_action)
                 break
         analysis.refresh_total_timing()
         self._refresh_status(analysis)

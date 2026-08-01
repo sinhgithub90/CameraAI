@@ -43,6 +43,7 @@ from camera_ai.schemas import (
     VLMResult,
 )
 from camera_ai.vlm.mock import MockAnalyzer
+from camera_ai.video_windows import RawVideoWindow
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -143,17 +144,17 @@ VLM_MAX_SIDE = 640  # resize frame trước khi lưu vào VLMTask
 
 
 async def _enqueue_video_window(
-    analysis_id: str, camera_id: str, window: dict,
+    analysis_id: str, camera_id: str, window: RawVideoWindow,
 ) -> None:
     """Persist one detected window, then enqueue it on the sole VLM queue."""
     alert_id = uuid.uuid4().hex
-    observations = window["observations"]
+    observations = window.observations
     timing = StageTiming()
     window_result = VideoWindowResult(
         alert_id=alert_id,
-        window_index=window["window_index"],
-        start_seconds=window["start_seconds"],
-        end_seconds=window["start_seconds"] + pipeline.window_seconds,
+        window_index=window.window_index,
+        start_seconds=window.start_seconds,
+        end_seconds=window.end_seconds,
         detections=[],
         vlm=VLMResult(summary="", status="pending"),
         security=SecurityDecision(alert_level=AlertLevel.LOW),
@@ -181,8 +182,8 @@ async def _enqueue_video_window(
             camera_id=camera_id,
             alert_id=alert_id,
             analysis_id=analysis_id,
-            window_index=window["window_index"],
-            raw_observations=observations,
+            window_index=window.window_index,
+            raw_window=window,
             rule_id="default",
             priority=3,
             enqueued_at=time.monotonic(),
@@ -197,7 +198,7 @@ async def _produce_video_windows(
     """Run blocking decoding in a thread and submit each flush to asyncio."""
     loop = asyncio.get_running_loop()
 
-    def on_window(window: dict) -> None:
+    def on_window(window: RawVideoWindow) -> None:
         future = asyncio.run_coroutine_threadsafe(
             _enqueue_video_window(analysis_id, camera_id, window), loop
         )

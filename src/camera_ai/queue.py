@@ -11,7 +11,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from .schemas import Detection, SceneAnalysis, VideoFrameObservation
+from .schemas import Detection, SceneAnalysis
+from .video_windows import RawVideoWindow
 
 if TYPE_CHECKING:
     from .analysis_store import AnalysisStore
@@ -45,7 +46,7 @@ class VLMTask:
     detections: list[Detection] = field(default_factory=list, compare=False)
     rule_id: str = field(default="default", compare=False)
     max_keyframes: int = field(default=2, compare=False)
-    raw_observations: list[VideoFrameObservation] = field(default_factory=list, compare=False)
+    raw_window: RawVideoWindow | None = field(default=None, compare=False)
 
     def effective_priority(self, now: float | None = None) -> int:
         """Priority with aging: tasks waiting too long get boosted."""
@@ -99,7 +100,7 @@ class VLMQueue:
                 detections=task.detections,
                 rule_id=task.rule_id,
                 max_keyframes=task.max_keyframes,
-                raw_observations=task.raw_observations,
+                raw_window=task.raw_window,
             )
             logger.debug(
                 "[vlm-queue] aged alert=%s priority=%s→%s wait=%.0fs",
@@ -159,9 +160,9 @@ class VLMWorker:
                 )
                 # A video item owns the whole stage pipeline; image items are VLM-only.
                 qwen_started = time.perf_counter()
-                if task.raw_observations:
-                    processed = await asyncio.to_thread(self._pipeline.analyze_stream_window, task)
-                    analysis = processed["scene"]
+                if task.raw_window is not None:
+                    processed = await asyncio.to_thread(self._pipeline.process_video_window, task.raw_window)
+                    analysis = processed.scene
                 else:
                     processed = None
                     analysis = await asyncio.to_thread(self._pipeline.analyze_vlm, task)
