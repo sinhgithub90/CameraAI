@@ -28,4 +28,5 @@ def test_video_ui_renders_window_vlm_results_and_timing_without_detection_table(
     assert 'id="window-results"' in source
     assert "function renderVideoWindows" in source
     assert "Motion total" in source
+    assert "VLM không trả nội dung phân tích cho window này." in source
     assert "Đối tượng phát hiện" not in source

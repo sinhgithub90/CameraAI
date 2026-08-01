@@ -411,10 +411,12 @@ function renderVideoWindows(data, alerts) {
     const card = document.createElement('div');
     card.className = 'card';
     const status = alert?.vlm?.status || window.vlm?.status || 'pending';
-    const summary = alert?.vlm?.summary || (status === 'pending' ? 'Đang chờ VLM...' : '—');
+    const summary = alert?.vlm?.summary || window.vlm?.summary ||
+      (status === 'pending' ? 'Đang chờ VLM...' : 'VLM không trả nội dung phân tích cho window này.');
     const level = alert?.security?.alert_level || window.security?.alert_level || 'low';
     const risks = (alert?.security?.risks || []).join(', ') || '—';
-    const action = alert?.security?.recommended_action || '—';
+    const action = alert?.security?.recommended_action || window.security?.recommended_action ||
+      (status === 'completed' ? 'Kiểm tra lại kết quả VLM.' : '—');
     card.innerHTML = `<h3 style="margin:0 0 10px;font-size:14px">Window ${window.window_index} [${window.start_seconds}–${window.end_seconds}s] · ${status}</h3>`;
     const lines = [
       ['Qwen frames', (window.qwen_input?.frame_indices || []).join(', ') || '—'],
