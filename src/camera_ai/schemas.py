@@ -77,6 +77,18 @@ class VideoFrameObservation(BaseModel):
     frame: Any = Field(default=None, exclude=True)
 
 
+class VideoWindowObservation(BaseModel):
+    """Transport-neutral evidence observed during one video time window."""
+
+    camera_id: str
+    window_id: str
+    start_ms: int = Field(ge=0)
+    end_ms: int = Field(ge=0)
+    motion: MotionResult = Field(default_factory=MotionResult)
+    detections: list[Detection] = Field(default_factory=list)
+    selected_frames: list[int] = Field(default_factory=list)
+
+
 class VideoAnalysisStats(BaseModel):
     """Counters that make video sampling behavior observable."""
 
