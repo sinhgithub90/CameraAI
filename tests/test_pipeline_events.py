@@ -126,7 +126,7 @@ def test_window_processor_exposes_typed_event_lifecycle_with_one_vlm_call():
     result = processor.process(raw_window(), camera_id="cam_01")
 
     assert result.observation.window_id == "cam_01_000000"
-    assert result.candidates[0].candidate_type == "person_only_activity"
+    assert result.candidates[0].candidate_type == "person_scene"
     assert result.candidates[0].evidence["person_peak_count"] == 1
     assert result.candidates[0].evidence["person_detection_frames"] == 1
     assert result.candidates[0].evidence["sampled_frame_count"] == 2
@@ -164,7 +164,7 @@ def test_processor_routes_before_vlm_and_preserves_exact_trace(tmp_path):
     result = processor.process(raw_window(), camera_id="cam_trace")
 
     assert vlm.candidate.candidate_id == result.candidates[0].candidate_id
-    assert result.vlm_trace.prompt == "candidate=person_only_activity"
+    assert result.vlm_trace.prompt == "candidate=person_scene"
     assert result.vlm_trace.raw_output == '{"decision":"yes"}'
     assert result.decision.decision.value == "yes"
     assert result.decision.event_type == "traffic_accident"
@@ -196,7 +196,7 @@ def test_opt_in_fire_detector_requires_temporal_confirmation_for_candidate():
     result = processor.process(window, camera_id="cam_fire")
 
     assert any(
-        candidate.candidate_type == "possible_fire_visual_change"
+        candidate.candidate_type == "temporally_confirmed_fire_signal"
         for candidate in result.candidates
     )
     assert result.vlm_call.call_vlm is True

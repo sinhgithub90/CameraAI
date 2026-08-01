@@ -27,12 +27,12 @@ def test_candidate_is_hypothesis_not_alert():
     candidate = CandidateEvent(
         candidate_id="candidate_001",
         window_id="cam_01_000001",
-        candidate_type="possible_person_vehicle_interaction",
+        candidate_type="person_vehicle_scene",
         priority="medium",
         requires_verification=True,
     )
 
-    assert candidate.candidate_type.startswith("possible_")
+    assert candidate.candidate_type == "person_vehicle_scene"
     assert candidate.priority is Priority.MEDIUM
     assert candidate.requires_verification is True
 

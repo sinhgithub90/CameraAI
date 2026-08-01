@@ -16,7 +16,7 @@ class FakeResponse:
         return {"message": {"content": self.content}}
 
 
-def candidate(candidate_type="person_only_activity", priority=Priority.LOW):
+def candidate(candidate_type="person_scene", priority=Priority.LOW):
     return CandidateEvent(
         candidate_id="candidate-1",
         window_id="window-1",
@@ -43,7 +43,7 @@ def test_candidate_trace_uses_compact_verification_prompt(monkeypatch):
 
     prompt = captured["json"]["messages"][0]["content"]
     schema = captured["json"]["format"]
-    assert "person_only_activity" in prompt
+    assert "person_scene" in prompt
     assert "yes | no | uncertain" in prompt
     assert "1–2 câu" in prompt
     assert "risks" not in prompt
@@ -82,7 +82,7 @@ def test_medium_candidate_yes_maps_to_medium_scene(monkeypatch):
         [np.zeros((32, 32, 3), dtype=np.uint8)],
         [],
         candidate=candidate(
-            "possible_person_vehicle_interaction", Priority.MEDIUM
+            "person_vehicle_scene", Priority.MEDIUM
         ),
     )
 
@@ -171,7 +171,7 @@ def test_truncated_candidate_trace_is_uncertain_and_invalid(monkeypatch):
     trace = OllamaQwenAnalyzer().analyze_with_trace(
         [np.zeros((32, 32, 3), dtype=np.uint8)],
         [],
-        candidate=candidate("possible_fire_visual_change"),
+        candidate=candidate("temporally_confirmed_fire_signal"),
     )
 
     assert trace.raw_output_valid is False

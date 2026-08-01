@@ -109,7 +109,7 @@ def test_video_report_keeps_all_green_orange_and_red_windows(tmp_path):
 def test_video_report_exposes_candidate_decision_and_raw_validity(tmp_path):
     payload = analysis_payload("medium")
     payload["windows"][0]["event_metadata"] = {
-        "candidates": [{"candidate_type": "person_only_activity"}],
+        "candidates": [{"candidate_type": "person_scene"}],
         "decision": {"decision": "yes"},
         "vlm_trace": {"raw_output_valid": True},
     }
@@ -117,7 +117,7 @@ def test_video_report_exposes_candidate_decision_and_raw_validity(tmp_path):
     report = build_video_report(tmp_path / "event.mp4", "analysis-3", payload)
 
     window = report["windows"][0]
-    assert window["candidates"][0]["candidate_type"] == "person_only_activity"
+    assert window["candidates"][0]["candidate_type"] == "person_scene"
     assert window["decision"]["decision"] == "yes"
     assert window["raw_output_valid"] is True
 

@@ -232,7 +232,7 @@ class VideoWindowProcessor:
         )
         routing_candidates = route_observation(routing_observation)
         if fire_confirmed:
-            fire_type = "possible_fire_visual_change"
+            fire_type = "temporally_confirmed_fire_signal"
             routing_candidates.append(
                 CandidateEvent(
                     candidate_id=stable_event_id(
