@@ -16,6 +16,7 @@ import asyncio
 import logging
 import os
 import time
+import uuid
 from pathlib import Path
 
 import cv2
@@ -29,7 +30,7 @@ from camera_ai import SecurityAIPipeline
 from camera_ai.alert_store import Alert, InMemoryAlertStore
 from camera_ai.events import InProcessEventBus
 from camera_ai.queue import VLMTask, VLMQueue, VLMWorker
-from camera_ai.schemas import EventObject, MediaType, PipelineResult
+from camera_ai.schemas import AlertLevel, EventObject, MediaType, PipelineResult, SecurityDecision, VLMResult
 from camera_ai.vlm.mock import MockAnalyzer
 
 logging.basicConfig(level=logging.INFO)
@@ -45,8 +46,8 @@ def _build_pipeline() -> SecurityAIPipeline:
     vlm_provider = os.getenv("CAMERA_AI_VLM", "ollama").strip().lower()
     if vlm_provider == "mock":
         logger.info("Using mock VLM (CAMERA_AI_VLM=mock)")
-        return SecurityAIPipeline(vlm=MockAnalyzer())
-    return SecurityAIPipeline()
+        return SecurityAIPipeline(vlm=MockAnalyzer(), max_video_windows=None)
+    return SecurityAIPipeline(max_video_windows=None)
 
 
 pipeline = _build_pipeline()
@@ -199,90 +200,61 @@ async def analyze_video_async(
         raise HTTPException(status_code=400, detail="empty upload")
     event = EventObject(camera_id=camera_id, image=content, media_type=MediaType.VIDEO)
     try:
-        result = await asyncio.to_thread(pipeline.detect, event)
+        windows = await asyncio.to_thread(pipeline.detect_video_windows, event)
     except Exception as exc:
         logger.exception("async video detection failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    if result.vlm.status == "pending":
-        # Extract a few keyframes from the video for VLM analysis
-        keyframes = _extract_video_keyframes(content, max_frames=2)
-        if not keyframes:
-            result.vlm = VLMResult(
-                summary="Không trích xuất được frame từ video — bỏ qua phân tích VLM.",
-                degraded=True,
-                status="completed",
-            )
-        else:
-            task = VLMTask(
-                camera_id=camera_id,
-                alert_id=result.request_id,
-                frames=keyframes,
-                detections=result.detections,
-                rule_id="default",
-                priority=3,
-                enqueued_at=time.monotonic(),
-                max_keyframes=len(keyframes),
-            )
-            alert = Alert(
-                id=result.request_id,
-                camera_id=camera_id,
-                vlm=result.vlm,
-                security=result.security,
-            )
-            await alert_store.create(alert)
-            await vlm_queue.enqueue(task)
+    if not windows:
+        return PipelineResult(
+            media_type=MediaType.VIDEO,
+            camera_id=camera_id,
+            detections=[],
+            vlm=VLMResult(summary="Không có chuyển động — bỏ qua.", skipped=True, status="skipped"),
+            security=SecurityDecision(alert_level=AlertLevel.LOW),
+        )
+
+    # Build response first so first window shares its request_id (UI polls it)
+    all_detections: list = []
+    for w in windows:
+        all_detections.extend(w["detections"])
+    result = PipelineResult(
+        media_type=MediaType.VIDEO,
+        camera_id=camera_id,
+        detections=all_detections,
+        vlm=VLMResult(
+            summary=f"Đang phân tích {len(windows)} cửa sổ...",
+            status="pending",
+        ),
+        security=SecurityDecision(alert_level=AlertLevel.LOW),
+        annotated_image=pipeline._annotate(
+            windows[0]["frames"][0], all_detections
+        ) if windows[0]["frames"] else None,
+    )
+
+    for i, w in enumerate(windows):
+        alert_id = result.request_id if i == 0 else str(uuid.uuid4())
+        task = VLMTask(
+            task_id=alert_id,
+            camera_id=camera_id,
+            alert_id=alert_id,
+            frames=w["frames"],
+            detections=w["detections"],
+            rule_id="default",
+            priority=3,
+            enqueued_at=time.monotonic(),
+            max_keyframes=len(w["frames"]),
+        )
+        alert = Alert(
+            id=alert_id,
+            camera_id=camera_id,
+            vlm=VLMResult(summary="", status="pending"),
+            security=SecurityDecision(alert_level=AlertLevel.LOW),
+        )
+        await alert_store.create(alert)
+        await vlm_queue.enqueue(task)
 
     return result
-
-
-def _extract_video_keyframes(content: bytes, max_frames: int = 2) -> list[np.ndarray]:
-    """Decode a few spread-out frames from video bytes for VLM."""
-    import tempfile
-
-    tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
-    try:
-        tmp.write(content)
-        tmp.close()
-        cap = cv2.VideoCapture(tmp.name)
-        if not cap.isOpened():
-            return []
-        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        if total <= 0:
-            cap.release()
-            return []
-        frames: list[np.ndarray] = []
-        indices = _spread_indices(total, max_frames)
-        for idx in indices:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-            ok, frame = cap.read()
-            if ok:
-                h, w = frame.shape[:2]
-                if max(h, w) > VLM_MAX_SIDE:
-                    scale = VLM_MAX_SIDE / max(h, w)
-                    frame = cv2.resize(
-                        frame,
-                        (int(w * scale), int(h * scale)),
-                        interpolation=cv2.INTER_AREA,
-                    )
-                frames.append(frame)
-        cap.release()
-        return frames
-    finally:
-        try:
-            os.unlink(tmp.name)
-        except OSError:
-            pass
-
-
-def _spread_indices(total: int, count: int) -> list[int]:
-    """Return evenly-spread frame indices across [0, total)."""
-    if count <= 0 or total <= 0:
-        return []
-    if total <= count:
-        return list(range(total))
-    step = total / count
-    return [int(i * step) for i in range(count)]
 
 
 @app.get("/alerts/{alert_id}")

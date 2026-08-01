@@ -427,10 +427,14 @@ class SecurityAIPipeline:
         return sampled_frames, all_detections, source_fps, last_frame
 
     def detect(self, event: EventObject) -> PipelineResult:
-        """Run detection + gate only. VLM runs later via queue. Returns immediately."""
+        """Run detection + gate only. VLM runs later via queue. Returns immediately.
+
+        For video: processes all 5-second windows without calling VLM.
+        Use detect_video_windows() + enqueue per-window for full async.
+        """
         if event.media_type == MediaType.IMAGE:
             return self._detect_image(event)
-        return self._detect_video(event)
+        return self._detect_video_flat(event)
 
     def _detect_image(self, event: EventObject) -> PipelineResult:
         frame = self._load_image(event.image)
@@ -447,8 +451,8 @@ class SecurityAIPipeline:
             annotated_image=self._annotate(frame, detections),
         )
 
-    def _detect_video(self, event: EventObject) -> PipelineResult:
-        """Video detection only — VLM runs later via queue."""
+    def _detect_video_flat(self, event: EventObject) -> PipelineResult:
+        """Quick video summary — one result for all windows (used by sync endpoint)."""
         source = event.image
         tmp_path: str | None = None
         if isinstance(source, bytes):
@@ -479,6 +483,113 @@ class SecurityAIPipeline:
             security=SecurityDecision(alert_level=AlertLevel.LOW),
             annotated_image=self._annotate(last_frame, all_detections),
         )
+
+    def detect_video_windows(
+        self, event: EventObject
+    ) -> list[dict]:
+        """Read video in 5s windows. Return per-window keyframes+detections.
+
+        Each dict: {window_index, start_seconds, frames, detections}.
+        The caller enqueues one VLMTask per window with motion.
+        """
+        source = event.image
+        tmp_path: str | None = None
+        if isinstance(source, bytes):
+            tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+            tmp.write(source)
+            tmp.close()
+            tmp_path = tmp.name
+            source = tmp_path
+
+        windows_out: list[dict] = []
+        try:
+            cap = cv2.VideoCapture(source)
+            if not cap.isOpened():
+                raise ValueError("cannot open video input")
+            source_fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+            motion_interval = max(1, round(source_fps / self.motion_fps))
+            detector_interval = max(1, round(source_fps / self.yolo_fps))
+            motion_detector = MotionDetector()
+            current_obs: list[VideoFrameObservation] = []
+            current_window_idx: int | None = None
+            last_detector_idx: int | None = None
+            idx = 0
+
+            while True:
+                if (
+                    self.max_video_windows is not None
+                    and current_window_idx is not None
+                    and current_window_idx >= self.max_video_windows
+                ):
+                    break
+                grabbed = cap.grab()
+                if not grabbed:
+                    break
+                if idx % motion_interval == 0:
+                    ok, frame = cap.retrieve()
+                    if not ok:
+                        break
+                    frame = self._resize(frame, VIDEO_MAX_SIDE, interpolation=cv2.INTER_LINEAR)
+                    window_idx = int((idx / source_fps) // self.window_seconds)
+                    if current_window_idx is None:
+                        current_window_idx = window_idx
+                    elif window_idx != current_window_idx:
+                        # Flush current window
+                        if current_obs and any(o.motion.motion for o in current_obs):
+                            keyframes = select_keyframes(
+                                current_obs, max_keyframes=self.max_keyframes
+                            )
+                            frames = [
+                                o.frame for o in keyframes if o.frame is not None
+                            ]
+                            dets = [d for o in current_obs for d in o.detections]
+                            windows_out.append({
+                                "window_index": current_window_idx,
+                                "start_seconds": current_window_idx * self.window_seconds,
+                                "frames": frames,
+                                "detections": dets,
+                            })
+                        current_obs = []
+                        current_window_idx = window_idx
+                        last_detector_idx = None
+
+                    motion = motion_detector.compare(frame)
+                    obs = VideoFrameObservation(
+                        frame_index=idx,
+                        timestamp_seconds=idx / source_fps,
+                        motion=motion,
+                        frame=frame,
+                    )
+                    if motion.motion and (
+                        last_detector_idx is None
+                        or idx - last_detector_idx >= detector_interval
+                    ):
+                        try:
+                            obs.detections = self.detector.detect(frame)
+                        except Exception:
+                            logger.exception("video detector failed at frame %s", idx)
+                        last_detector_idx = idx
+                    current_obs.append(obs)
+                idx += 1
+
+            # Flush last window
+            if current_obs and any(o.motion.motion for o in current_obs):
+                keyframes = select_keyframes(
+                    current_obs, max_keyframes=self.max_keyframes
+                )
+                frames = [o.frame for o in keyframes if o.frame is not None]
+                dets = [d for o in current_obs for d in o.detections]
+                windows_out.append({
+                    "window_index": current_window_idx or 0,
+                    "start_seconds": (current_window_idx or 0) * self.window_seconds,
+                    "frames": frames,
+                    "detections": dets,
+                })
+            cap.release()
+        finally:
+            if tmp_path:
+                os.unlink(tmp_path)
+        return windows_out
 
     def analyze_vlm(self, task: VLMTask) -> SceneAnalysis:
         """Run VLM analysis on pre-detected frames. Called by VLMWorker (via asyncio.to_thread)."""
