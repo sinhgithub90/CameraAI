@@ -269,3 +269,12 @@ def test_prompt_requires_risks_and_recommended_action():
     assert "recommended_action: bắt buộc" in _PROMPT
     assert "risks: mảng" in _PROMPT
     assert "Tiếp tục giám sát." in _PROMPT
+
+
+def test_truncated_qwen_json_keeps_the_reported_alert_level():
+    result = OllamaQwenAnalyzer._parse(
+        '{"alert_level":"high","summary":"Có cháy lớn","risks":["nguy cơ cháy"],'
+    )
+    assert result.alert_level.value == "high"
+    assert result.degraded is True
+    assert result.summary == "Có cháy lớn"

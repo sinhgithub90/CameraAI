@@ -11,6 +11,7 @@ import base64
 import json
 import logging
 import os
+import re
 from collections.abc import Sequence
 
 import cv2
@@ -292,9 +293,19 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
     def _parse(cls, content: str) -> SceneAnalysis:
         data = cls._extract_json(content)
         if data is None:
-            # Model refused / returned prose instead of JSON — degrade gracefully.
+            level = re.search(r'"alert_level"\s*:\s*"([^"]+)"', content)
+            summary = re.search(r'"summary"\s*:\s*"([^"]*)"', content)
+            if level or summary:
+                logger.warning("VLM returned truncated JSON: %r", content[:200])
+                return SceneAnalysis(
+                    summary=summary.group(1) if summary and summary.group(1) else "VLM trả JSON chưa hoàn chỉnh.",
+                    alert_level=cls._coerce_alert(level.group(1) if level else "medium"),
+                    risks=["vlm_truncated_response"],
+                    recommended_action="kiểm tra lại kết quả VLM",
+                    degraded=True,
+                )
             logger.warning("VLM did not return JSON; treating text as summary: %r", content[:200])
-            return SceneAnalysis(summary=content.strip())
+            return SceneAnalysis(summary=content.strip(), degraded=True)
         summary = str(data.get("summary", ""))
         if not summary.strip():
             logger.warning("VLM returned an empty summary: %r", content[:200])
