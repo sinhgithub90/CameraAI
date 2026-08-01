@@ -47,7 +47,7 @@ _OUTPUT_SCHEMA = {
             "type": "string",
             "enum": ["low", "medium", "high"],
         },
-        "summary": {"type": "string"},
+        "summary": {"type": "string", "minLength": 1},
         "risks": {"type": "array", "items": {"type": "string"}},
         "recommended_action": {"type": "string"},
     },
@@ -292,6 +292,15 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
             logger.warning("VLM did not return JSON; treating text as summary: %r", content[:200])
             return SceneAnalysis(summary=content.strip())
         summary = str(data.get("summary", ""))
+        if not summary.strip():
+            logger.warning("VLM returned an empty summary: %r", content[:200])
+            return SceneAnalysis(
+                summary="VLM không trả nội dung phân tích cho window này.",
+                alert_level=cls._coerce_alert(data.get("alert_level")),
+                risks=["vlm_empty_response"],
+                recommended_action="kiểm tra lại kết quả VLM",
+                degraded=True,
+            )
         raw_observations = data.get("observations")
         observations = (
             cls._normalize_strings(raw_observations)

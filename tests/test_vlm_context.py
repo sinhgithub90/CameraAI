@@ -253,3 +253,12 @@ def test_compact_response_derives_observations_from_summary(monkeypatch):
     assert result.summary == "Bình thường."
     assert result.observations == ["Bình thường."]
     assert result.recommended_action == "Tiếp tục giám sát."
+
+
+def test_empty_qwen_summary_is_exposed_as_degraded_result():
+    result = OllamaQwenAnalyzer._parse(
+        '{"alert_level":"low","summary":"","risks":[],"recommended_action":""}'
+    )
+
+    assert result.degraded is True
+    assert result.summary == "VLM không trả nội dung phân tích cho window này."
