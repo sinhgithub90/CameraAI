@@ -89,16 +89,48 @@ def test_keyframe_selector_includes_first_and_last_for_calm_video():
     assert indices[-1] == 4
 
 
-def test_two_keyframes_prioritize_temporally_separated_event_frames():
+def test_two_keyframes_select_context_before_strongest_change():
     observations = make_observations(
         25,
-        motion_indices={10, 15},
-        detection_indices={10},
+        motion_indices={15},
+        detection_indices={15},
     )
 
     selected = select_keyframes(observations, max_keyframes=2)
 
     assert [item.frame_index for item in selected] == [10, 15]
+
+
+def test_two_keyframes_use_ends_when_there_is_no_change():
+    selected = select_keyframes(make_observations(5), max_keyframes=2)
+
+    assert [item.frame_index for item in selected] == [0, 4]
+
+
+def test_two_keyframes_pair_first_change_with_last_frame():
+    observations = make_observations(
+        5,
+        motion_indices={0},
+        detection_indices={0},
+    )
+
+    selected = select_keyframes(observations, max_keyframes=2)
+
+    assert [item.frame_index for item in selected] == [0, 4]
+
+
+def test_two_keyframes_return_single_observation_once():
+    selected = select_keyframes(make_observations(1), max_keyframes=2)
+
+    assert [item.frame_index for item in selected] == [0]
+
+
+def test_two_keyframes_use_detection_change_without_motion():
+    observations = make_observations(20, detection_indices={12})
+
+    selected = select_keyframes(observations, max_keyframes=2)
+
+    assert [item.frame_index for item in selected] == [7, 12]
 
 
 def test_vlm_sequence_analysis_is_called_once():

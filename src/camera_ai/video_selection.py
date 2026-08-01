@@ -5,6 +5,34 @@ from collections.abc import Sequence
 
 from .schemas import VideoFrameObservation
 
+VEHICLE_LABELS = {"bicycle", "car", "motorcycle", "bus", "truck"}
+
+
+def _label_count(
+    observation: VideoFrameObservation,
+    labels: set[str],
+) -> int:
+    return sum(item.label in labels for item in observation.detections)
+
+
+def _observation_change_score(
+    previous: VideoFrameObservation | None,
+    current: VideoFrameObservation,
+) -> float:
+    previous_detections = previous.detections if previous is not None else []
+    person_delta = abs(
+        _label_count(current, {"person"})
+        - sum(item.label == "person" for item in previous_detections)
+    )
+    vehicle_delta = abs(
+        _label_count(current, VEHICLE_LABELS)
+        - sum(item.label in VEHICLE_LABELS for item in previous_detections)
+    )
+    previous_labels = {item.label for item in previous_detections}
+    current_labels = {item.label for item in current.detections}
+    label_changed = float(previous_labels != current_labels)
+    return current.motion.score + person_delta + vehicle_delta + label_changed
+
 
 def score_observations(
     observations: Sequence[VideoFrameObservation],
@@ -39,42 +67,35 @@ def select_keyframes(
         return list(observations)
 
     if max_keyframes == 2:
-        ranked = [item for _, item in score_observations(observations)]
-        event_ranked = [
-            item for item in ranked if item.motion.motion or item.detections
-        ]
-        if event_ranked:
-            primary = event_ranked[0]
-            separated_events = [
-                item
-                for item in event_ranked[1:]
-                if abs(item.timestamp_seconds - primary.timestamp_seconds) >= 1.0
-            ]
-            separated_frames = [
-                item
-                for item in ranked
-                if item.frame_index != primary.frame_index
-                and abs(item.timestamp_seconds - primary.timestamp_seconds) >= 1.0
-            ]
-            if separated_events:
-                secondary = separated_events[0]
-            elif separated_frames:
-                secondary = separated_frames[0]
-            else:
-                secondary = max(
-                    (
-                        item
-                        for item in observations
-                        if item.frame_index != primary.frame_index
-                    ),
-                    key=lambda item: abs(
-                        item.timestamp_seconds - primary.timestamp_seconds
-                    ),
-                )
-            return sorted(
-                [primary, secondary],
-                key=lambda item: item.frame_index,
+        change_scores = [
+            _observation_change_score(
+                observations[position - 1] if position else None,
+                observation,
             )
+            for position, observation in enumerate(observations)
+        ]
+        if max(change_scores) == 0:
+            return [observations[0], observations[-1]]
+
+        event_position = max(
+            range(len(observations)),
+            key=lambda position: change_scores[position],
+        )
+        if event_position == 0:
+            return [observations[0], observations[-1]]
+
+        event_frame = observations[event_position]
+        separated_context = [
+            item
+            for item in observations[:event_position]
+            if event_frame.timestamp_seconds - item.timestamp_seconds >= 1.0
+        ]
+        context_frame = (
+            separated_context[-1]
+            if separated_context
+            else observations[0]
+        )
+        return [context_frame, event_frame]
 
     selected: dict[int, VideoFrameObservation] = {}
 
