@@ -65,6 +65,17 @@ class StagedVideo(BaseModel):
     path: Path
 
 
+class MultiVideoItem(BaseModel):
+    filename: str
+    camera_id: str
+    analysis_id: str
+
+
+class MultiVideoResponse(BaseModel):
+    batch_id: str
+    items: list[MultiVideoItem]
+
+
 def _camera_ids(files: list[UploadFile]) -> list[str]:
     used: dict[str, int] = {}
     result: list[str] = []
@@ -350,6 +361,60 @@ async def analyze_video_async(
     )
     asyncio.create_task(_produce_video_windows(event, result.request_id, camera_id))
     return result
+
+
+@app.post("/async/analyze/videos", response_model=MultiVideoResponse)
+async def analyze_videos_async(
+    files: list[UploadFile] = File(...),
+) -> MultiVideoResponse:
+    if not 1 <= len(files) <= MAX_BATCH_VIDEOS:
+        raise HTTPException(status_code=400, detail="files must contain 1..20 videos")
+
+    camera_ids = _camera_ids(files)
+    staged: list[StagedVideo] = []
+    try:
+        for upload, camera_id in zip(files, camera_ids, strict=True):
+            staged.append(
+                StagedVideo(
+                    filename=upload.filename or f"{camera_id}.mp4",
+                    camera_id=camera_id,
+                    path=await _stage_video(upload),
+                )
+            )
+    except Exception as exc:
+        for item in staged:
+            item.path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    batch_id = uuid.uuid4().hex
+    items: list[MultiVideoItem] = []
+    for item in staged:
+        analysis_id = uuid.uuid4().hex
+        await analysis_store.create(
+            VideoAnalysis(id=analysis_id, camera_id=item.camera_id)
+        )
+        event = EventObject(
+            camera_id=item.camera_id,
+            image=str(item.path),
+            media_type=MediaType.VIDEO,
+        )
+        asyncio.create_task(
+            _produce_video_windows(
+                event,
+                analysis_id,
+                item.camera_id,
+                cleanup_path=item.path,
+            )
+        )
+        items.append(
+            MultiVideoItem(
+                filename=item.filename,
+                camera_id=item.camera_id,
+                analysis_id=analysis_id,
+            )
+        )
+
+    return MultiVideoResponse(batch_id=batch_id, items=items)
 
 
 @app.get("/analyses/{analysis_id}", response_model=VideoAnalysis)

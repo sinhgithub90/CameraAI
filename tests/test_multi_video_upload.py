@@ -3,7 +3,7 @@ from io import BytesIO
 from pathlib import Path
 
 import pytest
-from fastapi import UploadFile
+from fastapi import HTTPException, UploadFile
 
 from apps.api import main
 from camera_ai.analysis_store import InMemoryAnalysisStore, VideoAnalysis
@@ -57,3 +57,80 @@ async def test_producer_always_removes_staged_file(monkeypatch, tmp_path):
 
     assert not staged.exists()
     assert (await store.get("analysis-1")).status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_multi_video_endpoint_submits_every_file(monkeypatch, tmp_path):
+    store = InMemoryAnalysisStore()
+    submitted: list[tuple[str, str, str, Path | None]] = []
+    monkeypatch.setattr(main, "analysis_store", store)
+
+    async def stage(upload):
+        path = tmp_path / upload.filename
+        path.write_bytes(await upload.read())
+        return path
+
+    async def produce(event, analysis_id, camera_id, cleanup_path=None):
+        submitted.append((str(event.image), analysis_id, camera_id, cleanup_path))
+
+    monkeypatch.setattr(main, "_stage_video", stage)
+    monkeypatch.setattr(main, "_produce_video_windows", produce)
+
+    response = await main.analyze_videos_async(
+        [_upload("cam-a.mp4"), _upload("cam-b.mp4"), _upload("cam-c.mp4")]
+    )
+    await asyncio.sleep(0)
+
+    assert response.batch_id
+    assert len(response.items) == 3
+    assert [item.camera_id for item in response.items] == ["cam-a", "cam-b", "cam-c"]
+    assert len({item.analysis_id for item in response.items}) == 3
+    assert len(submitted) == 3
+    for item in response.items:
+        assert await store.get(item.analysis_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_multi_video_endpoint_requires_one_to_twenty_files():
+    with pytest.raises(HTTPException) as empty:
+        await main.analyze_videos_async([])
+    assert empty.value.status_code == 400
+
+    with pytest.raises(HTTPException) as too_many:
+        await main.analyze_videos_async([_upload(f"{i}.mp4") for i in range(21)])
+    assert too_many.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_staging_failure_cleans_prior_files_and_starts_nothing(
+    monkeypatch, tmp_path
+):
+    store = InMemoryAnalysisStore()
+    staged_path = tmp_path / "first.mp4"
+    calls = 0
+    producers: list[object] = []
+    monkeypatch.setattr(main, "analysis_store", store)
+
+    async def stage(_upload):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise ValueError("staging failed")
+        staged_path.write_bytes(b"video")
+        return staged_path
+
+    async def produce(*args, **kwargs):
+        producers.append((args, kwargs))
+
+    monkeypatch.setattr(main, "_stage_video", stage)
+    monkeypatch.setattr(main, "_produce_video_windows", produce)
+
+    with pytest.raises(HTTPException) as error:
+        await main.analyze_videos_async(
+            [_upload("first.mp4"), _upload("second.mp4")]
+        )
+
+    assert error.value.status_code == 400
+    assert not staged_path.exists()
+    assert store._analyses == {}
+    assert producers == []
