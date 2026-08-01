@@ -39,8 +39,7 @@ from .schemas import (
     VLMResult,
 )
 from .video_selection import select_keyframes
-from .vlm.base import VLMAnalyzer
-from .vlm.ollama_qwen import OllamaQwenAnalyzer
+from .vlm import OllamaQwenAnalyzer, VLMAnalyzer
 
 if TYPE_CHECKING:
     from .queue import VLMTask
