@@ -89,7 +89,7 @@ def test_keyframe_selector_includes_first_and_last_for_calm_video():
     assert indices[-1] == 4
 
 
-def test_two_keyframes_select_context_before_strongest_change():
+def test_two_keyframes_select_before_and_after_strongest_change():
     observations = make_observations(
         25,
         motion_indices={15},
@@ -98,7 +98,7 @@ def test_two_keyframes_select_context_before_strongest_change():
 
     selected = select_keyframes(observations, max_keyframes=2)
 
-    assert [item.frame_index for item in selected] == [10, 15]
+    assert [item.frame_index for item in selected] == [10, 19]
 
 
 def test_two_keyframes_use_ends_when_there_is_no_change():
@@ -107,9 +107,9 @@ def test_two_keyframes_use_ends_when_there_is_no_change():
     assert [item.frame_index for item in selected] == [0, 4]
 
 
-def test_two_keyframes_pair_first_change_with_last_frame():
+def test_two_keyframes_select_after_frame_when_peak_is_first():
     observations = make_observations(
-        5,
+        8,
         motion_indices={0},
         detection_indices={0},
     )
@@ -119,18 +119,36 @@ def test_two_keyframes_pair_first_change_with_last_frame():
     assert [item.frame_index for item in selected] == [0, 4]
 
 
+def test_two_keyframes_select_before_frame_when_peak_is_last():
+    observations = make_observations(
+        21,
+        motion_indices={20},
+        detection_indices={20},
+    )
+
+    selected = select_keyframes(observations, max_keyframes=2)
+
+    assert [item.frame_index for item in selected] == [15, 20]
+
+
 def test_two_keyframes_return_single_observation_once():
     selected = select_keyframes(make_observations(1), max_keyframes=2)
 
     assert [item.frame_index for item in selected] == [0]
 
 
-def test_two_keyframes_use_detection_change_without_motion():
+def test_two_keyframes_surround_detection_change_without_motion():
     observations = make_observations(20, detection_indices={12})
 
     selected = select_keyframes(observations, max_keyframes=2)
 
-    assert [item.frame_index for item in selected] == [7, 12]
+    assert [item.frame_index for item in selected] == [7, 16]
+
+
+def test_two_keyframes_preserve_two_observations():
+    selected = select_keyframes(make_observations(2), max_keyframes=2)
+
+    assert [item.frame_index for item in selected] == [0, 1]
 
 
 def test_vlm_sequence_analysis_is_called_once():

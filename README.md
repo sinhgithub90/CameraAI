@@ -62,14 +62,17 @@ pipeline to process the complete video. Frames are grouped into five-second
 windows (`window_seconds=5.0`), and each active window produces one VLM
 analysis in `PipelineResult.video_windows`.
 
-Each window selects at most two temporal keyframes: context before the strongest
-change and the strongest change itself. It reports their indices
+For two-keyframe windows, the strongest motion/detection change defines a peak.
+The selector sends the observation nearest one second before the peak and the
+observation nearest 0.8 seconds after it, falling back to window boundaries.
+It reports their indices
 and stage timings in `qwen_input` and `timing`; the same information is logged
 to the terminal. By default, two keyframes are fitted into a single 960x1080
 image: `TRUOC` on top and `SAU` below. Qwen receives compact YOLO context
 (label, count and maximum confidence) and is constrained by an Ollama JSON
 schema to return only `decision`, `event_type`, and a short `summary`. Set
 `OLLAMA_FRAME_MODE=separate` to send the two keyframes as separate images.
+Selection remains inside the current window and adds no inference call.
 
 The defaults can be overridden when constructing `SecurityAIPipeline` with
 `motion_fps`, `yolo_fps`, and `max_keyframes`. Stage boundaries remain

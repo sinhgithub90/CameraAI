@@ -6,6 +6,21 @@ from collections.abc import Sequence
 from .schemas import VideoFrameObservation
 
 VEHICLE_LABELS = {"bicycle", "car", "motorcycle", "bus", "truck"}
+BEFORE_PEAK_SECONDS = 1.0
+AFTER_PEAK_SECONDS = 0.8
+
+
+def _nearest_by_timestamp(
+    observations: Sequence[VideoFrameObservation],
+    target_seconds: float,
+) -> VideoFrameObservation:
+    return min(
+        observations,
+        key=lambda item: (
+            abs(item.timestamp_seconds - target_seconds),
+            item.timestamp_seconds,
+        ),
+    )
 
 
 def _label_count(
@@ -81,21 +96,26 @@ def select_keyframes(
             range(len(observations)),
             key=lambda position: change_scores[position],
         )
-        if event_position == 0:
-            return [observations[0], observations[-1]]
-
         event_frame = observations[event_position]
-        separated_context = [
-            item
-            for item in observations[:event_position]
-            if event_frame.timestamp_seconds - item.timestamp_seconds >= 1.0
-        ]
-        context_frame = (
-            separated_context[-1]
-            if separated_context
+        before_candidates = observations[:event_position]
+        after_candidates = observations[event_position + 1 :]
+        before_frame = (
+            _nearest_by_timestamp(
+                before_candidates,
+                event_frame.timestamp_seconds - BEFORE_PEAK_SECONDS,
+            )
+            if before_candidates
             else observations[0]
         )
-        return [context_frame, event_frame]
+        after_frame = (
+            _nearest_by_timestamp(
+                after_candidates,
+                event_frame.timestamp_seconds + AFTER_PEAK_SECONDS,
+            )
+            if after_candidates
+            else observations[-1]
+        )
+        return [before_frame, after_frame]
 
     selected: dict[int, VideoFrameObservation] = {}
 
