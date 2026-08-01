@@ -24,7 +24,8 @@
 ## File map
 
 - Modify `src/camera_ai/schemas.py`: add window-level observation and event contracts while retaining existing response models.
-- Create `src/camera_ai/events.py`: candidate creation, decision normalization, alert policy, and compatibility projection helpers.
+- Keep `src/camera_ai/events.py`: system EventBus messages (`Event`, `EventBus`, `InProcessEventBus`). Do not place domain contracts here.
+- Create `src/camera_ai/event_models.py`: CandidateEvent, ModelDecision, AlertEvent, policy, and compatibility projection helpers.
 - Create `src/camera_ai/router.py`: deterministic Event Router over observation evidence.
 - Modify `src/camera_ai/pipeline.py`: orchestrate the new stages behind the existing public method.
 - Create `src/camera_ai/benchmark.py`: serializable benchmark case/result models and metric aggregation.
@@ -70,12 +71,12 @@ def test_benchmark_summary_aggregates_latency_and_vlm_calls():
 
 **Files:**
 - Modify: `src/camera_ai/schemas.py`
-- Create: `src/camera_ai/events.py`
+- Create: `src/camera_ai/event_models.py`
 - Create: `tests/test_event_contracts.py`
 
 **Interfaces:**
 - Consumes: `EventObject`, `MotionResult`, `Detection`, `VideoFrameObservation`, `VideoWindowResult`.
-- Produces: `VideoWindowObservation`, `CandidateEvent`, `ModelDecision`, `AlertEvent`, `DecisionValue`, `Priority`, and `project_alert_to_pipeline_result(...)`.
+- Produces: `VideoWindowObservation`, `CandidateEvent`, `ModelDecision`, `AlertEvent`, `DecisionValue`, `Priority`, and `project_alert_to_pipeline_result(...)` from `src/camera_ai/event_models.py`.
 
 - [ ] **Step 1: Write failing schema tests**
 
@@ -97,10 +98,11 @@ def test_invalid_model_decision_value_is_rejected():
 ```
 
 - [ ] **Step 2: Run `pytest tests/test_event_contracts.py -q` and verify it fails.**
-- [ ] **Step 3: Add strict enums for decision, priority, severity, and alert status; include `raw_output_valid`, optional confidence for analysis, evidence, and latency.**
+- [ ] **Step 3: Add strict enums for decision, priority, severity, and alert status; include `raw_output_valid`, optional confidence for analysis, evidence, and latency in `src/camera_ai/event_models.py`.**
 - [ ] **Step 4: Implement stable IDs from request/window context and project the highest-priority verified result into existing `SecurityDecision`/`VLMResult` fields.**
-- [ ] **Step 5: Run the new tests plus `pytest tests/test_video_pipeline.py -q`; expected result: all pass and existing schemas remain valid.**
-- [ ] **Step 6: Commit with `git add src/camera_ai/schemas.py src/camera_ai/events.py tests/test_event_contracts.py && git commit -m "feat: add camera event data contracts"`.**
+- [ ] **Step 5: Add an explicit adapter from domain `AlertEvent` to the existing `alert_store.Alert`; preserve `VLMResult.status` as `pending`, `completed`, or `skipped`.**
+- [ ] **Step 6: Run the new tests plus `pytest tests/test_video_pipeline.py -q`; expected result: all pass and existing schemas remain valid.**
+- [ ] **Step 7: Commit with `git add src/camera_ai/schemas.py src/camera_ai/event_models.py tests/test_event_contracts.py && git commit -m "feat: add camera event data contracts"`.**
 
 ### Task 3: Build the deterministic Event Router
 
@@ -140,16 +142,17 @@ def test_motion_without_objects_routes_to_unknown_motion(observation_without_det
 - Create: `tests/test_pipeline_events.py`
 
 **Interfaces:**
-- Consumes: current `VideoFrameObservation` list, `select_keyframes`, and `route_observation`.
-- Produces: one `VideoWindowObservation` and zero or more `CandidateEvent` records per analyzed window; existing `PipelineResult` remains populated.
+- Consumes: current `VideoFrameObservation` list, `select_keyframes`, `route_observation`, and the existing async `VLMTask`/`AlertStore` lifecycle.
+- Produces: one `VideoWindowObservation` and zero or more `CandidateEvent` records per analyzed window; existing `PipelineResult` remains populated and async results retain `pending → completed/skipped` status.
 
 - [ ] **Step 1: Write failing integration tests asserting that a synthetic motion window exposes observation/candidate metadata while Qwen call count remains unchanged.**
 - [ ] **Step 2: Run `pytest tests/test_pipeline_events.py tests/test_video_pipeline.py -q` and verify the new assertions fail.**
 - [ ] **Step 3: Build window observations from existing sampled observations; do not change sampling intervals or the default two-keyframe selector.**
-- [ ] **Step 4: Call the router once per motion window and attach serializable event metadata through an additive optional field or sidecar result, preserving current API fields.**
+- [ ] **Step 4: Call the router once per motion window and attach serializable event metadata through an additive optional field or sidecar result, preserving current API fields. For async requests, create/update the existing `alert_store.Alert`, enqueue `VLMTask`, and let `VLMWorker` call `pipeline.analyze_vlm()` rather than creating a second worker path.**
 - [ ] **Step 5: Add opt-in artifact writing controlled by an explicit output directory argument; write JSON and selected JPEGs only when enabled.**
-- [ ] **Step 6: Run `pytest -q`; expected result: existing behavior and new event assertions pass.**
-- [ ] **Step 7: Commit with `git add src/camera_ai/pipeline.py src/camera_ai/schemas.py tests/test_video_pipeline.py tests/test_pipeline_events.py && git commit -m "feat: expose window observations and candidates"`.**
+- [ ] **Step 6: Add integration assertions for `AlertStore.Alert.vlm.status` and `VLMQueue` enqueue/update behavior; keep synchronous `analyze_event()` unchanged.**
+- [ ] **Step 7: Run `pytest -q`; expected result: existing behavior and new event assertions pass.**
+- [ ] **Step 8: Commit with `git add src/camera_ai/pipeline.py src/camera_ai/schemas.py tests/test_video_pipeline.py tests/test_pipeline_events.py && git commit -m "feat: expose window observations and candidates"`.**
 
 ### Task 5: Add the offline benchmark runner and baseline report
 
@@ -159,12 +162,12 @@ def test_motion_without_objects_routes_to_unknown_motion(observation_without_det
 - Create: `tests/test_benchmark_cli.py`
 
 **Interfaces:**
-- Consumes: a manifest JSON, local media paths, `SecurityAIPipeline`, and optional `--model`/`--frame-mode` settings.
+- Consumes: a manifest JSON, local media paths, `SecurityAIPipeline`, and optional `--model`/`--frame-mode` settings; benchmark both synchronous `analyze_event()` and async `detect()` plus worker completion when requested.
 - Produces: one JSONL per case and one aggregate JSON report containing latency, VLM calls, JSON validity, predicted event, and expected event.
 
 - [ ] **Step 1: Write a CLI test using a temporary manifest and a mocked pipeline; assert one result line per case and one summary object.**
 - [ ] **Step 2: Run `pytest tests/test_benchmark_cli.py -q` and verify it fails because the script does not exist.**
-- [ ] **Step 3: Implement arguments `--manifest`, `--output`, `--model`, `--frame-mode`, and `--warmup`; use the same media for every compared configuration.**
+- [ ] **Step 3: Implement arguments `--manifest`, `--output`, `--model`, `--frame-mode`, `--mode` (`sync` or `async`), and `--warmup`; use the same media for every compared configuration.**
 - [ ] **Step 4: Document warm-up, cold-run exclusion, Ollama availability, and required case manifest fields.**
 - [ ] **Step 5: Run the CLI test and a dry run against a small local fixture; expected result: JSONL and summary JSON are created.**
 - [ ] **Step 6: Commit with `git add scripts/benchmark_pipeline.py tests/test_benchmark_cli.py docs/benchmarks/README.md && git commit -m "feat: add reproducible pipeline benchmark runner"`.**
@@ -274,6 +277,8 @@ Before declaring the architecture implementation complete:
 - Verify a static video does not call YOLO or Qwen through the video path.
 - Verify motion with no YOLO detection still calls Qwen once per window.
 - Verify Ollama failure returns `degraded=true` and does not create a high alert.
+- Verify async requests expose `pending` first and reach `completed` or `skipped` through the existing `VLMWorker` and `AlertStore`.
+- Verify `events.py` remains the EventBus module and domain contracts live in `event_models.py`.
 - Verify candidate names remain hypotheses and confirmed alert names only appear in policy output.
 - Verify ByteTrack, Zone/Line, and traffic rules are opt-in and covered by isolated tests.
 - Record benchmark results before selecting a 2B/4B cascade or changing keyframe count.

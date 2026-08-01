@@ -31,6 +31,10 @@ FastAPI. Runtime hiện tại:
 - `CandidateEvent`, `ModelDecision`, `AlertEvent` và tracking chưa có trong
   pipeline runtime.
 - `FireDetector` tồn tại nhưng không được khởi tạo bởi pipeline mặc định.
+- Nhánh async đã có `pipeline.detect()`, `pipeline.analyze_vlm()`,
+  `VLMQueue`, `VLMWorker`, `AlertStore` và `InProcessEventBus`.
+- `src/camera_ai/events.py` hiện dành cho EventBus; domain event contracts không
+  được đặt vào file này.
 
 Chi tiết runtime nằm trong
 [`camera-ai-pipeline.md`](../../camera-ai-pipeline.md).
@@ -88,6 +92,25 @@ YOLO detections → ByteTrack → track history
                                   ↓
                          Candidate / Zone / Line rules
 ```
+
+Nhánh thực thi async hiện tại tách detection khỏi VLM:
+
+```text
+pipeline.detect()
+      ↓
+AlertStore.Alert(vlm.status=pending)
+      ↓
+VLMQueue → VLMWorker
+      ↓
+pipeline.analyze_vlm()
+      ↓
+AlertStore.update_vlm()
+      ↓
+vlm.status=completed
+```
+
+Đây là execution mechanism, không thay thế domain contract. EventBus vẫn là
+transport cho các event hệ thống như `alert.created` và `alert.vlm_confirmed`.
 
 ## Data contract
 
@@ -186,6 +209,25 @@ Alert chỉ được phát hành sau khi policy xác nhận candidate:
 Các cảnh báo cũ trong `PipelineResult.security` tiếp tục được tạo bằng cách
 chiếu AlertEvent/ModelDecision tốt nhất về `alert_level`, `risks` và
 `recommended_action`.
+
+### Mapping sang async AlertStore
+
+`AlertEvent` là domain-level event, còn `alert_store.Alert` là persistence
+model của execution async hiện tại. Chúng được nối qua mapping rõ ràng:
+
+```text
+CandidateEvent
+    ↓ policy creates
+AlertEvent
+    ↓ persistence adapter
+alert_store.Alert
+    ↓ VLM worker update
+AlertStore.Alert.vlm + AlertStore.Alert.security
+```
+
+`AlertStore.Alert.id` giữ `alert_id`; `rule_id` giữ nguồn candidate/rule; trạng
+thái VLM dùng `VLMResult.status` (`pending`, `completed`, `skipped`). Không đổi
+ý nghĩa của `events.Event`, vì đó là message của EventBus.
 
 ## Luồng và policy
 
