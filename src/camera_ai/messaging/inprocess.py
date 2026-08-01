@@ -3,11 +3,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import Generic, TypeVar
 
+from .contracts import Delivery, TaskQueue
 from .event_bus import Event, EventBus, EventHandler, decode_event, encode_event
 
 logger = logging.getLogger(__name__)
+T = TypeVar("T")
 
 
 @dataclass
@@ -156,3 +160,115 @@ def topic_matches(pattern: str, event_type: str) -> bool:
         return False
 
     return matches(0, 0)
+
+
+@dataclass(order=True)
+class _QueuedTask(Generic[T]):
+    priority: int
+    sequence: int
+    task: T = field(compare=False)
+    attempt: int = field(default=0, compare=False)
+
+
+class InProcessTaskQueue(TaskQueue[T], Generic[T]):
+    """Bounded priority work queue with explicit delivery finalization."""
+
+    def __init__(
+        self,
+        *,
+        max_queue_size: int = 1024,
+        max_attempts: int = 3,
+        priority_resolver: Callable[[T, int], int] | None = None,
+    ) -> None:
+        if max_queue_size <= 0:
+            raise ValueError("max_queue_size must be positive")
+        if max_attempts < 0:
+            raise ValueError("max_attempts must not be negative")
+        self._queue: asyncio.PriorityQueue[_QueuedTask[T]] = asyncio.PriorityQueue(
+            maxsize=max_queue_size
+        )
+        self._max_attempts = max_attempts
+        self._priority_resolver = priority_resolver
+        self._sequence = 0
+        self._refresh_lock = asyncio.Lock()
+        self._dead_letters: list[T] = []
+        self._closed = False
+
+    async def enqueue(self, task: T, *, priority: int = 3) -> None:
+        await self._put(task, priority=priority, attempt=0)
+
+    async def _put(self, task: T, *, priority: int, attempt: int) -> None:
+        if self._closed:
+            raise RuntimeError("task queue is closed")
+        if priority < 1:
+            raise ValueError("priority must be at least 1")
+        self._sequence += 1
+        await self._queue.put(
+            _QueuedTask(priority=priority, sequence=self._sequence, task=task, attempt=attempt)
+        )
+
+    async def receive(self) -> Delivery[T]:
+        await self._refresh_priorities()
+        record = await self._queue.get()
+
+        async def ack() -> None:
+            self._queue.task_done()
+
+        async def retry() -> None:
+            self._queue.task_done()
+            if record.attempt >= self._max_attempts:
+                self._dead_letters.append(record.task)
+                return
+            await self._put(
+                record.task,
+                priority=record.priority,
+                attempt=record.attempt + 1,
+            )
+
+        async def reject() -> None:
+            self._queue.task_done()
+            self._dead_letters.append(record.task)
+
+        return Delivery(
+            task=record.task,
+            attempt=record.attempt,
+            ack_callback=ack,
+            retry_callback=retry,
+            reject_callback=reject,
+        )
+
+    async def _refresh_priorities(self) -> None:
+        if self._priority_resolver is None or self._queue.empty():
+            return
+        async with self._refresh_lock:
+            records: list[_QueuedTask[T]] = []
+            while True:
+                try:
+                    record = self._queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                self._queue.task_done()
+                priority = self._priority_resolver(record.task, record.priority)
+                if priority < 1:
+                    raise ValueError("priority_resolver returned a value below 1")
+                records.append(
+                    _QueuedTask(
+                        priority=priority,
+                        sequence=record.sequence,
+                        task=record.task,
+                        attempt=record.attempt,
+                    )
+                )
+            for record in records:
+                self._queue.put_nowait(record)
+
+    @property
+    def depth(self) -> int:
+        return self._queue.qsize()
+
+    @property
+    def dead_letters(self) -> tuple[T, ...]:
+        return tuple(self._dead_letters)
+
+    async def close(self) -> None:
+        self._closed = True

@@ -1,4 +1,3 @@
-# src/camera_ai/queue.py
 """VLM priority queue and background worker for async processing."""
 from __future__ import annotations
 
@@ -11,6 +10,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from .messaging.contracts import Delivery, RejectMessageError, TaskQueue
+from .messaging.inprocess import InProcessTaskQueue
 from .schemas import Detection, SceneAnalysis
 from .video_windows import RawVideoWindow
 
@@ -22,7 +23,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Priority aging thresholds
 AGING_30S = 30.0
 AGING_60S = 60.0
 AGING_120S = 120.0
@@ -32,11 +32,8 @@ AGING_120S = 120.0
 class VLMTask:
     """One VLM analysis task in the priority queue."""
 
-    # Sort fields (order=True uses these in declaration order)
     priority: int
     enqueued_at: float
-
-    # Non-sort fields
     task_id: str = field(default_factory=lambda: uuid.uuid4().hex, compare=False)
     camera_id: str = field(default="unknown", compare=False)
     alert_id: str = field(default="", compare=False)
@@ -63,77 +60,45 @@ class VLMTask:
         return max(1, self.priority - boost)
 
 
-class VLMQueue:
-    """Priority queue for VLM analysis tasks.
+class VLMQueue(InProcessTaskQueue[VLMTask]):
+    """Backward-compatible in-process VLM work queue."""
 
-    Uses asyncio.PriorityQueue under the hood. Lower priority number = higher
-    urgency. Dynamic priority aging prevents starvation of low-priority tasks.
-    """
+    def __init__(self, *, max_queue_size: int = 1024, max_attempts: int = 3) -> None:
+        super().__init__(
+            max_queue_size=max_queue_size,
+            max_attempts=max_attempts,
+            priority_resolver=lambda task, _queued: task.effective_priority(),
+        )
 
-    def __init__(self) -> None:
-        self._queue: asyncio.PriorityQueue[VLMTask] = asyncio.PriorityQueue()
-
-    async def enqueue(self, task: VLMTask) -> None:
-        await self._queue.put(task)
+    async def enqueue(self, task: VLMTask, *, priority: int | None = None) -> None:
+        resolved_priority = task.priority if priority is None else priority
+        await super().enqueue(task, priority=resolved_priority)
         logger.debug(
             "[vlm-queue] enqueued alert=%s priority=%s depth=%s",
             task.alert_id,
-            task.priority,
-            self._queue.qsize(),
+            resolved_priority,
+            self.depth,
         )
 
     async def dequeue(self) -> VLMTask:
-        task = await self._queue.get()
-        now = time.monotonic()
-        eff = task.effective_priority(now=now)
-        if eff < task.priority:
-            # Task aged — re-push with boosted priority, then re-pop.
-            aged = VLMTask(
-                priority=eff,
-                enqueued_at=task.enqueued_at,   # keep original timestamp
-                task_id=task.task_id,
-                camera_id=task.camera_id,
-                alert_id=task.alert_id,
-                analysis_id=task.analysis_id,
-                window_index=task.window_index,
-                frames=task.frames,
-                detections=task.detections,
-                rule_id=task.rule_id,
-                max_keyframes=task.max_keyframes,
-                raw_window=task.raw_window,
-            )
-            logger.debug(
-                "[vlm-queue] aged alert=%s priority=%s→%s wait=%.0fs",
-                task.alert_id,
-                task.priority,
-                eff,
-                now - task.enqueued_at,
-            )
-            await self._queue.put(aged)
-            return await self.dequeue()
+        """Legacy helper that auto-ACKs its delivery."""
+        delivery = await self.receive()
+        await delivery.ack()
         logger.debug(
             "[vlm-queue] dequeued alert=%s priority=%s depth=%s",
-            task.alert_id,
-            task.priority,
-            self._queue.qsize(),
+            delivery.task.alert_id,
+            delivery.task.priority,
+            self.depth,
         )
-        return task
-
-    @property
-    def depth(self) -> int:
-        return self._queue.qsize()
+        return delivery.task
 
 
 class VLMWorker:
-    """Background worker that dequeues VLM tasks and runs analysis.
-
-    One worker = one asyncio task = one GPU inference slot. For multi-GPU,
-    create multiple workers pointing to the same queue.
-    """
+    """Background worker; one worker represents one inference slot."""
 
     def __init__(
         self,
-        queue: VLMQueue,
+        queue: TaskQueue[VLMTask],
         pipeline: SecurityAIPipeline,
         alert_store: AlertStore,
         event_bus: EventBus,
@@ -147,11 +112,12 @@ class VLMWorker:
         self._task: asyncio.Task[None] | None = None
 
     async def run(self) -> None:
-        """Infinite loop: dequeue → analyze → update. Run as asyncio task."""
         logger.info("[vlm-worker] started")
         while True:
+            delivery: Delivery[VLMTask] | None = None
             try:
-                task = await self._queue.dequeue()
+                delivery = await self._queue.receive()
+                task = delivery.task
                 processing_started = time.monotonic()
                 logger.info(
                     "[vlm-worker] processing alert=%s camera=%s rule=%s",
@@ -159,7 +125,6 @@ class VLMWorker:
                     task.camera_id,
                     task.rule_id,
                 )
-                # A video item owns the whole stage pipeline; image items are VLM-only.
                 qwen_started = time.perf_counter()
                 if task.raw_window is not None:
                     processed = await asyncio.to_thread(
@@ -180,34 +145,41 @@ class VLMWorker:
                     processed.timing.wall_clock_ms = max(
                         0.0, (completed_at - task.enqueued_at) * 1000
                     )
-                await self._alert_store.update_vlm(
-                    task.alert_id, analysis, qwen_ms=qwen_ms
-                )
+                await self._alert_store.update_vlm(task.alert_id, analysis, qwen_ms=qwen_ms)
                 if task.analysis_id and self._analysis_store is not None:
                     if processed is None:
-                        await self._analysis_store.complete_window(task.analysis_id, task.alert_id, analysis, qwen_ms=qwen_ms)
+                        await self._analysis_store.complete_window(
+                            task.analysis_id, task.alert_id, analysis, qwen_ms=qwen_ms
+                        )
                     else:
-                        await self._analysis_store.complete_processed_window(task.analysis_id, task.alert_id, processed, qwen_ms)
+                        await self._analysis_store.complete_processed_window(
+                            task.analysis_id, task.alert_id, processed, qwen_ms
+                        )
+                await delivery.ack()
                 logger.info(
                     "[vlm-worker] completed alert=%s level=%s",
                     task.alert_id,
                     analysis.alert_level.value,
                 )
             except asyncio.CancelledError:
+                if delivery is not None and delivery.state.value == "pending":
+                    await delivery.retry()
                 logger.info("[vlm-worker] cancelled")
                 break
+            except RejectMessageError:
+                logger.exception("[vlm-worker] rejected invalid task")
+                if delivery is not None:
+                    await delivery.reject()
             except Exception:
-                logger.exception(
-                    "[vlm-worker] error processing alert=%s", task.alert_id
-                )
+                logger.exception("[vlm-worker] error processing task")
+                if delivery is not None:
+                    await delivery.retry()
         logger.info("[vlm-worker] stopped")
 
     async def start(self, loop: asyncio.AbstractEventLoop | None = None) -> None:
-        """Create and track the background task so it can be cancelled on stop."""
         self._task = asyncio.ensure_future(self.run(), loop=loop)
 
     async def stop(self) -> None:
-        """Cancel the background task and wait for it to finish."""
         if self._task is None:
             return
         self._task.cancel()
