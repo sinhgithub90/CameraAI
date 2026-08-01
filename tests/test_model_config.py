@@ -20,6 +20,11 @@ def test_qwen_default_is_local_4b_model(monkeypatch):
     assert OllamaQwenAnalyzer().model == "qwen3-vl:4b-instruct-q4_K_M"
 
 
+def test_qwen_default_output_budget_allows_complete_security_json(monkeypatch):
+    monkeypatch.delenv("OLLAMA_NUM_PREDICT", raising=False)
+    assert OllamaQwenAnalyzer().num_predict == 192
+
+
 def test_fire_detector_defaults_to_heuristic_without_weights(monkeypatch):
     monkeypatch.delenv("FIRE_MODEL", raising=False)
     detector = FireDetector()

@@ -118,7 +118,7 @@ def test_ollama_uses_gpu_friendly_request_defaults(monkeypatch):
 
     assert captured["json"]["options"] == {
         "num_ctx": 4096,
-        "num_predict": 96,
+        "num_predict": 192,
         "temperature": 0,
     }
     assert captured["json"]["keep_alive"] == "10m"
