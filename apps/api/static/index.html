@@ -53,6 +53,19 @@
   }
   .mode-row { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
   .mode-row label { font-size: 13px; color: var(--muted); cursor: pointer; display: flex; align-items: center; gap: 4px; }
+  .batch-list { display: grid; gap: 8px; }
+  .batch-item {
+    width: 100%; display: flex; justify-content: space-between; gap: 12px;
+    align-items: center; text-align: left; padding: 11px 12px;
+    background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+    font-weight: 400;
+  }
+  .batch-item:hover, .batch-item:focus-visible { border-color: var(--green); outline: none; }
+  .batch-item.selected { border-color: var(--green); background: rgba(34,197,94,.08); }
+  .batch-item-main { min-width: 0; }
+  .batch-item-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .batch-item-detail { color: var(--muted); font-size: 12px; }
+  .batch-item-status { flex: 0 0 auto; color: var(--muted); font-size: 12px; text-align: right; }
 
   /* preview */
   .preview-wrap { display: flex; gap: 14px; flex-wrap: wrap; }
@@ -114,7 +127,7 @@
       <p style="margin:0 0 6px"><b>Kéo thả file vào đây</b> hoặc</p>
       <label style="cursor:pointer">
         <span style="text-decoration:underline;color:#4ade80">chọn file từ máy</span>
-        <input type="file" id="file" accept="image/*,video/*" style="display:none">
+        <input type="file" id="file" accept="image/*,video/*" multiple style="display:none">
       </label>
       <p class="muted" style="margin:8px 0 0">Hỗ trợ ảnh (jpg/png/...) và video (mp4/avi/...)</p>
     </div>
@@ -136,6 +149,12 @@
       <img id="preview-img" hidden>
       <video id="preview-video" controls muted loop hidden></video>
     </div>
+  </div>
+
+  <div class="card" id="batch-results" hidden>
+    <h2 style="margin:0;font-size:16px">Phân tích nhiều video</h2>
+    <p class="muted" id="batch-meta" style="margin:6px 0 12px"></p>
+    <div id="batch-list" class="batch-list"></div>
   </div>
 
   <div id="result" hidden>
@@ -186,29 +205,34 @@
 const $ = id => document.getElementById(id);
 const drop = $('drop'), fileInput = $('file'), analyzeBtn = $('analyze');
 
-let currentFile = null, pollTimer = null;
+let currentFiles = [], pollTimer = null, batchState = null;
 
 function isVideo(f) { return f && f.type.startsWith('video/'); }
 function isAsync() { return document.querySelector('input[name="mode"]:checked').value === 'async'; }
+function isBatch() { return currentFiles.length > 1; }
 
-function setFile(f) {
-  currentFile = f;
+function setFiles(files) {
+  currentFiles = Array.from(files || []);
   $('error').textContent = '';
-  analyzeBtn.disabled = !f;
+  analyzeBtn.disabled = currentFiles.length === 0;
   const origWrap = $('preview-orig-wrap'), preview = $('preview');
   $('preview-img').hidden = true; $('preview-video').hidden = true;
-  if (!f) { preview.hidden = true; origWrap.hidden = true; return; }
+  if (!currentFiles.length || isBatch()) {
+    preview.hidden = true; origWrap.hidden = true;
+    return;
+  }
+  const f = currentFiles[0];
   origWrap.hidden = false; preview.hidden = false;
   if (isVideo(f)) { $('preview-video').src = URL.createObjectURL(f); $('preview-video').hidden = false; }
   else { $('preview-img').src = URL.createObjectURL(f); $('preview-img').hidden = false; }
 }
 
-fileInput.addEventListener('change', () => setFile(fileInput.files[0]));
+fileInput.addEventListener('change', () => setFiles(fileInput.files));
 drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('drag'); });
 drop.addEventListener('dragleave', () => drop.classList.remove('drag'));
 drop.addEventListener('drop', e => {
   e.preventDefault(); drop.classList.remove('drag');
-  if (e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]);
+  if (e.dataTransfer.files.length) setFiles(e.dataTransfer.files);
 });
 
 // --- health check ---
@@ -227,16 +251,10 @@ setInterval(checkHealth, 15000);
 
 // --- analyze ---
 analyzeBtn.addEventListener('click', async () => {
-  if (!currentFile) return;
+  if (!currentFiles.length) return;
   clearPoll();
 
   const useAsync = isAsync();
-  const base = isVideo(currentFile) ? '/analyze/video' : '/analyze/image';
-  const endpoint = useAsync ? '/async' + base : base;
-
-  const fd = new FormData();
-  fd.append('file', currentFile);
-  fd.append('camera_id', $('camera_id').value.trim() || 'cam_demo');
 
   analyzeBtn.disabled = true;
   analyzeBtn.textContent = 'Đang phân tích…';
@@ -245,6 +263,29 @@ analyzeBtn.addEventListener('click', async () => {
   $('status-spinner').hidden = false;
 
   try {
+    if (isBatch()) {
+      if (!useAsync) throw new Error('Nhiều video chỉ hỗ trợ chế độ Async.');
+      if (currentFiles.length > 20) throw new Error('Tối đa 20 video mỗi lần gửi.');
+      if (!currentFiles.every(isVideo)) throw new Error('Batch chỉ nhận file video.');
+
+      const fd = new FormData();
+      currentFiles.forEach(file => fd.append('files', file));
+      const resp = await fetch('/async/analyze/videos', { method: 'POST', body: fd });
+      if (!resp.ok) {
+        let detail = resp.statusText;
+        try { detail = (await resp.json()).detail || detail; } catch (_) {}
+        throw new Error(detail);
+      }
+      startBatchPoll(await resp.json());
+      return;
+    }
+
+    const currentFile = currentFiles[0];
+    const base = isVideo(currentFile) ? '/analyze/video' : '/analyze/image';
+    const endpoint = useAsync ? '/async' + base : base;
+    const fd = new FormData();
+    fd.append('file', currentFile);
+    fd.append('camera_id', $('camera_id').value.trim() || 'cam_demo');
     const resp = await fetch(endpoint, { method: 'POST', body: fd });
     if (!resp.ok) {
       let detail = resp.statusText;
@@ -300,6 +341,104 @@ function clearPoll() {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   $('vlm-pending').hidden = true;
   $('status-spinner').hidden = true;
+}
+
+function isTerminal(status) {
+  return ['completed', 'failed'].includes(status);
+}
+
+function batchWindowSummary(analysis) {
+  const windows = analysis?.windows || [];
+  const completed = windows.filter(window =>
+    ['completed', 'skipped'].includes(window.vlm?.status)
+  ).length;
+  const rank = { low: 0, medium: 1, high: 2 };
+  const level = windows.reduce((best, window) =>
+    (rank[window.security?.alert_level] || 0) > (rank[best] || 0)
+      ? window.security.alert_level : best, 'low');
+  return { windows, completed, level };
+}
+
+function renderBatchList() {
+  if (!batchState) return;
+  const terminal = batchState.items.filter(item => isTerminal(item.analysis?.status)).length;
+  $('batch-meta').textContent = `Batch ${batchState.batch_id} | ${terminal}/${batchState.items.length} videos finished`;
+  const list = $('batch-list');
+  list.innerHTML = '';
+  batchState.items.forEach(item => {
+    const { windows, completed, level } = batchWindowSummary(item.analysis);
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'batch-item' + (item.analysis_id === batchState.selectedAnalysisId ? ' selected' : '');
+    row.addEventListener('click', () => selectBatchItem(item.analysis_id));
+    const main = document.createElement('span');
+    main.className = 'batch-item-main';
+    const name = document.createElement('strong');
+    name.className = 'batch-item-name';
+    name.textContent = item.filename;
+    const detail = document.createElement('span');
+    detail.className = 'batch-item-detail';
+    detail.textContent = `camera: ${item.camera_id}`;
+    main.append(name, detail);
+    const status = document.createElement('span');
+    status.className = 'batch-item-status';
+    status.textContent = item.pollError || `${item.analysis?.status || 'pending'} | ${completed}/${windows.length} windows | ${level.toUpperCase()}`;
+    row.append(main, status);
+    list.appendChild(row);
+  });
+  $('batch-results').hidden = false;
+}
+
+function selectBatchItem(analysisId) {
+  if (!batchState) return;
+  batchState.selectedAnalysisId = analysisId;
+  renderBatchList();
+  const item = batchState.items.find(candidate => candidate.analysis_id === analysisId);
+  if (!item) return;
+  const { windows, level } = batchWindowSummary(item.analysis);
+  $('result-title').textContent = `Video detail: ${item.filename}`;
+  $('meta').textContent = `analysis: ${item.analysis_id} | camera: ${item.camera_id}`;
+  $('alert-badge').textContent = 'Alert level: ' + level.toUpperCase();
+  $('alert-badge').className = 'badge ' + level;
+  $('single-vlm').hidden = true;
+  $('single-security').hidden = true;
+  $('result-img').hidden = true;
+  $('result').hidden = false;
+  renderVideoWindows({ media_type: 'video', video_windows: windows }, []);
+}
+
+async function pollBatch() {
+  if (!batchState) return;
+  for (const item of batchState.items) {
+    if (isTerminal(item.analysis?.status)) continue;
+    try {
+      const response = await fetch('/analyses/' + item.analysis_id);
+      if (!response.ok) throw new Error('Unable to get analysis status.');
+      item.analysis = await response.json();
+      item.pollError = null;
+    } catch (error) {
+      item.pollError = error.message || 'Unable to get analysis status.';
+    }
+  }
+  renderBatchList();
+  if (batchState.selectedAnalysisId) selectBatchItem(batchState.selectedAnalysisId);
+  if (batchState.items.every(item => isTerminal(item.analysis?.status))) clearPoll();
+}
+
+async function startBatchPoll(batch) {
+  batchState = {
+    ...batch,
+    selectedAnalysisId: batch.items[0]?.analysis_id || null,
+    items: batch.items.map(item => ({ ...item, analysis: null, pollError: null })),
+  };
+  setStatus('pending', 'Batch submitted. Waiting for each video to be processed...');
+  $('status-spinner').hidden = false;
+  renderBatchList();
+  selectBatchItem(batchState.selectedAnalysisId);
+  await pollBatch();
+  if (batchState && !batchState.items.every(item => isTerminal(item.analysis?.status))) {
+    pollTimer = setInterval(pollBatch, 1000);
+  }
 }
 
 // --- render ---
