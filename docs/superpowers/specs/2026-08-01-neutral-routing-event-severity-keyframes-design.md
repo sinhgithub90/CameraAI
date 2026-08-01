@@ -55,7 +55,9 @@ Unknown or missing event types fall back to low severity. They must never inheri
 
 The existing selector chooses two independently high-scoring frames. That can produce two similar images from the same state. The new two-frame mode instead selects an ordered temporal pair.
 
-For each observation after the first, calculate a change score from:
+Calculate a change score for every observation. The first observation is compared
+with an empty baseline; every later observation is compared with the immediately
+previous sampled observation. Each score uses:
 
 - the current motion score;
 - the absolute change in person count from the previous sampled observation;
