@@ -19,6 +19,36 @@
 - Keep ByteTrack independent from Zone/Line and traffic Rule Engine.
 - Every new stage must have unit tests and a reproducible log or artifact output.
 
+## Current implementation snapshot (2026-08-01)
+
+Đây là trạng thái đã có, không cần làm lại trong các task bên dưới:
+
+- Async video đã có `VideoAnalysis` aggregate và endpoint
+  `GET /analyses/{analysis_id}`; FE poll endpoint này, hiển thị timing tổng và
+  card VLM mỗi window, không hiển thị detection table.
+- Upload video đang mô phỏng stream segment: 0–5 giây được enqueue ngay, các
+  segment tiếp theo phát theo nhịp 5 giây source-time.
+- Có một queue/worker toàn cục. Video task chứa raw sampled observations; một
+  worker chạy tuần tự Motion → YOLO (2 FPS) → keyframe (≤2) → Qwen. Image task
+  vẫn là VLM-only trên cùng worker.
+- `AnalysisStore` ghi lifecycle `reading → queued → completed/failed` và cộng
+  Motion/YOLO/VLM timing theo window.
+- Qwen prompt và parser đã xử lý response JSON rỗng bằng degraded fallback;
+  FE có fallback để không render `VLM: —` cho result completed.
+
+### Gap cần xử lý trước roadmap domain
+
+- Đổi tên/refactor `VLMQueue`/`VLMWorker` thành abstraction trung tính như
+  `WindowPipelineQueue`/`WindowPipelineWorker`, hoặc giữ alias tương thích;
+  hiện tên không phản ánh video task chạy toàn pipeline.
+- Tách `processed: dict` trong `AnalysisStore.complete_processed_window()`
+  thành Pydantic result contract có type rõ ràng.
+- Bổ sung integration test dùng video source thật cho: segment 0 enqueue ngay,
+  segment 1 không phát trước 5 giây, và kết quả VLM window đi qua
+  `/analyses/{id}`.
+- Thêm metric wall-clock per-window (`queued_at`, `started_at`, `completed_at`)
+  tách khỏi tổng stage time; tổng stage time không biểu diễn thứ tự thực thi.
+
 ---
 
 ## File map

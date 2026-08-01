@@ -18,21 +18,32 @@ triển khai toàn bộ các giai đoạn trong một lần.
 ## Trạng thái hiện tại
 
 `SecurityAIPipeline` nằm trong `src/camera_ai/pipeline.py` và không phụ thuộc
-FastAPI. Runtime hiện tại:
+FastAPI. Runtime hiện tại có hai đường tương thích:
 
-- Video mặc định xử lý một cửa sổ 5 giây đầu (`max_video_windows=1`).
+- Sync vẫn dùng `analyze_event()`; video sync mặc định xử lý một cửa sổ 5 giây
+  đầu (`max_video_windows=1`).
+- Async video coi upload là nguồn stream theo segment: segment 0–5 giây được
+  đưa vào queue ngay; segment kế tiếp chỉ được phát sau mỗi mốc 5 giây.
 - Motion được lấy mẫu ở 5 FPS.
 - YOLO26n chạy trên frame có motion, tối đa 2 FPS.
-- Mỗi cửa sổ có motion chọn tối đa 2 keyframe.
-- Qwen3-VL 4B chạy qua Ollama một lần cho mỗi cửa sổ có motion.
+- Mỗi cửa sổ chọn tối đa 2 keyframe; cả window tĩnh cũng có một VLM task để
+  trả kết quả theo từng segment.
+- Qwen3-VL 4B chạy qua Ollama một lần cho mỗi window async.
 - `OLLAMA_FRAME_MODE=composite` ghép đúng 2 frame thành một ảnh.
-- Ảnh tĩnh dùng `VLMGate`; video quyết định gọi Qwen dựa trên motion.
+- Ảnh tĩnh dùng `VLMGate`; video async không gate VLM theo motion.
 - `VideoFrameObservation`, `MotionResult`, `VideoWindowResult` và timing đã có.
 - `CandidateEvent`, `ModelDecision`, `AlertEvent` và tracking chưa có trong
   pipeline runtime.
 - `FireDetector` tồn tại nhưng không được khởi tạo bởi pipeline mặc định.
-- Nhánh async đã có `pipeline.detect()`, `pipeline.analyze_vlm()`,
-  `VLMQueue`, `VLMWorker`, `AlertStore` và `InProcessEventBus`.
+- Nhánh async có `VideoAnalysis`/`AnalysisStore`, `AlertStore`, EventBus và
+  một `VLMQueue`/`VLMWorker`. Với task video, worker này thực hiện trọn
+  Motion → YOLO → keyframe → VLM; với ảnh tĩnh, nó chỉ chạy VLM.
+- `GET /analyses/{analysis_id}` là nguồn dữ liệu của FE video: trả status,
+  timing cộng dồn và `VideoWindowResult` theo thứ tự thời gian. FE không vẽ
+  bounding box/detection table cho video.
+- Prompt Qwen yêu cầu JSON có `summary`, `alert_level`, `risks` và
+  `recommended_action`; response summary rỗng bị đánh dấu degraded và có
+  fallback hiển thị ở backend lẫn FE.
 - `src/camera_ai/events.py` hiện dành cho EventBus; domain event contracts không
   được đặt vào file này.
 
@@ -93,24 +104,34 @@ YOLO detections → ByteTrack → track history
                          Candidate / Zone / Line rules
 ```
 
-Nhánh thực thi async hiện tại tách detection khỏi VLM:
+Nhánh thực thi async hiện tại cho video dùng một queue cấp window:
 
 ```text
-pipeline.detect()
+stream segment 0–5s
       ↓
-AlertStore.Alert(vlm.status=pending)
+VideoAnalysis window (pending)
       ↓
 VLMQueue → VLMWorker
       ↓
-pipeline.analyze_vlm()
+Motion → YOLO → keyframe → Qwen
       ↓
-AlertStore.update_vlm()
+AnalysisStore.complete_processed_window()
       ↓
-vlm.status=completed
+GET /analyses/{analysis_id} → FE card per window
 ```
 
-Đây là execution mechanism, không thay thế domain contract. EventBus vẫn là
+Ảnh async giữ đường VLM-only cũ. Đây là execution mechanism, không thay thế
+domain contract. EventBus vẫn là
 transport cho các event hệ thống như `alert.created` và `alert.vlm_confirmed`.
+
+### Ranh giới cần giữ khi nâng cấp
+
+`VLMQueue` là tên lịch sử: về nghĩa thực tế nó đang là **single window
+pipeline queue** cho video. Khi tách stage sau này, giữ nguyên
+`analysis_id`, `window_index`, `alert_id` và `VideoWindowResult`; có thể thay
+bằng `WindowQueue → MotionQueue → YOLOQueue → VLMQueue` mà không đổi API
+`/analyses` hay FE. Không tách queue trước khi benchmark chứng minh cần
+throughput cao hơn một worker.
 
 ## Data contract
 
