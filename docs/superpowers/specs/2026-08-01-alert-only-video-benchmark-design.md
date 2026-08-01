@@ -1,4 +1,4 @@
-# Alert-only Video Benchmark CLI Design
+# Per-video JSON Benchmark CLI Design
 
 ## Mục tiêu
 
@@ -38,10 +38,10 @@ Mỗi video được gửi tới `POST /async/analyze/video`. CLI polling
 - `medium`: cảnh báo cam;
 - `high`: cảnh báo đỏ.
 
-Nếu video không có window `medium/high`, CLI không tạo JSON. Nếu có cảnh báo,
-CLI tạo đúng một file `<video-stem>.json` bằng ghi nguyên tử. Lỗi của một video
-được in ra terminal và không ngăn chế độ thư mục chạy video tiếp theo; lỗi
-không được giả thành cảnh báo.
+Mỗi video luôn tạo đúng một file `<video-stem>.json` bằng ghi nguyên tử.
+Kết quả `completed` chứa toàn bộ window `low`, `medium`, `high`. Kết quả
+`failed` chứa trạng thái, tên video và thông tin lỗi nhưng không giả lỗi thành
+cảnh báo. Lỗi của một video không ngăn chế độ thư mục chạy video tiếp theo.
 
 ## Cấu trúc JSON
 
@@ -51,12 +51,13 @@ không được giả thành cảnh báo.
   "camera_id": "RoadAccidents005_x264",
   "analysis_id": "...",
   "status": "completed",
-  "alert_summary": {
+  "level_summary": {
+    "green": 1,
     "orange": 1,
     "red": 1,
     "highest_level": "high"
   },
-  "alerts": [
+  "windows": [
     {
       "window_index": 1,
       "start_seconds": 5.0,
@@ -73,8 +74,9 @@ không được giả thành cảnh báo.
 }
 ```
 
-Chỉ các window cam/đỏ xuất hiện trong `alerts`. Không nhúng frame, ảnh base64
-hoặc raw video vào JSON.
+Mọi window xuất hiện trong `windows`. Không nhúng frame, ảnh base64 hoặc raw
+video vào JSON. Với video lỗi, JSON có `status="failed"`, `error` và danh sách
+`windows` rỗng.
 
 ## Tương thích
 
@@ -85,8 +87,8 @@ pipeline, queue hoặc model configuration.
 
 ## Kiểm chứng tối thiểu
 
-- Một video chỉ có `low` không tạo file.
-- Một video có `medium/high` tạo đúng một JSON và chỉ chứa window cảnh báo.
+- Một video chỉ có `low` vẫn tạo JSON với `green > 0`.
+- Một video có nhiều mức tạo đúng một JSON và chứa toàn bộ window.
 - `--input-file` chỉ gửi một video.
 - `--input-dir` xử lý đúng các extension hỗ trợ theo thứ tự tên.
-- Lỗi một video không dừng batch.
+- Lỗi một video tạo JSON lỗi và không dừng batch.
