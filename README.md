@@ -68,9 +68,10 @@ tolerating one inactive sample, then selects context 0.6 seconds before the
 span and 0.6 seconds after it. It reports the selected indices
 and stage timings in `qwen_input` and `timing`; the same information is logged
 to the terminal. By default, two keyframes are fitted into a single 960x1080
-image: `TRUOC` on top and `SAU` below. Qwen receives compact YOLO context
-(label, count and maximum confidence) and is constrained by an Ollama JSON
-schema to return only `decision`, `event_type`, and a short `summary`. Set
+image: `TRUOC` on top and `SAU` below. Router candidates select a traffic or
+generic visual prompt profile; candidate values, router evidence, and YOLO
+summaries stay internal. Qwen is constrained by an Ollama JSON schema to return
+only `decision`, `event_type`, and a short `summary`. Set
 `OLLAMA_FRAME_MODE=separate` to send the two keyframes as separate images.
 Selection remains inside the current five-second window and adds no inference
 call.
@@ -185,8 +186,10 @@ Qwen call rate and whether processing stays within 5 seconds per window.
 Candidate-aware Qwen responses contain `decision`, `event_type`, and `summary`.
 `event_type` is selected from `no_event`, `person_vehicle_interaction`,
 `traffic_accident`, `person_fall`, `fighting`, `fire_smoke`, `camera_tamper`, or
-`unknown_event`. The router candidate guides the question but is not treated as
-the final event classification.
+`unknown_event`. The router candidate selects the prompt profile but is not
+embedded in prompt text or treated as the final event classification. Traffic
+prompts classify temporal vehicle contact and abnormal position changes
+directly from the images.
 
 Router candidates describe scene composition and decide whether Qwen runs:
 `person_vehicle_scene`, `multi_person_scene`, `person_scene`, `vehicle_scene`,

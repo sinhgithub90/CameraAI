@@ -146,7 +146,8 @@ frame khác hai giữ nguyên số ảnh.
 Qwen nhận:
 
 - ảnh hoặc ảnh ghép;
-- danh sách nhãn YOLO đã rút gọn thành `count` và `max_conf`;
+- prompt hình ảnh đã được router chọn theo profile; candidate, router evidence
+  và tóm tắt YOLO không được đưa vào nội dung prompt;
 - yêu cầu trả cảnh báo an ninh ngắn bằng tiếng Việt;
 - `temperature=0`, context 4096 và tối đa 128 output token.
 
@@ -320,6 +321,10 @@ Router candidates describe scene composition and only control whether Qwen is
 called. They are `person_vehicle_scene`, `multi_person_scene`, `person_scene`,
 `vehicle_scene`, `unexplained_motion`, and the specialized
 `temporally_confirmed_fire_signal`. They are not final event classifications.
+`vehicle_scene` and `person_vehicle_scene` select the traffic visual prompt;
+other candidates select the generic visual prompt. Candidate values, router
+evidence, and YOLO summaries stay internal. Traffic prompts classify temporal
+vehicle contact and abnormal relative positions directly from the images.
 
 With the default two-keyframe configuration, the selector smooths change scores
 across three observations, expands an activity span at 30% of the smoothed peak
