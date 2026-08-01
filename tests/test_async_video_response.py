@@ -10,7 +10,7 @@ from fastapi import UploadFile
 
 from apps.api import main
 from camera_ai.analysis_store import InMemoryAnalysisStore
-from camera_ai.schemas import Detection
+from camera_ai.schemas import VideoFrameObservation
 
 
 class RecordingQueue:
@@ -34,13 +34,9 @@ def _window(index: int, label: str) -> dict:
     return {
         "window_index": index,
         "start_seconds": index * 5.0,
-        "frames": [frame, frame.copy()],
-        "frame_indices": [index * 10, index * 10 + 5],
-        "timestamps_seconds": [index * 5.0, index * 5.0 + 1.0],
-        "motion_ms": 10.0 + index,
-        "detector_ms": 20.0 + index,
-        "detections": [
-            Detection(label=label, confidence=0.9, bbox=[1, 1, 8, 8])
+        "observations": [
+            VideoFrameObservation(frame_index=index * 10, timestamp_seconds=index * 5.0, frame=frame),
+            VideoFrameObservation(frame_index=index * 10 + 5, timestamp_seconds=index * 5.0 + 1.0, frame=frame.copy()),
         ],
     }
 
@@ -52,11 +48,11 @@ async def test_async_video_streams_each_window_to_the_global_queue(monkeypatch):
     store = RecordingAlertStore()
     analysis_store = InMemoryAnalysisStore()
 
-    def stream_video_windows(event, on_window):
+    def stream_video_chunks(event, on_window):
         for window in windows:
             on_window(window)
 
-    monkeypatch.setattr(main.pipeline, "stream_video_windows", stream_video_windows)
+    monkeypatch.setattr(main.pipeline, "stream_video_chunks", stream_video_chunks)
     monkeypatch.setattr(main, "vlm_queue", queue)
     monkeypatch.setattr(main, "alert_store", store)
     monkeypatch.setattr(main, "analysis_store", analysis_store)
@@ -73,7 +69,7 @@ async def test_async_video_streams_each_window_to_the_global_queue(monkeypatch):
     analysis = await analysis_store.get(result.request_id)
     assert analysis is not None
     assert [window.window_index for window in analysis.windows] == [0, 1]
-    assert [window.keyframes for window in analysis.windows] == [2, 2]
+    assert [window.keyframes for window in analysis.windows] == [0, 0]
     assert [window.qwen_input.frame_indices for window in analysis.windows] == [
         [0, 5],
         [10, 15],

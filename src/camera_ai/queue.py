@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from .schemas import Detection, SceneAnalysis
+from .schemas import Detection, SceneAnalysis, VideoFrameObservation
 
 if TYPE_CHECKING:
     from .analysis_store import AnalysisStore
@@ -45,6 +45,7 @@ class VLMTask:
     detections: list[Detection] = field(default_factory=list, compare=False)
     rule_id: str = field(default="default", compare=False)
     max_keyframes: int = field(default=2, compare=False)
+    raw_observations: list[VideoFrameObservation] = field(default_factory=list, compare=False)
 
     def effective_priority(self, now: float | None = None) -> int:
         """Priority with aging: tasks waiting too long get boosted."""
@@ -98,6 +99,7 @@ class VLMQueue:
                 detections=task.detections,
                 rule_id=task.rule_id,
                 max_keyframes=task.max_keyframes,
+                raw_observations=task.raw_observations,
             )
             logger.debug(
                 "[vlm-queue] aged alert=%s priority=%s→%s wait=%.0fs",
@@ -155,22 +157,23 @@ class VLMWorker:
                     task.camera_id,
                     task.rule_id,
                 )
-                # analyze_vlm is sync (blocking Ollama I/O) — offload to thread
+                # A video item owns the whole stage pipeline; image items are VLM-only.
                 qwen_started = time.perf_counter()
-                analysis = await asyncio.to_thread(
-                    self._pipeline.analyze_vlm, task
-                )
+                if task.raw_observations:
+                    processed = await asyncio.to_thread(self._pipeline.analyze_stream_window, task)
+                    analysis = processed["scene"]
+                else:
+                    processed = None
+                    analysis = await asyncio.to_thread(self._pipeline.analyze_vlm, task)
                 qwen_ms = (time.perf_counter() - qwen_started) * 1000
                 await self._alert_store.update_vlm(
                     task.alert_id, analysis, qwen_ms=qwen_ms
                 )
                 if task.analysis_id and self._analysis_store is not None:
-                    await self._analysis_store.complete_window(
-                        task.analysis_id,
-                        task.alert_id,
-                        analysis,
-                        qwen_ms=qwen_ms,
-                    )
+                    if processed is None:
+                        await self._analysis_store.complete_window(task.analysis_id, task.alert_id, analysis, qwen_ms=qwen_ms)
+                    else:
+                        await self._analysis_store.complete_processed_window(task.analysis_id, task.alert_id, processed, qwen_ms)
                 logger.info(
                     "[vlm-worker] completed alert=%s level=%s",
                     task.alert_id,

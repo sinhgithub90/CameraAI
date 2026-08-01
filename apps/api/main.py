@@ -147,25 +147,21 @@ async def _enqueue_video_window(
 ) -> None:
     """Persist one detected window, then enqueue it on the sole VLM queue."""
     alert_id = uuid.uuid4().hex
-    timing = StageTiming(
-        motion_ms=window["motion_ms"],
-        detector_ms=window["detector_ms"],
-        total_ms=window["motion_ms"] + window["detector_ms"],
-    )
+    observations = window["observations"]
+    timing = StageTiming()
     window_result = VideoWindowResult(
         alert_id=alert_id,
         window_index=window["window_index"],
         start_seconds=window["start_seconds"],
         end_seconds=window["start_seconds"] + pipeline.window_seconds,
-        detections=window["detections"],
+        detections=[],
         vlm=VLMResult(summary="", status="pending"),
         security=SecurityDecision(alert_level=AlertLevel.LOW),
-        keyframes=len(window["frames"]),
+        keyframes=0,
         qwen_input=QwenInputSummary(
-            frame_indices=window["frame_indices"],
-            timestamps_seconds=window["timestamps_seconds"],
-            frame_count=len(window["frames"]),
-            detection_labels=sorted({d.label for d in window["detections"]}),
+            frame_indices=[o.frame_index for o in observations],
+            timestamps_seconds=[round(o.timestamp_seconds, 3) for o in observations],
+            frame_count=0,
         ),
         timing=timing,
     )
@@ -186,12 +182,11 @@ async def _enqueue_video_window(
             alert_id=alert_id,
             analysis_id=analysis_id,
             window_index=window["window_index"],
-            frames=window["frames"],
-            detections=window["detections"],
+            raw_observations=observations,
             rule_id="default",
             priority=3,
             enqueued_at=time.monotonic(),
-            max_keyframes=len(window["frames"]),
+            max_keyframes=pipeline.max_keyframes,
         )
     )
 
@@ -210,7 +205,7 @@ async def _produce_video_windows(
         future.result()
 
     try:
-        await asyncio.to_thread(pipeline.stream_video_windows, event, on_window)
+        await asyncio.to_thread(pipeline.stream_video_chunks, event, on_window)
     except Exception as exc:
         logger.exception("async video producer failed analysis=%s", analysis_id)
         await analysis_store.mark_producer_failed(analysis_id, str(exc))

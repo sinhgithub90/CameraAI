@@ -616,6 +616,52 @@ class SecurityAIPipeline:
             event, max_windows=max_windows, on_window=on_window, collect=False
         )
 
+    def stream_video_chunks(self, event: EventObject, on_window: Callable[[dict], None]) -> None:
+        """Replay a file at source speed and emit raw sampled frames every 5 seconds."""
+        source = event.image
+        tmp_path = None
+        if isinstance(source, bytes):
+            tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+            tmp.write(source); tmp.close(); tmp_path = tmp.name; source = tmp_path
+        try:
+            cap = cv2.VideoCapture(source)
+            if not cap.isOpened(): raise ValueError("cannot open video input")
+            fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+            interval = max(1, round(fps / self.motion_fps))
+            started = time.monotonic(); idx = 0; current_idx = 0; observations: list[VideoFrameObservation] = []
+            def flush() -> None:
+                if observations:
+                    on_window({"window_index": current_idx, "start_seconds": current_idx * self.window_seconds, "observations": list(observations)})
+            while cap.grab():
+                if idx % interval == 0:
+                    timestamp = idx / fps
+                    delay = started + timestamp - time.monotonic()
+                    if delay > 0: time.sleep(delay)
+                    ok, frame = cap.retrieve()
+                    if not ok: break
+                    window_idx = int(timestamp // self.window_seconds)
+                    if window_idx != current_idx:
+                        flush(); observations.clear(); current_idx = window_idx
+                    observations.append(VideoFrameObservation(frame_index=idx, timestamp_seconds=timestamp, frame=self._resize(frame, VIDEO_MAX_SIDE, interpolation=cv2.INTER_LINEAR)))
+                idx += 1
+            flush(); cap.release()
+        finally:
+            if tmp_path: os.unlink(tmp_path)
+
+    def analyze_stream_window(self, task: VLMTask) -> dict:
+        """Run all inference stages for one already-closed stream window."""
+        motion_detector = MotionDetector(); dets: list[Detection] = []; motion_ms = detector_ms = 0.0
+        last_detector = -10_000
+        for obs in task.raw_observations:
+            started = time.perf_counter(); obs.motion = motion_detector.compare(obs.frame); motion_ms += (time.perf_counter()-started)*1000
+            if obs.motion.motion and obs.frame_index - last_detector >= max(1, round(self.motion_fps / self.yolo_fps)):
+                started = time.perf_counter(); obs.detections = self.detector.detect(obs.frame); detector_ms += (time.perf_counter()-started)*1000; last_detector = obs.frame_index
+            dets.extend(obs.detections)
+        keyframes = select_keyframes(task.raw_observations, max_keyframes=self.max_keyframes)
+        frames = [item.frame for item in keyframes if item.frame is not None]
+        started = time.perf_counter(); scene = self.vlm.analyze_sequence(frames, dets) if len(frames) > 1 else self.vlm.analyze(frames[0], dets); qwen_ms = (time.perf_counter()-started)*1000
+        return {"scene": scene, "detections": dets, "qwen_input": QwenInputSummary(frame_indices=[x.frame_index for x in keyframes], timestamps_seconds=[round(x.timestamp_seconds, 3) for x in keyframes], frame_count=len(frames), detection_labels=sorted({d.label for d in dets})), "timing": StageTiming(motion_ms=motion_ms, detector_ms=detector_ms, qwen_ms=qwen_ms, total_ms=motion_ms+detector_ms+qwen_ms)}
+
     def analyze_vlm(self, task: VLMTask) -> SceneAnalysis:
         """Run VLM analysis on pre-detected frames. Called by VLMWorker (via asyncio.to_thread)."""
         if len(task.frames) == 0:
