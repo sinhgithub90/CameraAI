@@ -6,8 +6,58 @@ from collections.abc import Sequence
 from .schemas import VideoFrameObservation
 
 VEHICLE_LABELS = {"bicycle", "car", "motorcycle", "bus", "truck"}
-BEFORE_PEAK_SECONDS = 1.0
-AFTER_PEAK_SECONDS = 0.8
+ACTIVE_THRESHOLD_RATIO = 0.30
+EVENT_CONTEXT_SECONDS = 0.6
+MAX_INACTIVE_GAP = 1
+
+
+def _smooth_activity_scores(scores: Sequence[float]) -> list[float]:
+    smoothed: list[float] = []
+    for index in range(len(scores)):
+        window = scores[max(0, index - 1) : min(len(scores), index + 2)]
+        smoothed.append(sum(window) / len(window))
+    return smoothed
+
+
+def _expand_active_boundary(
+    scores: Sequence[float],
+    peak_position: int,
+    *,
+    step: int,
+    threshold: float,
+) -> int:
+    boundary = peak_position
+    inactive_run = 0
+    position = peak_position + step
+    while 0 <= position < len(scores):
+        if scores[position] >= threshold:
+            boundary = position
+            inactive_run = 0
+        else:
+            inactive_run += 1
+            if inactive_run > MAX_INACTIVE_GAP:
+                break
+        position += step
+    return boundary
+
+
+def _event_span(scores: Sequence[float]) -> tuple[int, int]:
+    peak_position = max(range(len(scores)), key=lambda index: scores[index])
+    threshold = scores[peak_position] * ACTIVE_THRESHOLD_RATIO
+    return (
+        _expand_active_boundary(
+            scores,
+            peak_position,
+            step=-1,
+            threshold=threshold,
+        ),
+        _expand_active_boundary(
+            scores,
+            peak_position,
+            step=1,
+            threshold=threshold,
+        ),
+    )
 
 
 def _nearest_by_timestamp(
@@ -92,17 +142,16 @@ def select_keyframes(
         if max(change_scores) == 0:
             return [observations[0], observations[-1]]
 
-        event_position = max(
-            range(len(observations)),
-            key=lambda position: change_scores[position],
-        )
-        event_frame = observations[event_position]
-        before_candidates = observations[:event_position]
-        after_candidates = observations[event_position + 1 :]
+        smoothed_scores = _smooth_activity_scores(change_scores)
+        event_start_position, event_end_position = _event_span(smoothed_scores)
+        event_start = observations[event_start_position]
+        event_end = observations[event_end_position]
+        before_candidates = observations[:event_start_position]
+        after_candidates = observations[event_end_position + 1 :]
         before_frame = (
             _nearest_by_timestamp(
                 before_candidates,
-                event_frame.timestamp_seconds - BEFORE_PEAK_SECONDS,
+                event_start.timestamp_seconds - EVENT_CONTEXT_SECONDS,
             )
             if before_candidates
             else observations[0]
@@ -110,7 +159,7 @@ def select_keyframes(
         after_frame = (
             _nearest_by_timestamp(
                 after_candidates,
-                event_frame.timestamp_seconds + AFTER_PEAK_SECONDS,
+                event_end.timestamp_seconds + EVENT_CONTEXT_SECONDS,
             )
             if after_candidates
             else observations[-1]

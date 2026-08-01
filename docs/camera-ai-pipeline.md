@@ -321,12 +321,12 @@ called. They are `person_vehicle_scene`, `multi_person_scene`, `person_scene`,
 `vehicle_scene`, `unexplained_motion`, and the specialized
 `temporally_confirmed_fire_signal`. They are not final event classifications.
 
-With the default two-keyframe configuration, the strongest motion/detection
-change defines a peak. The selector sends the observation nearest one second
-before that peak and the observation nearest 0.8 seconds after it, falling back
-to the current window boundaries. If no change exists it uses the first and
-last observations. Selection stays inside the current window and requires no
-extra detector or model call.
+With the default two-keyframe configuration, the selector smooths change scores
+across three observations, expands an activity span at 30% of the smoothed peak
+while tolerating one inactive sample, then selects context 0.6 seconds before
+the span and 0.6 seconds after it. If no change exists it uses the first and
+last observations. Selection stays inside the current five-second window and
+requires no extra detector or model call.
 
 The processing target is p95 at or below 5,000 ms per window, excluding queue
 wait. This is an observed benchmark target rather than a guarantee: real API +
