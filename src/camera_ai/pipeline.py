@@ -617,7 +617,7 @@ class SecurityAIPipeline:
         )
 
     def stream_video_chunks(self, event: EventObject, on_window: Callable[[dict], None]) -> None:
-        """Replay a file at source speed and emit raw sampled frames every 5 seconds."""
+        """Emit the initial five-second segment immediately, then pace later segments."""
         source = event.image
         tmp_path = None
         if isinstance(source, bytes):
@@ -635,13 +635,14 @@ class SecurityAIPipeline:
             while cap.grab():
                 if idx % interval == 0:
                     timestamp = idx / fps
-                    delay = started + timestamp - time.monotonic()
-                    if delay > 0: time.sleep(delay)
                     ok, frame = cap.retrieve()
                     if not ok: break
                     window_idx = int(timestamp // self.window_seconds)
                     if window_idx != current_idx:
-                        flush(); observations.clear(); current_idx = window_idx
+                        flush()
+                        delay = started + window_idx * self.window_seconds - time.monotonic()
+                        if delay > 0: time.sleep(delay)
+                        observations.clear(); current_idx = window_idx
                     observations.append(VideoFrameObservation(frame_index=idx, timestamp_seconds=timestamp, frame=self._resize(frame, VIDEO_MAX_SIDE, interpolation=cv2.INTER_LINEAR)))
                 idx += 1
             flush(); cap.release()
