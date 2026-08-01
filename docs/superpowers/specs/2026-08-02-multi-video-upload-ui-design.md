@@ -53,7 +53,7 @@ at once.
 
 ## Verification
 
-Static UI tests assert the presence of multi-file selection, the `files`
-multipart request and batch endpoint, per-item status rendering, and shared
-analysis polling. The existing pytest suite remains green. A local browser
-check confirms selection, batch submission and row-to-detail interaction.
+A Node-based DOM harness executes the page's actual JavaScript with two video
+fixtures and asserts the multipart request, batch rows, and selected detail
+state. The existing pytest suite remains green. A local browser check confirms
+selection, batch submission and row-to-detail interaction.

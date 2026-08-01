@@ -22,38 +22,39 @@
 ### Task 1: Batch UI Contract Tests
 
 **Files:**
-- Modify: `tests/test_async_video_ui.py`
+- Create: `tests/test_multi_video_ui.py`
+- Create: `tests/ui_batch_harness.mjs`
 
 **Interfaces:**
-- Consumes: rendered source text from `apps/api/static/index.html`.
-- Produces: static contract tests for browser batch selection, request creation, and shared analysis polling.
+- Consumes: the page's inline JavaScript in a minimal Node DOM harness.
+- Produces: executable browser-behavior tests for batch selection, multipart request creation, and shared analysis polling.
 
 - [ ] **Step 1: Write failing static-contract tests**
 
-Append these tests:
+Create `tests/test_multi_video_ui.py` which runs Node and asserts JSON emitted
+by `tests/ui_batch_harness.mjs`:
 
 ```python
-def test_async_video_ui_exposes_batch_upload_and_analysis_list():
-    source = _source()
-
-    assert 'id="file"' in source
-    assert 'multiple' in source
-    assert 'id="batch-results"' in source
-    assert 'id="batch-list"' in source
-
-
-def test_async_video_ui_posts_multiple_files_and_polls_each_analysis():
-    source = _source()
-
-    assert "'/async/analyze/videos'" in source
-    assert "fd.append('files', file)" in source
-    assert "function startBatchPoll" in source
-    assert "for (const item of batch.items)" in source
-    assert "'/analyses/' + item.analysis_id" in source
+def test_batch_ui_posts_all_videos_and_renders_analysis_rows():
+    result = subprocess.run(
+        ["node", "tests/ui_batch_harness.mjs"],
+        cwd=Path(__file__).resolve().parents[1],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    observed = json.loads(result.stdout)
+    assert observed["endpoint"] == "/async/analyze/videos"
+    assert observed["field_names"] == ["files", "files"]
+    assert observed["row_count"] == 2
+    assert observed["selected_analysis_id"] == "analysis-a"
 ```
 
-Add a shared `_source()` helper returning the current `index.html` text so the
-existing tests use the same fixture.
+The Node harness loads the inline script from `index.html`, provides the DOM
+elements the script uses, supplies two `video/mp4` files, stubs `fetch`, then
+executes the registered Analyze click handler. The production change that
+should make this test fail is routing a multi-video selection to the one-file
+endpoint or dropping one `files` multipart part.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -63,8 +64,7 @@ Run:
 .\.venv\Scripts\python.exe -m pytest tests/test_async_video_ui.py -q
 ```
 
-Expected: FAIL because the page has no multi-file input, batch list, batch
-endpoint request, or batch poller.
+Expected: FAIL because `setFiles` and batch submission do not exist.
 
 - [ ] **Step 3: Leave production code unchanged**
 
@@ -77,7 +77,7 @@ browser-facing API for Task 2.
 
 **Files:**
 - Modify: `apps/api/static/index.html:30-60,140-210,228-271,273-430`
-- Test: `tests/test_async_video_ui.py`
+- Test: `tests/test_multi_video_ui.py`
 
 **Interfaces:**
 - Consumes: `POST /async/analyze/videos` response `{ batch_id, items[] }`,
@@ -175,7 +175,7 @@ for (const item of batch.items) {
 Run:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests/test_async_video_ui.py -q
+.\.venv\Scripts\python.exe -m pytest tests/test_multi_video_ui.py -q
 ```
 
 Expected: PASS.
@@ -183,7 +183,7 @@ Expected: PASS.
 - [ ] **Step 7: Commit**
 
 ```powershell
-git add apps/api/static/index.html tests/test_async_video_ui.py
+git add apps/api/static/index.html tests/test_multi_video_ui.py tests/ui_batch_harness.mjs
 git commit -m "feat: add multi-video upload demo UI"
 ```
 
@@ -230,6 +230,6 @@ If Step 3 requires a correction, add a failing test first, make the minimal
 fix, rerun the focused and full suite, then commit it:
 
 ```powershell
-git add apps/api/static/index.html tests/test_async_video_ui.py
+git add apps/api/static/index.html tests/test_multi_video_ui.py tests/ui_batch_harness.mjs
 git commit -m "fix: refine multi-video demo UI"
 ```
