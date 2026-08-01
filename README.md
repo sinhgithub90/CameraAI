@@ -1,8 +1,82 @@
 # CameraAI
 
+CameraAI analyzes camera images and videos with a lightweight computer-vision
+router and a local Qwen vision-language model. The core package lives in
+`src/camera_ai/`; FastAPI is an adapter for uploads, asynchronous processing,
+polling, and the demo UI.
+
+## Current async video pipeline
+
+The FastAPI video path processes the complete video in five-second windows:
+
+```text
+Video
+  -> motion sampling (default 5 FPS)
+  -> YOLO26n sampling on active windows (default 2 FPS)
+  -> scene-composition router
+  -> at most two keyframes around the activity span
+  -> traffic or generic Qwen prompt
+  -> one Qwen call with one composite image
+  -> decision + event_type + summary
+  -> event severity and per-window result
+```
+
+Static windows skip YOLO and Qwen and are still written as green results. If a
+window contains motion but YOLO finds no supported object, it can still route
+to Qwen as `unexplained_motion`; this prevents YOLO from filtering out smoke,
+obstruction, spills, or fallen objects that it does not classify.
+
+The router describes scene composition rather than claiming an event. Current
+candidate types include `person_vehicle_scene`, `multi_person_scene`,
+`person_scene`, `vehicle_scene`, `unexplained_motion`, and
+`temporally_confirmed_fire_signal`. The candidate only selects a specialized
+traffic or generic visual prompt. Candidate values, router evidence, YOLO
+labels, counts, confidence values, and bounding boxes are not embedded in the
+Qwen prompt.
+
+For two-keyframe windows, the selector smooths temporal change over three
+observations, finds the activity span at 30% of the smoothed peak while
+tolerating one inactive sample, and selects context approximately 0.6 seconds
+before and after that span. The default `composite` mode places the `TRUOC`
+frame above the `SAU` frame in one 960x1080 image, so selection adds no extra
+inference call.
+
+Qwen returns only:
+
+```json
+{
+  "decision": "yes",
+  "event_type": "traffic_accident",
+  "summary": "Một phương tiện va chạm với phương tiện khác."
+}
+```
+
+Supported event types are `no_event`, `person_vehicle_interaction`,
+`traffic_accident`, `person_fall`, `fighting`, `fire_smoke`, `camera_tamper`,
+and `unknown_event`. A validated event type determines UI severity independently
+of router priority:
+
+- Green: `no_event`, `person_vehicle_interaction`, `unknown_event`
+- Orange: `person_fall`, `camera_tamper`
+- Red: `traffic_accident`, `fighting`, `fire_smoke`
+
+`SecurityAIPipeline` keeps `max_video_windows=1` as a direct-construction
+development default. The FastAPI runtime explicitly constructs it with
+`max_video_windows=None`, so API video uploads process every five-second
+window.
+
+## Install
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e .
+python -m pip install -r requirements.txt
+```
+
 ## Model setup
 
-The upload endpoints use these defaults:
+Runtime defaults:
 
 ```text
 YOLO_WEIGHTS=yolo26n.pt
@@ -12,25 +86,20 @@ OLLAMA_NUM_CTX=4096
 OLLAMA_NUM_PREDICT=128
 OLLAMA_KEEP_ALIVE=10m
 OLLAMA_FRAME_MODE=composite
+CAMERA_AI_VLM_POLICY=gated
+CAMERA_AI_VLM=ollama
 ```
 
-`yolo26n.pt` is downloaded automatically by Ultralytics on first detection.
-The runtime pipeline uses only YOLO26n before Qwen; no fire heuristic or
-separate fire weights are loaded. The configured Qwen model is already
-available in the local Ollama installation; verify it with:
-
-```powershell
-ollama list
-```
-
-YOLO26 requires Ultralytics `8.4.0` or newer. If an existing environment
-still reports an older version, upgrade it with:
+`yolo26n.pt` is downloaded automatically by Ultralytics on first use. The
+default pipeline uses YOLO26n before Qwen; it does not load separate fire
+weights. YOLO26 requires Ultralytics `8.4.0` or newer:
 
 ```powershell
 python -m pip install --upgrade "ultralytics>=8.4.0"
+ollama list
 ```
 
-To run the upload API:
+## Run the API
 
 ```powershell
 $env:YOLO_WEIGHTS = "yolo26n.pt"
@@ -42,159 +111,80 @@ $env:OLLAMA_FRAME_MODE = "composite"
 python -m uvicorn apps.api.main:app --reload
 ```
 
-## Video motion-first pipeline
+Main endpoints:
 
-Video analysis uses a lightweight motion stage before the expensive detectors:
+- `GET /`: demo UI
+- `GET /health`: runtime health
+- `POST /analyze/image`: synchronous image analysis
+- `POST /analyze/video`: synchronous video analysis
+- `POST /async/analyze/video`: enqueue complete video analysis
+- `GET /analyses/{analysis_id}`: poll asynchronous results
 
-```text
-Video frames -> Motion (default 5 FPS) -> YOLO26n (default 2 FPS)
-             -> before/change keyframe selection (max 2) -> one VLM call
+Use `OLLAMA_FRAME_MODE=separate` only when comparing separate-image input with
+the default composite input. Set `CAMERA_AI_VLM=mock` for API development
+without Ollama; `CAMERA_AI_VLM_POLICY=gated` remains the normal runtime policy.
+
+## Quick per-video benchmark
+
+The benchmark CLI calls an already-running FastAPI server; it does not start
+FastAPI or Ollama. To process one arbitrary video:
+
+```powershell
+python -m scripts.benchmark_pipeline `
+  --input-file "D:\CongViec\CameraAI\CameraAI\videos\RoadAccidents010_x264.mp4" `
+  --output-dir "D:\CongViec\CameraAI\CameraAI\runs\alerts"
 ```
 
-Static video skips YOLO and VLM. If motion is detected but YOLO finds no
-objects, the keyframes are still sent to the VLM so smoke, fire, obstruction,
-spills, or fallen objects are not filtered out by object detection.
-`PipelineResult.video_stats` exposes frame and keyframe counters.
+Use `--input-dir` instead of `--input-file` to process a directory
+sequentially. Each attempted video creates one `<video-stem>.json`; failed
+videos also create a report with `status` and `error`.
 
-The current test mode reads only the first five-second window by default
-(`max_video_windows=1`). Set `max_video_windows=None` when constructing the
-pipeline to process the complete video. Frames are grouped into five-second
-windows (`window_seconds=5.0`), and each active window produces one VLM
-analysis in `PipelineResult.video_windows`.
+Every completed report keeps all green, orange, and red windows. A compact
+window looks like:
 
-For two-keyframe windows, the selector smooths change scores across three
-observations, expands an activity span at 30% of the smoothed peak while
-tolerating one inactive sample, then selects context 0.6 seconds before the
-span and 0.6 seconds after it. It reports the selected indices
-and stage timings in `qwen_input` and `timing`; the same information is logged
-to the terminal. By default, two keyframes are fitted into a single 960x1080
-image: `TRUOC` on top and `SAU` below. Router candidates select a traffic or
-generic visual prompt profile; candidate values, router evidence, and YOLO
-summaries stay internal. Qwen is constrained by an Ollama JSON schema to return
-only `decision`, `event_type`, and a short `summary`. Set
-`OLLAMA_FRAME_MODE=separate` to send the two keyframes as separate images.
-Selection remains inside the current five-second window and adds no inference
-call.
-
-The defaults can be overridden when constructing `SecurityAIPipeline` with
-`motion_fps`, `yolo_fps`, and `max_keyframes`. Stage boundaries remain
-framework-agnostic so the synchronous MVP can later move to worker queues.
-
-> Camera-AI sub-module (YOLO26n + Qwen-VL): `src/camera_ai/` + `apps/api/`. Chi tiết bên dưới.
-
----
-
-# Camera AI Sub-module
-
-Core module phân tích camera an ninh: **YOLO detect object** + **Qwen-VL phân tích ngữ cảnh an ninh** (chạy qua Ollama local). FastAPI chỉ là lớp demo adapter — mọi logic nằm trong `camera_ai`, không phụ thuộc web framework, sau này dùng chung cho queue worker được.
-
-## Cấu trúc
-
-```
-src/camera_ai/
-  schemas.py             # EventObject, Detection, SceneAnalysis, PipelineResult...
-  pipeline.py            # SecurityAIPipeline — entry point chính (không import FastAPI)
-  gate.py                # VLMGate — quyết định có gọi VLM hay không (gated | always)
-  detectors/
-    base.py              # Detector interface (pluggable)
-    yolo.py              # YOLO26n COCO (ultralytics), lazy-load singleton
-    fire.py              # FireDetector standalone (không dùng trong pipeline mặc định)
-  vlm/
-    base.py              # VLMAnalyzer interface (pluggable)
-    ollama_qwen.py       # Qwen-VL qua Ollama /api/chat (model configurable)
-    mock.py              # Fallback deterministic — test API khi không có Ollama
-apps/api/
-  main.py                # FastAPI: GET / (UI), POST /analyze/image, POST /analyze/video, GET /health
-  static/index.html      # Giao diện web nhẹ: upload ảnh/video, xem bbox + kết quả
-examples/demo_client.py  # Upload ảnh test
-tests/                   # Smoke test core (không cần model/Ollama)
+```json
+{
+  "window_index": 1,
+  "start_seconds": 5.0,
+  "end_seconds": 10.0,
+  "alert_level": "high",
+  "candidate_type": "vehicle_scene",
+  "qwen": {
+    "called": true,
+    "decision": "yes",
+    "event_type": "traffic_accident",
+    "summary": "Xe buýt va chạm với xe ô tô.",
+    "timestamps_seconds": [5.8, 9.8]
+  },
+  "timing": {
+    "motion_ms": 10.3,
+    "detector_ms": 337.7,
+    "keyframe_ms": 0.2,
+    "qwen_ms": 3758.6,
+    "total_ms": 4106.8,
+    "queue_wait_ms": 46.0,
+    "wall_clock_ms": 4156.0,
+    "within_budget": true
+  }
+}
 ```
 
-## Luồng xử lý
+Confirmed alert severity takes precedence over the scene security level when
+the report resolves `alert_level`. Raw bounding boxes, detection summaries,
+candidate evidence and IDs, and verbose routing/decision objects stay out of
+the per-video benchmark JSON.
 
-```
-Input → YOLO26n (COCO) → VLMGate: có detection nào không?
-                              ├─ Có  → Qwen-VL phân tích → PipelineResult đầy đủ
-                              └─ Không → skip VLM → PipelineResult nhẹ (vlm.skipped=true)
-```
+The processing target is `total_ms <= 5000` for every window. The top-level
+`performance_summary` reports Qwen call rate, p95 processing time, and the
+number of windows over budget. `wall_clock_ms` may be higher than `total_ms`
+when the task waits in the worker queue.
 
-VLM là tầng đắt — chỉ chạy khi tầng detect rẻ báo có tín hiệu (người/xe/lửa/khói). Với luồng camera sau này, thêm motion gate làm trigger 24/7.
+## Tests
 
-## Cấu hình qua env
-
-| Biến | Mặc định | Ý nghĩa |
-|---|---|---|
-| `OLLAMA_MODEL` | `qwen3-vl:4b-instruct-q4_K_M` | Model VLM trên Ollama (bạn bè dùng model Qwen khác thì đổi cái này) |
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | Endpoint Ollama |
-| `OLLAMA_NUM_CTX` | `4096` | Context phù hợp để Qwen 4B nằm hoàn toàn trên GPU 6 GB |
-| `OLLAMA_NUM_PREDICT` | `128` | Đủ chỗ cho candidate JSON chỉ gồm decision và summary ngắn |
-| `OLLAMA_KEEP_ALIVE` | `10m` | Giữ model trong Ollama giữa các lần test |
-| `OLLAMA_FRAME_MODE` | `composite` | `composite`: ghép hai keyframe thành một ảnh; `separate`: gửi hai ảnh riêng |
-| `CAMERA_AI_VLM_POLICY` | `gated` | `gated`: chỉ gọi VLM khi có trigger · `always`: gọi mọi input |
-| `CAMERA_AI_VLM` | `ollama` | `mock`: dùng VLM giả, không cần Ollama |
-
-## Cài đặt
-
-```bash
-python -m venv .venv
-.venv\Scripts\activate          # Windows (PowerShell)
-pip install -e .                # cài package camera_ai từ src/
-pip install -r requirements.txt
+```powershell
+$env:PYTHONPATH = "src"
+python -m pytest -q
 ```
 
-## Chạy API
-
-```bash
-python -m uvicorn apps.api.main:app --reload
-```
-
-- `GET  /`            — giao diện web demo (upload file, xem kết quả)
-- `GET  /health`
-- `POST /analyze/image`  — multipart: `file` (ảnh), `camera_id` (optional)
-- `POST /analyze/video`  — multipart: `file` (video), `camera_id` (optional)
-
-Mở trình duyệt `http://127.0.0.1:8000/` để dùng UI.
-
-Test nhanh:
-
-```bash
-python examples/demo_client.py path/to/frame.jpg cam_front_gate
-```
-
-Chạy không cần Ollama (dùng mock VLM, kết quả có `degraded: true`):
-
-```bash
-set CAMERA_AI_VLM=mock
-python -m uvicorn apps.api.main:app --reload
-```
-
-## Test core
-
-```bash
-python -m pytest tests/ -v
-```
-
-## Điểm cần model (chạy lần đầu)
-
-- `yolo26n.pt` được tự tải về khi có request đầu tiên.
-- Ollama phải đang chạy với model vision: `qwen3-vl:4b-instruct-q4_K_M`.
-Async video uses a conservative Qwen gate: fully static five-second windows are
-written as green results without a VLM call, while motion/object/fire candidates
-still receive one candidate-aware Qwen verification. Benchmark JSON reports the
-Qwen call rate and whether processing stays within 5 seconds per window.
-
-Candidate-aware Qwen responses contain `decision`, `event_type`, and `summary`.
-`event_type` is selected from `no_event`, `person_vehicle_interaction`,
-`traffic_accident`, `person_fall`, `fighting`, `fire_smoke`, `camera_tamper`, or
-`unknown_event`. The router candidate selects the prompt profile but is not
-embedded in prompt text or treated as the final event classification. Traffic
-prompts classify temporal vehicle contact and abnormal position changes
-directly from the images.
-
-Router candidates describe scene composition and decide whether Qwen runs:
-`person_vehicle_scene`, `multi_person_scene`, `person_scene`, `vehicle_scene`,
-`unexplained_motion`, or the specialized `temporally_confirmed_fire_signal`.
-Validated Qwen `event_type` determines the final UI severity independently of
-router priority: `no_event`, `person_vehicle_interaction`, and `unknown_event`
-are green; `person_fall` and `camera_tamper` are orange; `traffic_accident`,
-`fighting`, and `fire_smoke` are red.
+See [docs/benchmarks/README.md](docs/benchmarks/README.md) for fixture and
+benchmark-report details.

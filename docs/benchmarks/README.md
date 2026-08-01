@@ -72,7 +72,7 @@ and two composite frames until a balanced manifest is available.
 Generated reports live under `runs/benchmark/` and are intentionally not a
 replacement for a versioned, balanced benchmark report.
 
-## Alert-only video CLI
+## Per-video async benchmark CLI
 
 The CLI can process one video for a quick check or scan a directory
 sequentially. It calls an already-running FastAPI async endpoint; it does not
@@ -81,10 +81,10 @@ Completed reports contain every low/medium/high window and counts named
 `green`, `orange`, and `red`. Failed videos also create JSON with `status` and
 `error` so batch failures remain visible.
 
-Each completed window also exposes routed `candidates`, the selected
-`decision`, and `raw_output_valid`. The runtime default is 128 output tokens;
-invalid or truncated candidate JSON becomes `uncertain` and cannot create an
-alert.
+The runtime default is 128 output tokens. Invalid or truncated Qwen JSON cannot
+create a confirmed alert. For a confirmed event, the report resolves
+`alert_level` from `event_metadata.alert.severity`; otherwise it falls back to
+the scene security level and then to green.
 
 ```powershell
 python -m scripts.benchmark_pipeline `
@@ -102,10 +102,40 @@ python -m scripts.benchmark_pipeline `
 
 Use `--poll-interval` and `--timeout` to change polling behavior. Supported
 directory extensions are `.mp4`, `.avi`, `.mov`, and `.mkv`.
-### Qwen gate and five-second processing budget
 
-Every per-video JSON includes `vlm_call` and `within_processing_budget` for each
-window. `performance_summary` contains `vlm_called_windows`,
+### Compact window contract and five-second budget
+
+Each window contains only its range, resolved alert level, primary
+`candidate_type`, a compact `qwen` object, and a detailed `timing` object:
+
+```json
+{
+  "window_index": 1,
+  "start_seconds": 5.0,
+  "end_seconds": 10.0,
+  "alert_level": "high",
+  "candidate_type": "vehicle_scene",
+  "qwen": {
+    "called": true,
+    "decision": "yes",
+    "event_type": "traffic_accident",
+    "summary": "Xe buýt va chạm với xe ô tô.",
+    "timestamps_seconds": [5.8, 9.8]
+  },
+  "timing": {
+    "motion_ms": 10.3,
+    "detector_ms": 337.7,
+    "keyframe_ms": 0.2,
+    "qwen_ms": 3758.6,
+    "total_ms": 4106.8,
+    "queue_wait_ms": 46.0,
+    "wall_clock_ms": 4156.0,
+    "within_budget": true
+  }
+}
+```
+
+`performance_summary` contains `vlm_called_windows`,
 `vlm_skipped_windows`, `vlm_call_rate`, `processing_p95_ms`,
 `windows_over_budget`, and the fixed `processing_budget_ms` value of 5000.
 
@@ -121,8 +151,11 @@ The API and Ollama must already be running. Do not treat the five-second target
 as achieved until `processing_p95_ms <= 5000` and `windows_over_budget == 0` on
 the target video set.
 
-Raw detection bounding boxes stay inside the pipeline and API compatibility
-model. Per-video benchmark JSON writes `detection_summary` instead, grouped by
-label with `detection_count` and `max_confidence`. The count is the number of
-raw YOLO observations, not a unique-object count; router evidence uses
-frame-level peak counts and same-frame proximity statistics.
+Raw detection boxes stay inside the pipeline and API compatibility model. The
+per-video benchmark JSON omits boxes, detection summaries, candidate evidence
+and IDs, raw Qwen validity fields, and verbose routing/decision objects. This
+keeps review output compact while retaining every requested stage measurement.
+
+The processing budget compares `timing.total_ms` with 5000 ms. Queue waiting is
+reported separately, so `wall_clock_ms` can exceed the processing total even
+when `within_budget` is true.
