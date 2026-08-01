@@ -14,6 +14,7 @@ import logging
 import os
 import tempfile
 import time
+from typing import TYPE_CHECKING
 
 import cv2
 import numpy as np
@@ -40,6 +41,9 @@ from .schemas import (
 from .video_selection import select_keyframes
 from .vlm.base import VLMAnalyzer
 from .vlm.ollama_qwen import OllamaQwenAnalyzer
+
+if TYPE_CHECKING:
+    from .queue import VLMTask
 
 logger = logging.getLogger(__name__)
 
@@ -367,6 +371,127 @@ class SecurityAIPipeline:
             windows,
         )
 
+    # -- async pipeline methods -----------------------------------------
+
+    def _read_video_frames(
+        self,
+        source: str,
+    ) -> tuple[list[np.ndarray], list[Detection], float, np.ndarray | None]:
+        """Đọc video, chạy motion+YOLO. Trả về (sampled_frames, all_detections, source_fps, last_frame).
+
+        Creates a fresh MotionDetector per call so concurrent video requests
+        never cross-contaminate each other's reference frames.
+        """
+        cap = cv2.VideoCapture(source)
+        try:
+            if not cap.isOpened():
+                raise ValueError("cannot open video input")
+            source_fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+            motion_interval = max(1, round(source_fps / self.motion_fps))
+            detector_interval = max(1, round(source_fps / self.yolo_fps))
+            motion_detector = MotionDetector()  # fresh instance — no race
+            sampled_frames: list[np.ndarray] = []
+            all_detections: list[Detection] = []
+            last_frame: np.ndarray | None = None
+            last_detector_index: int | None = None
+            idx = 0
+            while True:
+                if (
+                    self.max_video_windows is not None
+                    and idx >= source_fps * self.window_seconds * self.max_video_windows
+                ):
+                    break
+                grabbed = cap.grab()
+                if not grabbed:
+                    break
+                if idx % motion_interval == 0:
+                    ok, frame = cap.retrieve()
+                    if not ok:
+                        break
+                    last_frame = frame
+                    frame = self._resize(frame, VIDEO_MAX_SIDE, interpolation=cv2.INTER_LINEAR)
+                    sampled_frames.append(frame)
+                    motion = motion_detector.compare(frame)
+                    if motion.motion and (
+                        last_detector_index is None
+                        or idx - last_detector_index >= detector_interval
+                    ):
+                        try:
+                            all_detections.extend(self.detector.detect(frame))
+                            last_detector_index = idx
+                        except Exception:
+                            logger.exception("video detector failed at frame %s", idx)
+                idx += 1
+        finally:
+            cap.release()
+        return sampled_frames, all_detections, source_fps, last_frame
+
+    def detect(self, event: EventObject) -> PipelineResult:
+        """Run detection + gate only. VLM runs later via queue. Returns immediately."""
+        if event.media_type == MediaType.IMAGE:
+            return self._detect_image(event)
+        return self._detect_video(event)
+
+    def _detect_image(self, event: EventObject) -> PipelineResult:
+        frame = self._load_image(event.image)
+        frame = self._resize(frame, IMAGE_MAX_SIDE)
+        detections = self.detector.detect(frame)
+        if not self.gate.decide(detections):
+            return self._build_skipped(event, MediaType.IMAGE, detections, frame)
+        return PipelineResult(
+            media_type=MediaType.IMAGE,
+            camera_id=event.camera_id,
+            detections=detections,
+            vlm=VLMResult(summary="", status="pending"),
+            security=SecurityDecision(alert_level=AlertLevel.LOW),
+            annotated_image=self._annotate(frame, detections),
+        )
+
+    def _detect_video(self, event: EventObject) -> PipelineResult:
+        """Video detection only — VLM runs later via queue."""
+        source = event.image
+        tmp_path: str | None = None
+        if isinstance(source, bytes):
+            tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+            tmp.write(source)
+            tmp.close()
+            tmp_path = tmp.name
+            source = tmp_path
+        try:
+            sampled, all_detections, _source_fps, last_frame = (
+                self._read_video_frames(source)
+            )
+        finally:
+            if tmp_path:
+                os.unlink(tmp_path)
+
+        if last_frame is None:
+            raise ValueError("no readable frames in video")
+
+        if not self.gate.decide(all_detections):
+            return self._build_skipped(event, MediaType.VIDEO, all_detections, last_frame)
+
+        return PipelineResult(
+            media_type=MediaType.VIDEO,
+            camera_id=event.camera_id,
+            detections=all_detections,
+            vlm=VLMResult(summary="", status="pending"),
+            security=SecurityDecision(alert_level=AlertLevel.LOW),
+            annotated_image=self._annotate(last_frame, all_detections),
+        )
+
+    def analyze_vlm(self, task: VLMTask) -> SceneAnalysis:
+        """Run VLM analysis on pre-detected frames. Called by VLMWorker (via asyncio.to_thread)."""
+        if len(task.frames) == 0:
+            return SceneAnalysis(
+                summary="Không có frame để phân tích VLM.",
+                alert_level=AlertLevel.MEDIUM if task.detections else AlertLevel.LOW,
+                degraded=True,
+            )
+        if len(task.frames) == 1:
+            return self.vlm.analyze(task.frames[0], task.detections)
+        return self.vlm.analyze_sequence(task.frames, task.detections)
+
     # -- helpers ----------------------------------------------------------
 
     @staticmethod
@@ -443,6 +568,7 @@ class SecurityAIPipeline:
             vlm=VLMResult(
                 summary="Không có tín hiệu đáng chú ý — không kích hoạt phân tích VLM.",
                 skipped=True,
+                status="skipped",
             ),
             security=SecurityDecision(alert_level=AlertLevel.LOW),
             annotated_image=self._annotate(frame, detections),

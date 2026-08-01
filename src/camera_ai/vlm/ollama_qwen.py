@@ -76,7 +76,7 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
         self.num_predict = num_predict or int(
             os.getenv("OLLAMA_NUM_PREDICT", DEFAULT_NUM_PREDICT)
         )
-        self.keep_alive = (
+        self.keep_alive = self._normalize_keep_alive(
             keep_alive or os.getenv("OLLAMA_KEEP_ALIVE") or DEFAULT_KEEP_ALIVE
         )
         self.frame_mode = (
@@ -86,6 +86,19 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
             raise ValueError(
                 "OLLAMA_FRAME_MODE must be 'composite' or 'separate'"
             )
+
+    @staticmethod
+    def _normalize_keep_alive(value: str) -> int | str:
+        """Ollama rejects keep_alive values without a time unit.
+
+        A string like "-1" or "300" fails Go's time.ParseDuration with
+        "missing unit in duration". Send bare integers as seconds instead
+        (int -1 = keep loaded forever) and leave duration strings alone.
+        """
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return str(value)
 
     def analyze(self, frame: np.ndarray, detections: list[Detection]) -> SceneAnalysis:
         return self._analyze_frames([frame], detections)

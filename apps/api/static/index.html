@@ -8,7 +8,7 @@
   :root {
     --bg: #0f1115; --panel: #171a21; --panel2: #1e232c; --border: #2a313d;
     --text: #e6e9ef; --muted: #9aa3b2;
-    --green: #22c55e; --yellow: #eab308; --red: #ef4444;
+    --green: #22c55e; --yellow: #eab308; --red: #ef4444; --blue: #3b82f6;
   }
   * { box-sizing: border-box; }
   body {
@@ -47,6 +47,12 @@
     padding: 10px 20px; font-size: 14px; font-weight: 600; cursor: pointer;
   }
   button:disabled { opacity: .5; cursor: wait; }
+  .btn-outline {
+    background: transparent; color: var(--muted); border: 1px solid var(--border);
+    font-weight: 400;
+  }
+  .mode-row { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+  .mode-row label { font-size: 13px; color: var(--muted); cursor: pointer; display: flex; align-items: center; gap: 4px; }
 
   /* preview */
   .preview-wrap { display: flex; gap: 14px; flex-wrap: wrap; }
@@ -78,13 +84,28 @@
   .summary { font-size: 15px; line-height: 1.55; }
   #error { color: var(--red); font-size: 14px; }
   [hidden] { display: none !important; }
+
+  /* async status bar */
+  #status-bar {
+    padding: 6px 12px; border-radius: 8px; font-size: 13px; margin-bottom: 14px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  #status-bar.pending { background: rgba(59,130,246,.12); color: var(--blue); }
+  #status-bar.completed { background: rgba(34,197,94,.10); color: var(--green); }
+  #status-bar.degraded { background: rgba(234,179,8,.10); color: var(--yellow); }
+  .spinner {
+    display: inline-block; width: 14px; height: 14px;
+    border: 2px solid currentColor; border-top-color: transparent;
+    border-radius: 50%; animation: spin .6s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
 </style>
 </head>
 <body>
 
 <header>
   <h1>🎥 Camera AI Demo</h1>
-  <span>YOLO26n + Qwen-VL (Ollama) — phân tích ảnh / video</span>
+  <span>YOLO26n + Qwen-VL — async-first | <span id="health-dot" style="color:var(--muted)">●</span></span>
 </header>
 
 <main>
@@ -95,12 +116,16 @@
         <span style="text-decoration:underline;color:#4ade80">chọn file từ máy</span>
         <input type="file" id="file" accept="image/*,video/*" style="display:none">
       </label>
-      <p class="muted" style="margin:8px 0 0">Hỗ trợ ảnh (jpg/png/...) và video (mp4/avi/...) — lần đầu load model YOLO có thể hơi lâu</p>
+      <p class="muted" style="margin:8px 0 0">Hỗ trợ ảnh (jpg/png/...) và video (mp4/avi/...)</p>
     </div>
 
     <div class="row">
       <input type="text" id="camera_id" placeholder="camera_id (vd: cam_front_gate)">
       <button id="analyze" disabled>Phân tích</button>
+    </div>
+    <div class="mode-row">
+      <label><input type="radio" name="mode" value="async" checked> Async (nhanh — trả detection ngay, VLM chạy nền)</label>
+      <label><input type="radio" name="mode" value="sync"> Sync (chờ VLM xong mới trả kết quả)</label>
     </div>
     <div id="error" class="muted"></div>
   </div>
@@ -114,6 +139,11 @@
   </div>
 
   <div id="result" hidden>
+    <div id="status-bar">
+      <span class="spinner" id="status-spinner" hidden></span>
+      <span id="status-text"></span>
+    </div>
+
     <div class="card">
       <div class="row" style="justify-content:space-between;margin:0">
         <h2 style="margin:0;font-size:16px" id="result-title">Kết quả phân tích</h2>
@@ -138,9 +168,11 @@
     </div>
 
     <div class="card">
-      <h3 style="margin:0 0 10px;font-size:14px">🤖 VLM — Qwen-VL</h3>
+      <h3 style="margin:0 0 10px;font-size:14px">🤖 VLM — Qwen-VL <span id="vlm-status"></span></h3>
       <p class="summary" id="summary">…</p>
       <p class="muted" id="vlm-note" hidden>⚠️ VLM bị bỏ qua — không có tín hiệu kích hoạt (policy gated).</p>
+      <p class="muted" id="vlm-pending" hidden>⏳ Đang chờ VLM phân tích... (<span id="poll-elapsed">0</span>s)</p>
+      <p class="muted" id="vlm-degraded" hidden>⚠️ Kết quả degraded — VLM không khả dụng</p>
       <p class="kv"><b>Observations:</b> <span id="observations">—</span></p>
     </div>
 
@@ -156,9 +188,10 @@
 const $ = id => document.getElementById(id);
 const drop = $('drop'), fileInput = $('file'), analyzeBtn = $('analyze');
 
-let currentFile = null;
+let currentFile = null, pollTimer = null;
 
 function isVideo(f) { return f && f.type.startsWith('video/'); }
+function isAsync() { return document.querySelector('input[name="mode"]:checked').value === 'async'; }
 
 function setFile(f) {
   currentFile = f;
@@ -180,16 +213,39 @@ drop.addEventListener('drop', e => {
   if (e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]);
 });
 
+// --- health check ---
+async function checkHealth() {
+  try {
+    const r = await fetch('/health');
+    const h = await r.json();
+    $('health-dot').style.color = '#22c55e';
+    $('health-dot').title = `queue_depth=${h.vlm_queue_depth}`;
+  } catch (_) {
+    $('health-dot').style.color = '#ef4444';
+  }
+}
+checkHealth();
+setInterval(checkHealth, 15000);
+
+// --- analyze ---
 analyzeBtn.addEventListener('click', async () => {
   if (!currentFile) return;
-  const endpoint = isVideo(currentFile) ? '/analyze/video' : '/analyze/image';
+  clearPoll();
+
+  const useAsync = isAsync();
+  const base = isVideo(currentFile) ? '/analyze/video' : '/analyze/image';
+  const endpoint = useAsync ? '/async' + base : base;
+
   const fd = new FormData();
   fd.append('file', currentFile);
   fd.append('camera_id', $('camera_id').value.trim() || 'cam_demo');
 
-  analyzeBtn.disabled = true; analyzeBtn.textContent = 'Đang phân tích…';
+  analyzeBtn.disabled = true;
+  analyzeBtn.textContent = 'Đang phân tích…';
   $('error').textContent = '';
   $('result').hidden = true;
+  $('status-spinner').hidden = false;
+
   try {
     const resp = await fetch(endpoint, { method: 'POST', body: fd });
     if (!resp.ok) {
@@ -197,31 +253,135 @@ analyzeBtn.addEventListener('click', async () => {
       try { detail = (await resp.json()).detail || detail; } catch (_) {}
       throw new Error(detail);
     }
-    render(await resp.json());
+    const data = await resp.json();
+
+    if (useAsync && data.vlm.status === 'pending') {
+      // Show detection immediately, poll for VLM
+      renderDetection(data);
+      startPoll(data.request_id);
+    } else {
+      // Sync mode or VLM already complete
+      renderFinal(data, data.vlm.status === 'completed' ? 'completed' : 'completed');
+    }
   } catch (err) {
     $('error').textContent = 'Lỗi: ' + err.message;
+    $('status-spinner').hidden = true;
   } finally {
-    analyzeBtn.disabled = false; analyzeBtn.textContent = 'Phân tích';
+    analyzeBtn.disabled = false;
+    analyzeBtn.textContent = 'Phân tích';
   }
 });
 
-function render(data) {
+// --- polling ---
+function startPoll(alertId) {
+  let elapsed = 0;
+  $('vlm-pending').hidden = false;
+  $('vlm-degraded').hidden = true;
+
+  setStatus('pending', 'Detection xong — đang chờ VLM phân tích...');
+
+  pollTimer = setInterval(async () => {
+    elapsed++;
+    $('poll-elapsed').textContent = elapsed;
+    try {
+      const r = await fetch('/alerts/' + alertId);
+      if (!r.ok) return;
+      const alert = await r.json();
+      if (alert.vlm.status === 'completed') {
+        clearPoll();
+        renderFinal(alert, alert.vlm.degraded ? 'degraded' : 'completed');
+      }
+    } catch (_) {}
+  }, 1000);
+}
+
+function clearPoll() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  $('vlm-pending').hidden = true;
+  $('status-spinner').hidden = true;
+}
+
+// --- render ---
+function setStatus(cls, msg) {
+  const bar = $('status-bar');
+  bar.className = cls;
+  $('status-text').textContent = msg;
+}
+
+function renderDetection(data) {
+  // Show everything we know from detection phase
+  const badge = $('alert-badge');
+  badge.textContent = 'Mức (tạm): ' + (data.security.alert_level || 'low').toUpperCase();
+  badge.className = 'badge ' + (data.security.alert_level || 'low');
+
+  $('meta').textContent =
+    `request: ${data.request_id} | camera: ${data.camera_id} | type: ${data.media_type}`;
+
+  if (data.annotated_image) {
+    $('result-img').src = 'data:image/jpeg;base64,' + data.annotated_image;
+  }
+  $('result-title').textContent = 'Kết quả detection (VLM đang phân tích...)';
+
+  renderDetections(data);
+  $('summary').textContent = '⏳ Đang chờ...';
+  $('vlm-note').hidden = true;
+  $('observations').textContent = '—';
+  $('risks').textContent = '—';
+  $('action').textContent = '—';
+  $('result').hidden = false;
+}
+
+function renderFinal(data, vlmStatus) {
+  clearPoll();
+
   const badge = $('alert-badge');
   badge.textContent = 'Mức cảnh báo: ' + (data.security.alert_level || 'low').toUpperCase();
   badge.className = 'badge ' + (data.security.alert_level || 'low');
 
+  if (vlmStatus === 'completed') {
+    setStatus('completed', '✅ Phân tích hoàn tất');
+  } else if (vlmStatus === 'degraded') {
+    setStatus('degraded', '⚠️ VLM không khả dụng — kết quả từ mock');
+  }
+
   $('meta').textContent =
-    `request: ${data.request_id} | camera: ${data.camera_id} | type: ${data.media_type}` +
-    (data.vlm.degraded ? ' | ⚠️ VLM đang chạy mock (không có Ollama)' : '');
+    `request: ${data.request_id || data.id} | camera: ${data.camera_id} | type: ${data.media_type || 'image'}` +
+    (data.vlm?.degraded ? ' | ⚠️ VLM degraded' : '');
 
   if (data.annotated_image) {
     $('result-img').src = 'data:image/jpeg;base64,' + data.annotated_image;
-  } else {
-    $('result-img').removeAttribute('src');
   }
-  $('result-title').textContent =
-    data.media_type === 'video' ? 'Kết quả phân tích (frame tiêu biểu)' : 'Kết quả phân tích';
+  $('result-title').textContent = 'Kết quả phân tích';
 
+  renderDetections(data);
+
+  const vlm = data.vlm || {};
+  $('summary').textContent = vlm.summary || '—';
+  $('vlm-note').hidden = !vlm.skipped;
+  $('vlm-degraded').hidden = !vlm.degraded;
+  $('vlm-status').textContent = vlm.skipped ? '(bỏ qua)' : vlm.degraded ? '(mock)' : '';
+
+  const obs = vlm.observations || data.observations || [];
+  $('observations').textContent = (Array.isArray(obs) ? obs : []).join(' • ') || '—';
+  $('risks').textContent = (data.security?.risks || []).join(', ') || '—';
+  $('action').textContent = data.security?.recommended_action || '—';
+  $('result').hidden = false;
+}
+
+function renderDetections(data) {
+  const dets = data.detections || [];
+  const tbody = $('det-tbody');
+  tbody.innerHTML = '';
+  dets.forEach(d => {
+    const tr = document.createElement('tr');
+    const bb = (d.bbox || []).map(v => Math.round(v)).join(', ');
+    tr.innerHTML = `<td>${d.label}</td><td>${(d.confidence * 100).toFixed(1)}%</td><td>[${bb}]</td>`;
+    tbody.appendChild(tr);
+  });
+  $('det-count').textContent = dets.length;
+  $('det-empty').hidden = dets.length > 0;
+
+  // Video debug
   const debug = $('video-debug');
   if (data.media_type === 'video' && data.video_stats) {
     const s = data.video_stats;
@@ -246,25 +406,6 @@ function render(data) {
   } else {
     debug.hidden = true;
   }
-
-  const dets = data.detections || [];
-  const tbody = $('det-tbody');
-  tbody.innerHTML = '';
-  dets.forEach(d => {
-    const tr = document.createElement('tr');
-    const bb = d.bbox.map(v => Math.round(v)).join(', ');
-    tr.innerHTML = `<td>${d.label}</td><td>${(d.confidence * 100).toFixed(1)}%</td><td>[${bb}]</td>`;
-    tbody.appendChild(tr);
-  });
-  $('det-count').textContent = dets.length;
-  $('det-empty').hidden = dets.length > 0;
-
-  $('summary').textContent = data.vlm.summary || '—';
-  $('vlm-note').hidden = !data.vlm.skipped;
-  $('observations').textContent = (data.vlm.observations || []).join(' • ') || '—';
-  $('risks').textContent = (data.security.risks || []).join(', ') || '—';
-  $('action').textContent = data.security.recommended_action || '—';
-  $('result').hidden = false;
 }
 </script>
 </body>
