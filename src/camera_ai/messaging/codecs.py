@@ -44,9 +44,12 @@ class JSONMessageCodec(Generic[T]):
 
         try:
             payload = dict(self._to_payload(value))
+            message_type = metadata.get("message_type", self.message_type)
+            if not isinstance(message_type, str) or not message_type:
+                raise ValueError("message_type must be a non-empty string")
             document = {
                 "message_id": str(metadata.get("message_id") or uuid.uuid4().hex),
-                "message_type": self.message_type,
+                "message_type": message_type,
                 "source": str(metadata.get("source") or "unknown"),
                 "camera_id": str(metadata.get("camera_id") or "unknown"),
                 "occurred_at": occurred_at.astimezone(timezone.utc).isoformat(),
