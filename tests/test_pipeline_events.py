@@ -68,7 +68,7 @@ class TraceVLM(VLM):
             raw_output='{"decision":"yes"}',
             raw_output_valid=True,
             decision="yes",
-            event_type="person_activity",
+            event_type="traffic_accident",
             evidence=["person visible"],
         )
 
@@ -167,6 +167,8 @@ def test_processor_routes_before_vlm_and_preserves_exact_trace(tmp_path):
     assert result.vlm_trace.prompt == "candidate=person_only_activity"
     assert result.vlm_trace.raw_output == '{"decision":"yes"}'
     assert result.decision.decision.value == "yes"
+    assert result.decision.event_type == "traffic_accident"
+    assert result.alert_event.event_type == "traffic_accident"
     artifact_dir = tmp_path / "cam_trace" / "cam_trace_000000"
     assert (artifact_dir / "vlm_prompt.txt").read_text(encoding="utf-8") == result.vlm_trace.prompt
     assert (artifact_dir / "vlm_raw_output.txt").read_text(encoding="utf-8") == result.vlm_trace.raw_output

@@ -176,3 +176,9 @@ Async video uses a conservative Qwen gate: fully static five-second windows are
 written as green results without a VLM call, while motion/object/fire candidates
 still receive one candidate-aware Qwen verification. Benchmark JSON reports the
 Qwen call rate and whether processing stays within 5 seconds per window.
+
+Candidate-aware Qwen responses contain `decision`, `event_type`, and `summary`.
+`event_type` is selected from `no_event`, `person_vehicle_interaction`,
+`traffic_accident`, `person_fall`, `fighting`, `fire_smoke`, `camera_tamper`, or
+`unknown_event`. The router candidate guides the question but is not treated as
+the final event classification.

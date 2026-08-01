@@ -319,3 +319,10 @@ from the default COCO YOLO model.
 The processing target is p95 at or below 5,000 ms per window, excluding queue
 wait. This is an observed benchmark target rather than a guarantee: real API +
 Ollama measurements determine whether the target is met.
+
+For a routed candidate, Qwen returns only `decision`, `event_type`, and a short
+`summary`. Event type must be one of `no_event`, `person_vehicle_interaction`,
+`traffic_accident`, `person_fall`, `fighting`, `fire_smoke`, `camera_tamper`, or
+`unknown_event`. Valid `no` pairs with `no_event`; valid `uncertain` pairs with
+`unknown_event`; valid `yes` pairs with a concrete event. Invalid or inconsistent
+JSON becomes low/degraded `uncertain + unknown_event` and cannot create an alert.

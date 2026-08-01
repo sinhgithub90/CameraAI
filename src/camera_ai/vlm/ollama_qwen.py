@@ -32,6 +32,16 @@ DEFAULT_NUM_PREDICT = 128
 DEFAULT_KEEP_ALIVE = "10m"
 DEFAULT_FRAME_MODE = "composite"
 VALID_FRAME_MODES = {"composite", "separate"}
+EVENT_TYPES = (
+    "no_event",
+    "person_vehicle_interaction",
+    "traffic_accident",
+    "person_fall",
+    "fighting",
+    "fire_smoke",
+    "camera_tamper",
+    "unknown_event",
+)
 PANEL_WIDTH = 960
 PANEL_HEIGHT = 540
 
@@ -49,7 +59,12 @@ _CANDIDATE_PROMPT = (
     "Xác minh nghi vấn camera và trả về đúng JSON bằng tiếng Việt.\n"
     "- decision: đúng một trong yes | no | uncertain. Không đủ bằng chứng thì "
     "chọn uncertain.\n"
-    "- summary: bắt buộc, đúng một câu ngắn, mục tiêu không quá 20 từ.\n"
+    "- event_type: chọn đúng một giá trị trong: {event_types}.\n"
+    "- no chỉ đi với no_event; uncertain chỉ đi với unknown_event; yes phải "
+    "đi với một sự kiện cụ thể.\n"
+    "- summary: bắt buộc, 1–2 câu ngắn, mục tiêu không quá 40 từ.\n"
+    "Candidate chỉ là nghi vấn định hướng, không phải đáp án bắt buộc. Không "
+    "kết luận tai nạn chỉ vì người và xe cùng xuất hiện.\n"
     "Nghi vấn: {candidate_type}.\n"
     "Bằng chứng router: {candidate_evidence}.\n"
     "Dữ liệu YOLO:\n{detections}"
@@ -74,9 +89,10 @@ _CANDIDATE_OUTPUT_SCHEMA = {
     "type": "object",
     "properties": {
         "decision": {"type": "string", "enum": ["yes", "no", "uncertain"]},
+        "event_type": {"type": "string", "enum": list(EVENT_TYPES)},
         "summary": {"type": "string", "minLength": 1},
     },
-    "required": ["decision", "summary"],
+    "required": ["decision", "event_type", "summary"],
     "additionalProperties": False,
 }
 
@@ -159,6 +175,7 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
         if candidate is not None:
             prompt = _CANDIDATE_PROMPT.format(
                 candidate_type=candidate.candidate_type,
+                event_types=", ".join(EVENT_TYPES),
                 candidate_evidence=json.dumps(
                     candidate.evidence, ensure_ascii=False
                 ),
@@ -250,6 +267,7 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
                 prompt=prompt,
                 raw_output_valid=False,
                 decision="uncertain",
+                event_type="unknown_event" if candidate is not None else None,
             )
         response_data = resp.json()
         self._log_ollama_timing(response_data)
@@ -261,11 +279,18 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
             and str(data.get("summary", "")).strip()
             and (
                 candidate is None
-                or data.get("decision") in {"yes", "no", "uncertain"}
+                or (
+                    data.get("decision") in {"yes", "no", "uncertain"}
+                    and data.get("event_type") in EVENT_TYPES
+                    and self._candidate_output_is_consistent(
+                        str(data.get("decision")), str(data.get("event_type"))
+                    )
+                )
             )
         )
         if candidate is not None:
             decision = str(data["decision"]) if valid and data else "uncertain"
+            event_type = str(data["event_type"]) if valid and data else "unknown_event"
             summary = (
                 str(data["summary"]).strip()
                 if valid and data
@@ -282,15 +307,26 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
             if not valid:
                 scene = scene.model_copy(update={"degraded": True})
             decision = "uncertain"
+            event_type = None
         return VLMAnalysisTrace(
             scene=scene,
             prompt=prompt,
             raw_output=content,
             raw_output_valid=valid,
             decision=decision,
-            event_type=candidate.candidate_type if candidate is not None else None,
+            event_type=event_type,
             evidence=[],
         )
+
+    @staticmethod
+    def _candidate_output_is_consistent(decision: str, event_type: str) -> bool:
+        if decision == "no":
+            return event_type == "no_event"
+        if decision == "uncertain":
+            return event_type == "unknown_event"
+        if decision == "yes":
+            return event_type not in {"no_event", "unknown_event"}
+        return False
 
     @staticmethod
     def _candidate_scene(candidate, *, decision: str, summary: str, degraded: bool) -> SceneAnalysis:
