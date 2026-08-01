@@ -44,6 +44,35 @@ def test_benchmark_summary_aggregates_latency_and_vlm_calls():
     assert summary.mean_latency_ms == 200
     assert summary.recall_by_event["fall"] == 1.0
     assert summary.vlm_calls_total == 1
+    assert summary.vlm_called_windows == 1
+    assert summary.vlm_skipped_windows == 1
+    assert summary.vlm_call_rate == 0.5
+    assert summary.processing_p95_ms == 300
+    assert summary.windows_over_budget == 0
+
+
+def test_benchmark_summary_reports_windows_over_five_second_budget():
+    summary = summarize_benchmark(
+        [
+            BenchmarkObservation(
+                case_id="static",
+                expected_event="normal",
+                predicted_event="normal",
+                latency_ms=100,
+                vlm_calls=0,
+            ),
+            BenchmarkObservation(
+                case_id="slow",
+                expected_event="incident",
+                predicted_event="incident",
+                latency_ms=5200,
+                vlm_calls=1,
+            ),
+        ]
+    )
+
+    assert summary.processing_p95_ms == 5200
+    assert summary.windows_over_budget == 1
 
 
 def test_summary_reports_mean_stage_timing_and_serializes_to_json():
@@ -86,7 +115,10 @@ def test_summary_reports_mean_stage_timing_and_serializes_to_json():
         "total_ms": 100.0,
         "motion_ms": 15.0,
         "detector_ms": 25.0,
+        "keyframe_ms": 0.0,
         "qwen_ms": 60.0,
+        "queue_wait_ms": 0.0,
+        "wall_clock_ms": 0.0,
     }
 
 
@@ -157,3 +189,39 @@ def test_observation_from_video_window_uses_window_timing_and_vlm_status():
     assert observation.latency_ms == 30
     assert observation.vlm_calls == 0
     assert observation.timing == window.timing
+
+
+def test_summary_tracks_async_quality_and_wait_metrics():
+    summary = summarize_benchmark(
+        [
+            BenchmarkObservation(
+                case_id="normal_fp",
+                expected_event="normal",
+                predicted_event="fire_smoke",
+                latency_ms=500,
+                queue_wait_ms=50,
+                time_to_first_result_ms=120,
+                vlm_calls=1,
+                json_valid=False,
+                timing=StageTiming(keyframe_ms=10),
+            ),
+            BenchmarkObservation(
+                case_id="fall_fn",
+                expected_event="fall",
+                predicted_event="normal",
+                latency_ms=300,
+                queue_wait_ms=30,
+                time_to_first_result_ms=80,
+                vlm_calls=1,
+                json_valid=True,
+                timing=StageTiming(keyframe_ms=6),
+            ),
+        ]
+    )
+
+    assert summary.false_positive_total == 1
+    assert summary.false_negative_total == 1
+    assert summary.json_valid_rate == 0.5
+    assert summary.mean_queue_wait_ms == 40
+    assert summary.mean_time_to_first_result_ms == 100
+    assert summary.mean_timing.keyframe_ms == 8

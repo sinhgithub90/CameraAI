@@ -9,7 +9,8 @@ Motion → YOLO26n → chọn 2 keyframe → Qwen 4B → PipelineResult
 ```
 
 Mục tiêu là tăng khả năng phân tích sự kiện theo từng bước có thể đo lường,
-không làm vỡ API hiện tại và không tối ưu kiến trúc trước khi có baseline.
+không làm vỡ API hiện tại và không tối ưu execution runtime trước khi có
+baseline.
 
 Phạm vi gồm data contract, luồng xử lý, benchmark, Event Router, VLM routing,
 model chuyên biệt, tracking tối thiểu, Zone/Line và Rule Engine. Không yêu cầu
@@ -20,8 +21,9 @@ triển khai toàn bộ các giai đoạn trong một lần.
 `SecurityAIPipeline` nằm trong `src/camera_ai/pipeline.py` và không phụ thuộc
 FastAPI. Runtime hiện tại có hai đường tương thích:
 
-- Sync vẫn dùng `analyze_event()`; video sync mặc định xử lý một cửa sổ 5 giây
-  đầu (`max_video_windows=1`).
+- Sync vẫn dùng `analyze_event()`; constructor mặc định xử lý một cửa sổ 5
+  giây (`max_video_windows=1`), nhưng FastAPI runtime hiện khởi tạo pipeline
+  với `max_video_windows=None` nên endpoint `/analyze/video` đọc hết upload.
 - Async video coi upload là nguồn stream theo segment: segment 0–5 giây được
   đưa vào queue ngay; segment kế tiếp chỉ được phát sau mỗi mốc 5 giây.
 - Motion được lấy mẫu ở 5 FPS.
@@ -32,8 +34,9 @@ FastAPI. Runtime hiện tại có hai đường tương thích:
 - `OLLAMA_FRAME_MODE=composite` ghép đúng 2 frame thành một ảnh.
 - Ảnh tĩnh dùng `VLMGate`; video async không gate VLM theo motion.
 - `VideoFrameObservation`, `MotionResult`, `VideoWindowResult` và timing đã có.
-- `CandidateEvent`, `ModelDecision`, `AlertEvent` và tracking chưa có trong
-  pipeline runtime.
+- `VideoWindowObservation`, `CandidateEvent`, `ModelDecision`, `AlertEvent`,
+  stable ID và compatibility adapter đã có contract/unit test, nhưng chưa
+  được nối vào window pipeline runtime. Tracking chưa có.
 - `FireDetector` tồn tại nhưng không được khởi tạo bởi pipeline mặc định.
 - Nhánh async có `VideoAnalysis`/`AnalysisStore`, `AlertStore`, EventBus và
   một `VLMQueue`/`VLMWorker`. Với task video, worker này thực hiện trọn
@@ -67,6 +70,16 @@ Chi tiết runtime nằm trong
 7. **Không dùng confidence tự sinh của VLM làm ngưỡng cứng ban đầu.** Giá trị
    này được lưu để đánh giá; escalation ban đầu dựa trên `uncertain`, mâu thuẫn
    tín hiệu và mức nghiêm trọng.
+
+8. **Mở rộng bằng contract trước, mở rộng worker sau.** Mỗi stage mới phải có
+   input/output model và adapter riêng; queue hoặc broker chỉ được tách khi
+   benchmark chứng minh worker hiện tại là bottleneck.
+9. **Execution không được quyết định domain.** `VLMQueue`, `EventBus` và
+   `AnalysisStore` là cơ chế thực thi/transport; chúng không được làm nơi chứa
+   logic Candidate, Decision hay Alert.
+10. **Giữ một đường chạy tương thích trong giai đoạn foundation.** Các stage
+    mới được gọi trong pipeline hiện tại hoặc qua sidecar metadata, để có thể
+    rollback từng stage mà không đổi `PipelineResult` và API FastAPI.
 
 ## Kiến trúc logic đích
 
@@ -124,14 +137,28 @@ GET /analyses/{analysis_id} → FE card per window
 domain contract. EventBus vẫn là
 transport cho các event hệ thống như `alert.created` và `alert.vlm_confirmed`.
 
-### Ranh giới cần giữ khi nâng cấp
+### Ranh giới mở rộng cần giữ
 
 `VLMQueue` là tên lịch sử: về nghĩa thực tế nó đang là **single window
-pipeline queue** cho video. Khi tách stage sau này, giữ nguyên
-`analysis_id`, `window_index`, `alert_id` và `VideoWindowResult`; có thể thay
-bằng `WindowQueue → MotionQueue → YOLOQueue → VLMQueue` mà không đổi API
-`/analyses` hay FE. Không tách queue trước khi benchmark chứng minh cần
-throughput cao hơn một worker.
+pipeline queue** cho video. Trong giai đoạn đầu, giữ nguyên queue/worker này
+và đưa các stage mới vào các module có interface rõ ràng. Nếu sau benchmark
+cần tách execution, có thể thay worker đơn bằng các worker/queue theo stage mà
+không đổi `analysis_id`, `window_index`, `alert_id` hay `VideoWindowResult`.
+
+Các boundary logic cần ổn định trước khi tối ưu concurrency:
+
+```text
+Frame preparation
+  → detection
+  → observation/rules
+  → verification/output
+```
+
+Đây là nhóm trách nhiệm, không phải cam kết phải tạo bốn queue. Mỗi boundary
+phải có model tuần tự hóa được, idempotent theo `analysis_id + window_index`,
+và có timing riêng để sau này có thể đưa sang worker khác mà không đổi domain
+contract. Không thêm RabbitMQ, pub/sub hoặc multi-stage queue trong roadmap
+foundation.
 
 ## Data contract
 
@@ -252,6 +279,25 @@ thái VLM dùng `VLMResult.status` (`pending`, `completed`, `skipped`). Không �
 
 ## Luồng và policy
 
+### Thứ tự triển khai
+
+```text
+Baseline runner/report hiện tại
+  → Event Router bảo thủ
+  → Observation/Candidate/Decision/Alert + artifact runtime
+  → benchmark 2B/4B và 2/4/6 keyframe
+  → quyết định cascade hoặc giữ 4B
+  → Fire/Smoke temporal
+  → tracking tối thiểu
+  → Zone/Line
+  → traffic rules
+  → tối ưu theo số đo
+```
+
+Việc contract foundation đã được merge trước runner không thay đổi execution
+gate: không nối router hoặc đổi runtime output trước khi có báo cáo baseline
+Qwen 4B + hai keyframe trên manifest cố định.
+
 ### Baseline
 
 Giữ nguyên các mặc định hiện tại:
@@ -341,15 +387,26 @@ decision.json
 alert.json
 ```
 
+Artifact là opt-in, được ghi theo `camera_id/window_id`, dùng ghi nguyên tử và
+không nhúng frame bytes/base64 vào JSON. Với nhiều candidate, lưu toàn bộ danh
+sách nhưng đánh dấu candidate chính được chọn cho một lần xác minh hiện tại.
+
 Các chỉ số bắt buộc:
 
-- Motion, YOLO, keyframe selection, Ollama và tổng latency;
+- Motion, YOLO, keyframe selection, queue wait, Ollama và tổng wall-clock
+  latency;
 - số lần gọi detector/VLM;
 - tỷ lệ JSON hợp lệ;
 - recall theo event type;
 - false positive và false negative;
 - RAM/VRAM và chi phí chuyển model cho benchmark 2B/4B;
 - payload size và chất lượng theo cấu hình keyframe.
+
+Baseline chỉ đo đường async mặc định, gồm producer, queue, worker và polling
+completion. Sync tiếp tục tồn tại để tương thích nhưng nằm ngoài phạm vi
+benchmark roadmap này. Async hiện gọi Qwen một lần cho mỗi window, kể cả
+window tĩnh; chỉ thêm motion gate sau khi baseline cho thấy lợi ích về chi phí
+VLM mà không làm giảm recall chấp nhận được.
 
 ## Xử lý lỗi và tương thích
 
@@ -373,3 +430,6 @@ Kiến trúc sẵn sàng cho implementation khi:
 - tracking được tách độc lập khỏi Zone/Line;
 - mọi stage có log và test có thể tái lập;
 - kế hoạch triển khai có thể thực hiện từng task mà vẫn giữ pipeline chạy được.
+- execution boundary được mô tả độc lập với transport; việc tách queue là một
+  quyết định benchmark ở giai đoạn sau, không phải điều kiện để hoàn thành
+  foundation.

@@ -152,6 +152,7 @@ class VLMWorker:
         while True:
             try:
                 task = await self._queue.dequeue()
+                processing_started = time.monotonic()
                 logger.info(
                     "[vlm-worker] processing alert=%s camera=%s rule=%s",
                     task.alert_id,
@@ -161,12 +162,24 @@ class VLMWorker:
                 # A video item owns the whole stage pipeline; image items are VLM-only.
                 qwen_started = time.perf_counter()
                 if task.raw_window is not None:
-                    processed = await asyncio.to_thread(self._pipeline.process_video_window, task.raw_window)
+                    processed = await asyncio.to_thread(
+                        self._pipeline.process_video_window,
+                        task.raw_window,
+                        task.camera_id,
+                    )
                     analysis = processed.scene
                 else:
                     processed = None
                     analysis = await asyncio.to_thread(self._pipeline.analyze_vlm, task)
                 qwen_ms = (time.perf_counter() - qwen_started) * 1000
+                if processed is not None:
+                    completed_at = time.monotonic()
+                    processed.timing.queue_wait_ms = max(
+                        0.0, (processing_started - task.enqueued_at) * 1000
+                    )
+                    processed.timing.wall_clock_ms = max(
+                        0.0, (completed_at - task.enqueued_at) * 1000
+                    )
                 await self._alert_store.update_vlm(
                     task.alert_id, analysis, qwen_ms=qwen_ms
                 )

@@ -22,7 +22,7 @@ def test_qwen_default_is_local_4b_model(monkeypatch):
 
 def test_qwen_default_output_budget_allows_complete_security_json(monkeypatch):
     monkeypatch.delenv("OLLAMA_NUM_PREDICT", raising=False)
-    assert OllamaQwenAnalyzer().num_predict == 192
+    assert OllamaQwenAnalyzer().num_predict == 128
 
 
 def test_fire_detector_defaults_to_heuristic_without_weights(monkeypatch):

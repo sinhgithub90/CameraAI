@@ -15,6 +15,7 @@ VMS-Center/recordings.db-*
 *.mkv
 *.avi
 *.log
+runs/
 
 # Camera-AI sub-module
 .venv/

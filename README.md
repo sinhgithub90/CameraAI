@@ -9,7 +9,7 @@ YOLO_WEIGHTS=yolo26n.pt
 OLLAMA_MODEL=qwen3-vl:4b-instruct-q4_K_M
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_NUM_CTX=4096
-OLLAMA_NUM_PREDICT=96
+OLLAMA_NUM_PREDICT=128
 OLLAMA_KEEP_ALIVE=10m
 OLLAMA_FRAME_MODE=composite
 ```
@@ -36,7 +36,7 @@ To run the upload API:
 $env:YOLO_WEIGHTS = "yolo26n.pt"
 $env:OLLAMA_MODEL = "qwen3-vl:4b-instruct-q4_K_M"
 $env:OLLAMA_NUM_CTX = "4096"
-$env:OLLAMA_NUM_PREDICT = "96"
+$env:OLLAMA_NUM_PREDICT = "128"
 $env:OLLAMA_KEEP_ALIVE = "10m"
 $env:OLLAMA_FRAME_MODE = "composite"
 python -m uvicorn apps.api.main:app --reload
@@ -121,7 +121,7 @@ VLM là tầng đắt — chỉ chạy khi tầng detect rẻ báo có tín hi�
 | `OLLAMA_MODEL` | `qwen3-vl:4b-instruct-q4_K_M` | Model VLM trên Ollama (bạn bè dùng model Qwen khác thì đổi cái này) |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Endpoint Ollama |
 | `OLLAMA_NUM_CTX` | `4096` | Context phù hợp để Qwen 4B nằm hoàn toàn trên GPU 6 GB |
-| `OLLAMA_NUM_PREDICT` | `96` | Giới hạn độ dài JSON cảnh báo ngắn trả về |
+| `OLLAMA_NUM_PREDICT` | `128` | Đủ chỗ cho candidate JSON chỉ gồm decision và summary ngắn |
 | `OLLAMA_KEEP_ALIVE` | `10m` | Giữ model trong Ollama giữa các lần test |
 | `OLLAMA_FRAME_MODE` | `composite` | `composite`: ghép hai keyframe thành một ảnh; `separate`: gửi hai ảnh riêng |
 | `CAMERA_AI_VLM_POLICY` | `gated` | `gated`: chỉ gọi VLM khi có trigger · `always`: gọi mọi input |
@@ -172,3 +172,7 @@ python -m pytest tests/ -v
 
 - `yolo26n.pt` được tự tải về khi có request đầu tiên.
 - Ollama phải đang chạy với model vision: `qwen3-vl:4b-instruct-q4_K_M`.
+Async video uses a conservative Qwen gate: fully static five-second windows are
+written as green results without a VLM call, while motion/object/fire candidates
+still receive one candidate-aware Qwen verification. Benchmark JSON reports the
+Qwen call rate and whether processing stays within 5 seconds per window.

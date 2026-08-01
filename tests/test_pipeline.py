@@ -112,6 +112,7 @@ def test_fire_heuristic_detector():
     dets = detector.detect(frame)
     assert dets
     assert dets[0].source == "fire"
+    assert dets[0].backend == "heuristic"
     assert dets[0].label == "fire"
 
 

@@ -25,9 +25,26 @@ from .schemas import (
     SceneAnalysis,
     StageTiming,
     VideoFrameObservation,
+    VLMAnalysisTrace,
 )
 from .video_selection import select_keyframes
 from .vlm import VLMAnalyzer
+from .artifacts import WindowArtifactWriter
+from .event_models import (
+    AlertEvent,
+    CandidateEvent,
+    ModelDecision,
+    alert_from_decision,
+    decision_from_trace,
+    select_primary_candidate,
+    Priority,
+    stable_event_id,
+)
+from .router import route_observation
+from .schemas import VideoWindowObservation
+from .temporal_validation import TemporalSignalValidator
+from .vlm_policy import VLMCallDecision, VLMCallReason, decide_vlm_call
+from .detection_aggregation import aggregate_window_detections
 
 VIDEO_MAX_SIDE = 1280
 
@@ -48,6 +65,12 @@ class ProcessedVideoWindow(BaseModel):
     detections: list[Detection] = Field(default_factory=list)
     qwen_input: QwenInputSummary
     timing: StageTiming
+    observation: VideoWindowObservation
+    candidates: list[CandidateEvent] = Field(default_factory=list)
+    decision: ModelDecision | None = None
+    alert_event: AlertEvent | None = None
+    vlm_trace: VLMAnalysisTrace | None = None
+    vlm_call: VLMCallDecision
 
 
 class StreamWindowProducer:
@@ -147,20 +170,27 @@ class VideoWindowProcessor:
         self,
         *,
         detector: Detector,
+        fire_detector: Detector | None = None,
         vlm: VLMAnalyzer,
         yolo_fps: float,
         max_keyframes: int,
+        artifact_writer: WindowArtifactWriter | None = None,
     ) -> None:
         self.detector = detector
+        self.fire_detector = fire_detector
         self.vlm = vlm
         self.yolo_fps = yolo_fps
         self.max_keyframes = max_keyframes
+        self.artifact_writer = artifact_writer
 
-    def process(self, window: RawVideoWindow) -> ProcessedVideoWindow:
+    def process(self, window: RawVideoWindow, camera_id: str = "unknown") -> ProcessedVideoWindow:
         motion_detector = MotionDetector()
         detections: list[Detection] = []
         motion_ms = detector_ms = 0.0
         last_detector_seconds = float("-inf")
+        fire_validator = TemporalSignalValidator()
+        fire_confirmed = False
+        fire_evidence: list[Detection] = []
         for observation in window.observations:
             started = time.perf_counter()
             observation.motion = motion_detector.compare(observation.frame)
@@ -173,23 +203,120 @@ class VideoWindowProcessor:
                 observation.detections = self.detector.detect(observation.frame)
                 detector_ms += (time.perf_counter() - started) * 1000
                 last_detector_seconds = observation.timestamp_seconds
+            if self.fire_detector is not None:
+                fire_detections = self.fire_detector.detect(observation.frame)
+                observation.detections.extend(fire_detections)
+                fire_signal = fire_validator.update(
+                    observation.frame_index, fire_detections
+                )
+                if fire_signal.confirmed:
+                    fire_confirmed = True
+                    fire_evidence = fire_signal.detections
             detections.extend(observation.detections)
 
-        keyframes = select_keyframes(window.observations, max_keyframes=self.max_keyframes)
-        frames = [item.frame for item in keyframes if item.frame is not None]
         started = time.perf_counter()
-        if not frames:
-            scene = SceneAnalysis(
-                summary="Không có frame để phân tích VLM.",
-                alert_level=AlertLevel.MEDIUM if detections else AlertLevel.LOW,
-                degraded=True,
+        keyframes = select_keyframes(window.observations, max_keyframes=self.max_keyframes)
+        keyframe_ms = (time.perf_counter() - started) * 1000
+        frames = [item.frame for item in keyframes if item.frame is not None]
+        detection_aggregate = aggregate_window_detections(window.observations)
+        routing_peak = max(window.observations, key=lambda item: item.motion.score)
+        routing_observation = VideoWindowObservation(
+            camera_id=camera_id,
+            window_id=f"{camera_id}_{window.window_index:06d}",
+            start_ms=round(window.start_seconds * 1000),
+            end_ms=round(window.end_seconds * 1000),
+            motion=routing_peak.motion,
+            detections=detections,
+            selected_frames=[item.frame_index for item in keyframes],
+            detection_aggregate=detection_aggregate,
+        )
+        routing_candidates = route_observation(routing_observation)
+        if fire_confirmed:
+            fire_type = "possible_fire_visual_change"
+            routing_candidates.append(
+                CandidateEvent(
+                    candidate_id=stable_event_id(
+                        "candidate", routing_observation.window_id, fire_type
+                    ),
+                    window_id=routing_observation.window_id,
+                    candidate_type=fire_type,
+                    priority=Priority.HIGH,
+                    evidence={
+                        "temporal_confirmed": True,
+                        "backend": fire_evidence[0].backend if fire_evidence else None,
+                        "max_confidence": max(
+                            (item.confidence for item in fire_evidence), default=0.0
+                        ),
+                    },
+                )
             )
-        elif len(frames) == 1:
-            scene = self.vlm.analyze(frames[0], detections)
+        routing_primary = select_primary_candidate(routing_candidates)
+        vlm_call = decide_vlm_call(
+            routing_observation,
+            routing_candidates,
+            usable_frame_count=len(frames),
+        )
+        started = time.perf_counter()
+        if not vlm_call.call_vlm:
+            no_frames = vlm_call.reason is VLMCallReason.NO_USABLE_FRAMES
+            scene = SceneAnalysis(
+                summary=(
+                    "Không có frame hợp lệ để phân tích."
+                    if no_frames
+                    else "Không phát hiện chuyển động hoặc đối tượng cần xác minh."
+                ),
+                alert_level=AlertLevel.LOW,
+                degraded=no_frames,
+            )
+            trace = VLMAnalysisTrace(scene=scene)
+        elif hasattr(self.vlm, "analyze_with_trace"):
+            trace = self.vlm.analyze_with_trace(
+                frames, detections, candidate=routing_primary
+            )
+            scene = trace.scene
         else:
-            scene = self.vlm.analyze_sequence(frames, detections)
-        qwen_ms = (time.perf_counter() - started) * 1000
-        return ProcessedVideoWindow(
+            scene = (
+                self.vlm.analyze(frames[0], detections)
+                if len(frames) == 1
+                else self.vlm.analyze_sequence(frames, detections)
+            )
+            trace = VLMAnalysisTrace(
+                scene=scene,
+                raw_output=scene.model_dump_json(),
+                raw_output_valid=not scene.degraded,
+                decision=(
+                    "uncertain"
+                    if scene.degraded
+                    else "no"
+                    if scene.alert_level is AlertLevel.LOW and not scene.risks
+                    else "yes"
+                ),
+            )
+        qwen_ms = (
+            (time.perf_counter() - started) * 1000
+            if vlm_call.call_vlm
+            else 0.0
+        )
+        observation = routing_observation
+        candidates = routing_candidates
+        primary = routing_primary
+        model_name = getattr(self.vlm, "model", self.vlm.__class__.__name__)
+        decision = (
+            decision_from_trace(primary, trace, model=model_name, latency_ms=qwen_ms)
+            if vlm_call.call_vlm and primary is not None
+            else None
+        )
+        alert = (
+            alert_from_decision(
+                primary,
+                decision,
+                camera_id=camera_id,
+                recommended_action=scene.recommended_action,
+            )
+            if primary is not None and decision is not None
+            else None
+        )
+        result = ProcessedVideoWindow(
             scene=scene,
             detections=detections,
             qwen_input=QwenInputSummary(
@@ -201,7 +328,25 @@ class VideoWindowProcessor:
             timing=StageTiming(
                 motion_ms=motion_ms,
                 detector_ms=detector_ms,
+                keyframe_ms=keyframe_ms,
                 qwen_ms=qwen_ms,
-                total_ms=motion_ms + detector_ms + qwen_ms,
+                total_ms=motion_ms + detector_ms + keyframe_ms + qwen_ms,
             ),
+            observation=observation,
+            candidates=candidates,
+            decision=decision,
+            alert_event=alert,
+            vlm_trace=trace,
+            vlm_call=vlm_call,
         )
+        if self.artifact_writer is not None:
+            self.artifact_writer.write(
+                observation=observation,
+                candidates=candidates,
+                frames=frames,
+                prompt=trace.prompt,
+                raw_output=trace.raw_output,
+                decision=decision,
+                alert=alert,
+            )
+        return result

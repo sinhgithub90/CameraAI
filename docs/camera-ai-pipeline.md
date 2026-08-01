@@ -148,7 +148,7 @@ Qwen nhận:
 - ảnh hoặc ảnh ghép;
 - danh sách nhãn YOLO đã rút gọn thành `count` và `max_conf`;
 - yêu cầu trả cảnh báo an ninh ngắn bằng tiếng Việt;
-- `temperature=0`, context 4096 và tối đa 96 output token.
+- `temperature=0`, context 4096 và tối đa 128 output token.
 
 JSON Schema yêu cầu đúng bốn trường:
 
@@ -257,7 +257,7 @@ Ollama trả về, giúp tách thời gian load model, xử lý prompt và sinh 
 | `OLLAMA_MODEL` | `qwen3-vl:4b-instruct-q4_K_M` | env |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | env |
 | `OLLAMA_NUM_CTX` | `4096` | env |
-| `OLLAMA_NUM_PREDICT` | `96` | env |
+| `OLLAMA_NUM_PREDICT` | `128` | env |
 | `OLLAMA_KEEP_ALIVE` | `10m` | env |
 | `OLLAMA_FRAME_MODE` | `composite` | env |
 
@@ -274,7 +274,7 @@ $env:YOLO_WEIGHTS="yolo26n.pt"
 $env:OLLAMA_MODEL="qwen3-vl:4b-instruct-q4_K_M"
 $env:OLLAMA_BASE_URL="http://localhost:11434"
 $env:OLLAMA_NUM_CTX="4096"
-$env:OLLAMA_NUM_PREDICT="96"
+$env:OLLAMA_NUM_PREDICT="128"
 $env:OLLAMA_KEEP_ALIVE="10m"
 $env:OLLAMA_FRAME_MODE="composite"
 
@@ -300,3 +300,22 @@ python -m uvicorn apps.api.main:app --host 127.0.0.1 --port 8000
 
 Cold-run đầu tiên thường chậm hơn do Ollama phải load model. Khi so sánh hiệu
 năng, nên chạy warm-up trước rồi dùng cùng một video cho các lần đo.
+## Conservative Qwen gate for async video
+
+Each five-second async window now follows:
+
+```text
+Motion -> YOLO / optional specialized detector -> Event Router -> VLMCallPolicy
+  no candidate and usable frames -> skip Qwen, emit a green window
+  candidate -> call Qwen 4B once with the primary candidate
+  no usable frames -> skip Qwen, emit a degraded window
+```
+
+Bounding boxes remain internal evidence for proximity and future tracking/zone
+rules; raw coordinates are not added to the Qwen prompt. A fire candidate only
+comes from the optional specialized detector after temporal confirmation, not
+from the default COCO YOLO model.
+
+The processing target is p95 at or below 5,000 ms per window, excluding queue
+wait. This is an observed benchmark target rather than a guarantee: real API +
+Ollama measurements determine whether the target is met.

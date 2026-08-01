@@ -108,6 +108,7 @@ class FireDetector(Detector):
                         confidence=float(box.conf[0]),
                         bbox=[x1, y1, x2, y2],
                         source="fire",
+                        backend="model",
                     )
                 )
         return detections
@@ -127,5 +128,6 @@ class FireDetector(Detector):
                 confidence=round(min(0.99, ratio * 50 + 0.5), 3),
                 bbox=[float(xs.min()), float(ys.min()), float(xs.max()), float(ys.max())],
                 source="fire",
+                backend="heuristic",
             )
         ]

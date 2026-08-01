@@ -1,7 +1,18 @@
 import pytest
 
 from camera_ai.analysis_store import InMemoryAnalysisStore, VideoAnalysis
-from camera_ai.schemas import AlertLevel, SceneAnalysis, SecurityDecision, StageTiming, VideoWindowResult, VLMResult, QwenInputSummary
+from camera_ai.schemas import (
+    AlertLevel,
+    QwenInputSummary,
+    SceneAnalysis,
+    SecurityDecision,
+    StageTiming,
+    VideoWindowObservation,
+    VideoWindowResult,
+    VLMResult,
+)
+from camera_ai.video_windows import ProcessedVideoWindow
+from camera_ai.vlm_policy import VLMCallDecision, VLMCallReason
 
 
 def pending_window(alert_id: str) -> VideoWindowResult:
@@ -69,3 +80,42 @@ async def test_analysis_store_exposes_producer_failure():
     assert analysis is not None
     assert analysis.status == "failed"
     assert analysis.error == "cannot read video"
+
+
+@pytest.mark.asyncio
+async def test_processed_static_window_is_persisted_as_skipped_and_completes():
+    store = InMemoryAnalysisStore()
+    await store.create(VideoAnalysis(id="analysis-4", camera_id="cam_01"))
+    await store.append_window("analysis-4", pending_window("alert-4"))
+    await store.mark_producer_complete("analysis-4")
+    processed = ProcessedVideoWindow(
+        scene=SceneAnalysis(summary="static", alert_level=AlertLevel.LOW),
+        qwen_input=QwenInputSummary(frame_count=2),
+        timing=StageTiming(total_ms=10.0, qwen_ms=0.0),
+        observation=VideoWindowObservation(
+            camera_id="cam_01",
+            window_id="cam_01_000000",
+            start_ms=0,
+            end_ms=5000,
+        ),
+        vlm_call=VLMCallDecision(
+            call_vlm=False,
+            reason=VLMCallReason.STATIC_WINDOW,
+        ),
+    )
+
+    await store.complete_processed_window("analysis-4", "alert-4", processed, 0.0)
+
+    analysis = await store.get("analysis-4")
+    assert analysis is not None
+    saved = analysis.windows[0]
+    assert saved.vlm.status == "skipped"
+    assert saved.vlm.skipped is True
+    assert saved.event_metadata["vlm_call"] == {
+        "call_vlm": False,
+        "reason": "static_window",
+        "priority": "low",
+        "candidate_id": None,
+    }
+    assert saved.timing.qwen_ms == 0
+    assert analysis.status == "completed"

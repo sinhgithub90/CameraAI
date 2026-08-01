@@ -18,7 +18,7 @@ import cv2
 import numpy as np
 import requests
 
-from ..schemas import AlertLevel, Detection, SceneAnalysis
+from ..schemas import AlertLevel, Detection, SceneAnalysis, VLMAnalysisTrace
 from .base import VLMAnalyzer
 
 logger = logging.getLogger(__name__)
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_MODEL = "qwen3-vl:4b-instruct-q4_K_M"
 DEFAULT_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 DEFAULT_NUM_CTX = 4096
-DEFAULT_NUM_PREDICT = 192
+DEFAULT_NUM_PREDICT = 128
 DEFAULT_KEEP_ALIVE = "10m"
 DEFAULT_FRAME_MODE = "composite"
 VALID_FRAME_MODES = {"composite", "separate"}
@@ -45,6 +45,16 @@ _PROMPT = (
     "Dữ liệu YOLO:\n{detections}"
 )
 
+_CANDIDATE_PROMPT = (
+    "Xác minh nghi vấn camera và trả về đúng JSON bằng tiếng Việt.\n"
+    "- decision: đúng một trong yes | no | uncertain. Không đủ bằng chứng thì "
+    "chọn uncertain.\n"
+    "- summary: bắt buộc, đúng một câu ngắn, mục tiêu không quá 20 từ.\n"
+    "Nghi vấn: {candidate_type}.\n"
+    "Bằng chứng router: {candidate_evidence}.\n"
+    "Dữ liệu YOLO:\n{detections}"
+)
+
 _OUTPUT_SCHEMA = {
     "type": "object",
     "properties": {
@@ -57,6 +67,16 @@ _OUTPUT_SCHEMA = {
         "recommended_action": {"type": "string"},
     },
     "required": ["alert_level", "summary", "risks", "recommended_action"],
+    "additionalProperties": False,
+}
+
+_CANDIDATE_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "decision": {"type": "string", "enum": ["yes", "no", "uncertain"]},
+        "summary": {"type": "string", "minLength": 1},
+    },
+    "required": ["decision", "summary"],
     "additionalProperties": False,
 }
 
@@ -106,7 +126,7 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
             return str(value)
 
     def analyze(self, frame: np.ndarray, detections: list[Detection]) -> SceneAnalysis:
-        return self._analyze_frames([frame], detections)
+        return self._analyze_frames_trace([frame], detections).scene
 
     def analyze_sequence(
         self,
@@ -115,15 +135,39 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
     ) -> SceneAnalysis:
         if not frames:
             raise ValueError("at least one frame is required")
-        return self._analyze_frames(frames, detections)
+        return self._analyze_frames_trace(frames, detections).scene
 
-    def _analyze_frames(
+    def analyze_with_trace(
         self,
         frames: Sequence[np.ndarray],
         detections: list[Detection],
-    ) -> SceneAnalysis:
+        *,
+        candidate=None,
+    ) -> VLMAnalysisTrace:
+        if not frames:
+            raise ValueError("at least one frame is required")
+        return self._analyze_frames_trace(frames, detections, candidate=candidate)
+
+    def _analyze_frames_trace(
+        self,
+        frames: Sequence[np.ndarray],
+        detections: list[Detection],
+        *,
+        candidate=None,
+    ) -> VLMAnalysisTrace:
         det_lines = self._format_detections(detections)
-        prompt = _PROMPT.format(detections=det_lines)
+        if candidate is not None:
+            prompt = _CANDIDATE_PROMPT.format(
+                candidate_type=candidate.candidate_type,
+                candidate_evidence=json.dumps(
+                    candidate.evidence, ensure_ascii=False
+                ),
+                detections=det_lines,
+            )
+            output_schema = _CANDIDATE_OUTPUT_SCHEMA
+        else:
+            prompt = _PROMPT.format(detections=det_lines)
+            output_schema = _OUTPUT_SCHEMA
         prepared_images = self._prepare_images(frames)
         is_composite = self.frame_mode == "composite" and len(frames) == 2
         if is_composite:
@@ -164,7 +208,7 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
                 "num_predict": self.num_predict,
                 "temperature": 0,
             },
-            "format": _OUTPUT_SCHEMA,
+            "format": output_schema,
             "keep_alive": self.keep_alive,
             "stream": False,
         }
@@ -183,19 +227,96 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
                 exc,
                 f" response={detail[:500]}" if detail else "",
             )
-            return SceneAnalysis(
-                summary=f"Không kết nối được Ollama ({self.model}): {exc}. "
-                        "Kết quả này không có phân tích VLM.",
-                observations=[f"phát hiện {d.label}" for d in detections],
-                alert_level=AlertLevel.MEDIUM if detections else AlertLevel.LOW,
-                risks=["vlm_khong_kha_dung", *(f"{d.label}_phat_hien" for d in detections)],
-                recommended_action="kiem_tra_dich_vu_ollama",
-                degraded=True,
+            scene = (
+                self._candidate_scene(
+                    candidate,
+                    decision="uncertain",
+                    summary=f"Không kết nối được Ollama ({self.model}).",
+                    degraded=True,
+                )
+                if candidate is not None
+                else SceneAnalysis(
+                    summary=f"Không kết nối được Ollama ({self.model}): {exc}. "
+                    "Kết quả này không có phân tích VLM.",
+                    observations=[f"phát hiện {d.label}" for d in detections],
+                    alert_level=AlertLevel.MEDIUM if detections else AlertLevel.LOW,
+                    risks=["vlm_khong_kha_dung", *(f"{d.label}_phat_hien" for d in detections)],
+                    recommended_action="kiem_tra_dich_vu_ollama",
+                    degraded=True,
+                )
+            )
+            return VLMAnalysisTrace(
+                scene=scene,
+                prompt=prompt,
+                raw_output_valid=False,
+                decision="uncertain",
             )
         response_data = resp.json()
         self._log_ollama_timing(response_data)
         content = response_data["message"]["content"]
-        return self._parse(content)
+        data = self._extract_json(content)
+        valid = bool(
+            data is not None
+            and all(field in data for field in output_schema["required"])
+            and str(data.get("summary", "")).strip()
+            and (
+                candidate is None
+                or data.get("decision") in {"yes", "no", "uncertain"}
+            )
+        )
+        if candidate is not None:
+            decision = str(data["decision"]) if valid and data else "uncertain"
+            summary = (
+                str(data["summary"]).strip()
+                if valid and data
+                else "VLM trả JSON chưa hoàn chỉnh."
+            )
+            scene = self._candidate_scene(
+                candidate,
+                decision=decision,
+                summary=summary,
+                degraded=not valid,
+            )
+        else:
+            scene = self._parse(content)
+            if not valid:
+                scene = scene.model_copy(update={"degraded": True})
+            decision = "uncertain"
+        return VLMAnalysisTrace(
+            scene=scene,
+            prompt=prompt,
+            raw_output=content,
+            raw_output_valid=valid,
+            decision=decision,
+            event_type=candidate.candidate_type if candidate is not None else None,
+            evidence=[],
+        )
+
+    @staticmethod
+    def _candidate_scene(candidate, *, decision: str, summary: str, degraded: bool) -> SceneAnalysis:
+        if decision == "yes":
+            priority = candidate.priority.value
+            alert_level = (
+                AlertLevel.HIGH
+                if priority in {"high", "critical"}
+                else AlertLevel.MEDIUM
+                if priority == "medium"
+                else AlertLevel.LOW
+            )
+            action = "Kiểm tra sự kiện trên camera."
+        elif decision == "no":
+            alert_level = AlertLevel.LOW
+            action = "Tiếp tục giám sát."
+        else:
+            alert_level = AlertLevel.LOW
+            action = "Kiểm tra lại hình ảnh."
+        return SceneAnalysis(
+            summary=summary,
+            alert_level=alert_level,
+            risks=[],
+            recommended_action=action,
+            degraded=degraded,
+        )
 
     @staticmethod
     def _format_detections(detections: list[Detection]) -> str:
@@ -309,13 +430,14 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
         summary = str(data.get("summary", ""))
         if not summary.strip():
             logger.warning("VLM returned an empty summary: %r", content[:200])
-            return SceneAnalysis(
+            scene = SceneAnalysis(
                 summary="VLM không trả nội dung phân tích cho window này.",
                 alert_level=cls._coerce_alert(data.get("alert_level")),
                 risks=["vlm_empty_response"],
                 recommended_action="kiểm tra lại kết quả VLM",
                 degraded=True,
             )
+            return scene
         raw_observations = data.get("observations")
         observations = (
             cls._normalize_strings(raw_observations)

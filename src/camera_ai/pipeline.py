@@ -60,6 +60,7 @@ class SecurityAIPipeline:
     def __init__(
         self,
         detector: Detector | None = None,
+        fire_detector: Detector | None = None,
         vlm: VLMAnalyzer | None = None,
         gate: VLMGate | None = None,
         motion_detector: MotionDetector | None = None,
@@ -68,6 +69,7 @@ class SecurityAIPipeline:
         max_keyframes: int = 2,
         window_seconds: float = 5.0,
         max_video_windows: int | None = 1,
+        artifact_dir: str | None = None,
     ) -> None:
         self.detector = detector or YOLODetector()
         self.vlm = vlm or OllamaQwenAnalyzer()
@@ -78,15 +80,19 @@ class SecurityAIPipeline:
         self.max_keyframes = max_keyframes
         self.window_seconds = window_seconds
         self.max_video_windows = max_video_windows
+        from .artifacts import WindowArtifactWriter
+        artifact_writer = WindowArtifactWriter(artifact_dir) if artifact_dir else None
         self._stream_window_producer = StreamWindowProducer(
             motion_fps=motion_fps,
             window_seconds=window_seconds,
         )
         self._video_window_processor = VideoWindowProcessor(
             detector=self.detector,
+            fire_detector=fire_detector,
             vlm=self.vlm,
             yolo_fps=yolo_fps,
             max_keyframes=max_keyframes,
+            artifact_writer=artifact_writer,
         )
 
     # -- public API -------------------------------------------------------
@@ -635,9 +641,11 @@ class SecurityAIPipeline:
         """Compatibility facade for the queue-independent window producer."""
         self._stream_window_producer.stream(event, on_window)
 
-    def process_video_window(self, window: RawVideoWindow) -> ProcessedVideoWindow:
+    def process_video_window(
+        self, window: RawVideoWindow, camera_id: str = "unknown"
+    ) -> ProcessedVideoWindow:
         """Compatibility facade for the queue-independent window processor."""
-        return self._video_window_processor.process(window)
+        return self._video_window_processor.process(window, camera_id=camera_id)
 
     def analyze_vlm(self, task: VLMTask) -> SceneAnalysis:
         """Run VLM analysis on pre-detected frames. Called by VLMWorker (via asyncio.to_thread)."""

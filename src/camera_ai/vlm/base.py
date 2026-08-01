@@ -3,7 +3,7 @@ from collections.abc import Sequence
 
 import numpy as np
 
-from ..schemas import Detection, SceneAnalysis
+from ..schemas import Detection, SceneAnalysis, VLMAnalysisTrace
 
 
 class VLMAnalyzer(ABC):
@@ -24,3 +24,24 @@ class VLMAnalyzer(ABC):
         if not frames:
             raise ValueError("at least one frame is required")
         return self.analyze(frames[len(frames) // 2], detections)
+
+    def analyze_with_trace(
+        self,
+        frames: Sequence[np.ndarray],
+        detections: list[Detection],
+        *,
+        candidate=None,
+    ) -> VLMAnalysisTrace:
+        scene = self.analyze_sequence(frames, detections)
+        if scene.degraded:
+            decision = "uncertain"
+        elif scene.alert_level.value == "low" and not scene.risks:
+            decision = "no"
+        else:
+            decision = "yes"
+        return VLMAnalysisTrace(
+            scene=scene,
+            raw_output=scene.model_dump_json(),
+            raw_output_valid=not scene.degraded,
+            decision=decision,
+        )

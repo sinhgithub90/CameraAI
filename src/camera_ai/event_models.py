@@ -14,6 +14,8 @@ from .schemas import (
     SecurityDecision,
     VLMResult,
     VideoWindowObservation,
+    SceneAnalysis,
+    VLMAnalysisTrace,
 )
 
 
@@ -194,6 +196,102 @@ def alert_event_to_store_alert(
     )
 
 
+_PRIORITY_RANK = {
+    Priority.LOW: 1,
+    Priority.MEDIUM: 2,
+    Priority.HIGH: 3,
+    Priority.CRITICAL: 4,
+}
+
+
+def select_primary_candidate(
+    candidates: Iterable[CandidateEvent],
+) -> CandidateEvent | None:
+    items = list(candidates)
+    if not items:
+        return None
+    return min(
+        items,
+        key=lambda item: (-_PRIORITY_RANK[item.priority], item.candidate_id),
+    )
+
+
+def decision_from_scene(
+    candidate: CandidateEvent,
+    scene: SceneAnalysis,
+    *,
+    model: str,
+    latency_ms: float,
+) -> ModelDecision:
+    if scene.degraded:
+        decision = DecisionValue.UNCERTAIN
+    elif scene.alert_level is AlertLevel.LOW and not scene.risks:
+        decision = DecisionValue.NO
+    else:
+        decision = DecisionValue.YES
+    return ModelDecision(
+        candidate_id=candidate.candidate_id,
+        model=model,
+        decision=decision,
+        event_type=candidate.candidate_type,
+        evidence=[*scene.observations, *scene.risks],
+        raw_output_valid=not scene.degraded,
+        latency_ms=latency_ms,
+    )
+
+
+def decision_from_trace(
+    candidate: CandidateEvent,
+    trace: VLMAnalysisTrace,
+    *,
+    model: str,
+    latency_ms: float,
+) -> ModelDecision:
+    try:
+        decision = (
+            DecisionValue(trace.decision)
+            if trace.raw_output_valid
+            else DecisionValue.UNCERTAIN
+        )
+    except ValueError:
+        decision = DecisionValue.UNCERTAIN
+    evidence = trace.evidence or [*trace.scene.observations, *trace.scene.risks]
+    return ModelDecision(
+        candidate_id=candidate.candidate_id,
+        model=model,
+        decision=decision,
+        event_type=trace.event_type or candidate.candidate_type,
+        evidence=evidence,
+        raw_output_valid=trace.raw_output_valid,
+        latency_ms=latency_ms,
+    )
+
+
+def alert_from_decision(
+    candidate: CandidateEvent,
+    decision: ModelDecision,
+    *,
+    camera_id: str,
+    recommended_action: str = "",
+) -> AlertEvent | None:
+    if decision.decision is not DecisionValue.YES or not decision.raw_output_valid:
+        return None
+    severity = {
+        Priority.LOW: Severity.LOW,
+        Priority.MEDIUM: Severity.MEDIUM,
+        Priority.HIGH: Severity.HIGH,
+        Priority.CRITICAL: Severity.CRITICAL,
+    }[candidate.priority]
+    return AlertEvent(
+        alert_id=stable_event_id("alert", candidate.candidate_id),
+        camera_id=camera_id,
+        event_type=decision.event_type or candidate.candidate_type,
+        severity=severity,
+        source_candidate_id=candidate.candidate_id,
+        recommended_action=recommended_action,
+    )
+
+
 __all__ = [
     "AlertEvent",
     "AlertStatus",
@@ -204,6 +302,10 @@ __all__ = [
     "Severity",
     "VideoWindowObservation",
     "alert_event_to_store_alert",
+    "alert_from_decision",
+    "decision_from_scene",
+    "decision_from_trace",
     "project_alert_to_pipeline_result",
+    "select_primary_candidate",
     "stable_event_id",
 ]

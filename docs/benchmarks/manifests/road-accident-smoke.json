@@ -1,0 +1,12 @@
+[
+  {
+    "case_id": "road_accident_005",
+    "expected_event": "accident",
+    "media_path": "videos/RoadAccidents005_x264.mp4",
+    "annotations": {
+      "category": "accident",
+      "purpose": "async smoke baseline",
+      "duration_seconds": 7.5
+    }
+  }
+]

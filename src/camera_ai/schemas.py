@@ -47,6 +47,10 @@ class Detection(BaseModel):
         default="yolo",
         description="Detector that produced this: 'yolo' | 'fire'.",
     )
+    backend: str | None = Field(
+        default=None,
+        description="Optional implementation backend, for example 'model' or 'heuristic'.",
+    )
 
 
 class MotionRegion(BaseModel):
@@ -77,6 +81,17 @@ class VideoFrameObservation(BaseModel):
     frame: Any = Field(default=None, exclude=True)
 
 
+class WindowDetectionAggregate(BaseModel):
+    """Frame-level object counts for one video window, without identity claims."""
+
+    person_peak_count: int = Field(default=0, ge=0)
+    vehicle_peak_count: int = Field(default=0, ge=0)
+    person_detection_frames: int = Field(default=0, ge=0)
+    vehicle_detection_frames: int = Field(default=0, ge=0)
+    proximity_frame_count: int = Field(default=0, ge=0)
+    sampled_frame_count: int = Field(default=0, ge=0)
+
+
 class VideoWindowObservation(BaseModel):
     """Transport-neutral evidence observed during one video time window."""
 
@@ -87,6 +102,9 @@ class VideoWindowObservation(BaseModel):
     motion: MotionResult = Field(default_factory=MotionResult)
     detections: list[Detection] = Field(default_factory=list)
     selected_frames: list[int] = Field(default_factory=list)
+    detection_aggregate: WindowDetectionAggregate = Field(
+        default_factory=WindowDetectionAggregate
+    )
 
 
 class VideoAnalysisStats(BaseModel):
@@ -123,6 +141,18 @@ class SceneAnalysis(BaseModel):
         default=False,
         description="True when the VLM was unreachable and a fallback filled in.",
     )
+
+
+class VLMAnalysisTrace(BaseModel):
+    """One request-scoped VLM result with exact prompt/output provenance."""
+
+    scene: SceneAnalysis
+    prompt: str = ""
+    raw_output: str = ""
+    raw_output_valid: bool = False
+    decision: str = "uncertain"
+    event_type: str | None = None
+    evidence: list[str] = Field(default_factory=list)
 
 
 class VLMResult(BaseModel):
@@ -165,6 +195,7 @@ class VideoWindowResult(BaseModel):
     keyframes: int = 0
     qwen_input: "QwenInputSummary"
     timing: "StageTiming"
+    event_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class QwenInputSummary(BaseModel):
@@ -182,7 +213,10 @@ class StageTiming(BaseModel):
     total_ms: float = 0.0
     motion_ms: float = 0.0
     detector_ms: float = 0.0
+    keyframe_ms: float = 0.0
     qwen_ms: float = 0.0
+    queue_wait_ms: float = 0.0
+    wall_clock_ms: float = 0.0
 
 
 class PipelineResult(BaseModel):
