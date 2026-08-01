@@ -15,6 +15,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -23,6 +25,7 @@ import cv2
 import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 
 from dotenv import load_dotenv
 
@@ -52,6 +55,48 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 UI_FILE = Path(__file__).resolve().parent / "static" / "index.html"
+MAX_BATCH_VIDEOS = 20
+UPLOAD_CHUNK_BYTES = 1024 * 1024
+
+
+class StagedVideo(BaseModel):
+    filename: str
+    camera_id: str
+    path: Path
+
+
+def _camera_ids(files: list[UploadFile]) -> list[str]:
+    used: dict[str, int] = {}
+    result: list[str] = []
+    for index, upload in enumerate(files, start=1):
+        stem = Path(upload.filename or "").stem.lower()
+        base = re.sub(r"[^a-z0-9]+", "-", stem).strip("-") or f"camera-{index}"
+        used[base] = used.get(base, 0) + 1
+        result.append(base if used[base] == 1 else f"{base}-{used[base]}")
+    return result
+
+
+async def _stage_video(upload: UploadFile) -> Path:
+    suffix = Path(upload.filename or "video.mp4").suffix or ".mp4"
+    handle = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+    path = Path(handle.name)
+    size = 0
+    try:
+        while chunk := await upload.read(UPLOAD_CHUNK_BYTES):
+            handle.write(chunk)
+            size += len(chunk)
+    except Exception:
+        handle.close()
+        path.unlink(missing_ok=True)
+        raise
+    finally:
+        if not handle.closed:
+            handle.close()
+
+    if size == 0:
+        path.unlink(missing_ok=True)
+        raise ValueError(f"empty upload: {upload.filename or 'unnamed'}")
+    return path
 
 
 def _build_pipeline() -> SecurityAIPipeline:
@@ -193,7 +238,10 @@ async def _enqueue_video_window(
 
 
 async def _produce_video_windows(
-    event: EventObject, analysis_id: str, camera_id: str,
+    event: EventObject,
+    analysis_id: str,
+    camera_id: str,
+    cleanup_path: Path | None = None,
 ) -> None:
     """Run blocking decoding in a thread and submit each flush to asyncio."""
     loop = asyncio.get_running_loop()
@@ -206,12 +254,16 @@ async def _produce_video_windows(
         future.result()
 
     try:
-        await asyncio.to_thread(pipeline.stream_video_chunks, event, on_window)
-    except Exception as exc:
-        logger.exception("async video producer failed analysis=%s", analysis_id)
-        await analysis_store.mark_producer_failed(analysis_id, str(exc))
-    else:
-        await analysis_store.mark_producer_complete(analysis_id)
+        try:
+            await asyncio.to_thread(pipeline.stream_video_chunks, event, on_window)
+        except Exception as exc:
+            logger.exception("async video producer failed analysis=%s", analysis_id)
+            await analysis_store.mark_producer_failed(analysis_id, str(exc))
+        else:
+            await analysis_store.mark_producer_complete(analysis_id)
+    finally:
+        if cleanup_path is not None:
+            cleanup_path.unlink(missing_ok=True)
 
 
 @app.post("/async/analyze/image", response_model=PipelineResult)
