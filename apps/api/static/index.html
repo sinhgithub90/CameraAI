@@ -254,9 +254,9 @@ analyzeBtn.addEventListener('click', async () => {
     const data = await resp.json();
 
     if (useAsync && data.vlm.status === 'pending') {
-      // Show detection immediately, poll for VLM
       renderDetection(data);
-      startPoll(data.alert_ids || [data.request_id], data);
+      if (data.media_type === 'video') startVideoPoll(data.request_id, data);
+      else startPoll(data.request_id, data);
     } else {
       // Sync mode or VLM already complete
       renderFinal(data, data.vlm.status === 'completed' ? 'completed' : 'completed');
@@ -271,8 +271,7 @@ analyzeBtn.addEventListener('click', async () => {
 });
 
 // --- polling ---
-function startPoll(alertIds, initialData) {
-  alertIds = Array.isArray(alertIds) ? alertIds : [alertIds];
+function startPoll(alertId, initialData) {
   let elapsed = 0;
   $('vlm-pending').hidden = false;
   $('vlm-degraded').hidden = true;
@@ -283,29 +282,15 @@ function startPoll(alertIds, initialData) {
     elapsed++;
     $('poll-elapsed').textContent = elapsed;
     try {
-      const alerts = await Promise.all(alertIds.map(async (alertId) => {
-        const r = await fetch('/alerts/' + alertId);
-        return r.ok ? r.json() : null;
-      }));
-      const completed = alerts.filter(alert =>
-        alert && ['completed', 'skipped'].includes(alert.vlm.status)
-      );
-      if (initialData.media_type === 'video') {
-        renderVideoWindows(initialData, alerts);
-      }
-      setStatus('pending', `Detection xong — VLM đã xử lý ${completed.length}/${alertIds.length} cửa sổ...`);
-      if (completed.length === alertIds.length) {
+      const r = await fetch('/alerts/' + alertId);
+      const alert = r.ok ? await r.json() : null;
+      if (alert && ['completed', 'skipped'].includes(alert.vlm.status)) {
         clearPoll();
-        const rank = { low: 0, medium: 1, high: 2 };
-        const best = completed.reduce((current, alert) =>
-          (rank[alert.security.alert_level] || 0) > (rank[current.security.alert_level] || 0)
-            ? alert : current
-        );
         renderFinal({
           ...initialData,
-          vlm: best.vlm,
-          security: best.security,
-        }, best.vlm.degraded ? 'degraded' : 'completed');
+          vlm: alert.vlm,
+          security: alert.security,
+        }, alert.vlm.degraded ? 'degraded' : 'completed');
       }
     } catch (_) {}
   }, 1000);
@@ -450,6 +435,40 @@ function renderVideoWindows(data, alerts) {
     container.appendChild(card);
   });
   $('video-debug').hidden = true;
+}
+
+function startVideoPoll(analysisId, initialData) {
+  let elapsed = 0;
+  $('vlm-pending').hidden = false;
+  $('vlm-degraded').hidden = true;
+  setStatus('pending', 'Đang đọc video và chờ VLM theo từng cửa sổ...');
+
+  pollTimer = setInterval(async () => {
+    elapsed++;
+    $('poll-elapsed').textContent = elapsed;
+    try {
+      const r = await fetch('/analyses/' + analysisId);
+      if (!r.ok) return;
+      const analysis = await r.json();
+      renderVideoWindows({ ...initialData, video_windows: analysis.windows || [] }, []);
+      const done = ['completed', 'failed'].includes(analysis.status);
+      setStatus(done ? (analysis.status === 'failed' ? 'degraded' : 'completed') : 'pending',
+        analysis.status === 'reading'
+          ? `Đang đọc video... đã có ${analysis.windows.length} cửa sổ`
+          : `VLM đang xử lý ${analysis.windows.filter(w => w.vlm.status === 'completed').length}/${analysis.windows.length} cửa sổ...`);
+      if (done) {
+        clearPoll();
+        const rank = { low: 0, medium: 1, high: 2 };
+        const best = analysis.windows.reduce((current, window) =>
+          !current || (rank[window.security.alert_level] || 0) > (rank[current.security.alert_level] || 0)
+            ? window : current, null);
+        if (best) {
+          $('alert-badge').textContent = 'Mức cảnh báo: ' + best.security.alert_level.toUpperCase();
+          $('alert-badge').className = 'badge ' + best.security.alert_level;
+        }
+      }
+    } catch (_) {}
+  }, 1000);
 }
 </script>
 </body>

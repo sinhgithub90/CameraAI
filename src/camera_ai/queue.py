@@ -14,6 +14,7 @@ import numpy as np
 from .schemas import Detection, SceneAnalysis
 
 if TYPE_CHECKING:
+    from .analysis_store import AnalysisStore
     from .alert_store import AlertStore
     from .events import EventBus
     from .pipeline import SecurityAIPipeline
@@ -38,6 +39,8 @@ class VLMTask:
     task_id: str = field(default_factory=lambda: uuid.uuid4().hex, compare=False)
     camera_id: str = field(default="unknown", compare=False)
     alert_id: str = field(default="", compare=False)
+    analysis_id: str = field(default="", compare=False)
+    window_index: int | None = field(default=None, compare=False)
     frames: list[np.ndarray] = field(default_factory=list, compare=False)
     detections: list[Detection] = field(default_factory=list, compare=False)
     rule_id: str = field(default="default", compare=False)
@@ -89,6 +92,8 @@ class VLMQueue:
                 task_id=task.task_id,
                 camera_id=task.camera_id,
                 alert_id=task.alert_id,
+                analysis_id=task.analysis_id,
+                window_index=task.window_index,
                 frames=task.frames,
                 detections=task.detections,
                 rule_id=task.rule_id,
@@ -129,10 +134,12 @@ class VLMWorker:
         pipeline: SecurityAIPipeline,
         alert_store: AlertStore,
         event_bus: EventBus,
+        analysis_store: AnalysisStore | None = None,
     ) -> None:
         self._queue = queue
         self._pipeline = pipeline
         self._alert_store = alert_store
+        self._analysis_store = analysis_store
         self._event_bus = event_bus
         self._task: asyncio.Task[None] | None = None
 
@@ -157,6 +164,13 @@ class VLMWorker:
                 await self._alert_store.update_vlm(
                     task.alert_id, analysis, qwen_ms=qwen_ms
                 )
+                if task.analysis_id and self._analysis_store is not None:
+                    await self._analysis_store.complete_window(
+                        task.analysis_id,
+                        task.alert_id,
+                        analysis,
+                        qwen_ms=qwen_ms,
+                    )
                 logger.info(
                     "[vlm-worker] completed alert=%s level=%s",
                     task.alert_id,

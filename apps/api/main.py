@@ -27,6 +27,7 @@ from fastapi.responses import HTMLResponse
 from dotenv import load_dotenv
 
 from camera_ai import SecurityAIPipeline
+from camera_ai.analysis_store import InMemoryAnalysisStore, VideoAnalysis
 from camera_ai.alert_store import Alert, InMemoryAlertStore
 from camera_ai.events import InProcessEventBus
 from camera_ai.queue import VLMTask, VLMQueue, VLMWorker
@@ -68,12 +69,14 @@ app = FastAPI(title="Camera AI Demo", version="0.1.0")
 
 event_bus = InProcessEventBus()
 alert_store = InMemoryAlertStore(event_bus=event_bus)
+analysis_store = InMemoryAnalysisStore()
 vlm_queue = VLMQueue()
 vlm_worker = VLMWorker(
     queue=vlm_queue,
     pipeline=pipeline,
     alert_store=alert_store,
     event_bus=event_bus,
+    analysis_store=analysis_store,
 )
 
 
@@ -137,6 +140,82 @@ async def analyze_video(
 # --- async endpoints ---
 
 VLM_MAX_SIDE = 640  # resize frame trước khi lưu vào VLMTask
+
+
+async def _enqueue_video_window(
+    analysis_id: str, camera_id: str, window: dict,
+) -> None:
+    """Persist one detected window, then enqueue it on the sole VLM queue."""
+    alert_id = uuid.uuid4().hex
+    timing = StageTiming(
+        motion_ms=window["motion_ms"],
+        detector_ms=window["detector_ms"],
+        total_ms=window["motion_ms"] + window["detector_ms"],
+    )
+    window_result = VideoWindowResult(
+        alert_id=alert_id,
+        window_index=window["window_index"],
+        start_seconds=window["start_seconds"],
+        end_seconds=window["start_seconds"] + pipeline.window_seconds,
+        detections=window["detections"],
+        vlm=VLMResult(summary="", status="pending"),
+        security=SecurityDecision(alert_level=AlertLevel.LOW),
+        keyframes=len(window["frames"]),
+        qwen_input=QwenInputSummary(
+            frame_indices=window["frame_indices"],
+            timestamps_seconds=window["timestamps_seconds"],
+            frame_count=len(window["frames"]),
+            detection_labels=sorted({d.label for d in window["detections"]}),
+        ),
+        timing=timing,
+    )
+    await analysis_store.append_window(analysis_id, window_result)
+    await alert_store.create(
+        Alert(
+            id=alert_id,
+            camera_id=camera_id,
+            vlm=window_result.vlm,
+            security=window_result.security,
+            timing=timing,
+        )
+    )
+    await vlm_queue.enqueue(
+        VLMTask(
+            task_id=alert_id,
+            camera_id=camera_id,
+            alert_id=alert_id,
+            analysis_id=analysis_id,
+            window_index=window["window_index"],
+            frames=window["frames"],
+            detections=window["detections"],
+            rule_id="default",
+            priority=3,
+            enqueued_at=time.monotonic(),
+            max_keyframes=len(window["frames"]),
+        )
+    )
+
+
+async def _produce_video_windows(
+    event: EventObject, analysis_id: str, camera_id: str,
+) -> None:
+    """Run blocking decoding in a thread and submit each flush to asyncio."""
+    loop = asyncio.get_running_loop()
+
+    def on_window(window: dict) -> None:
+        future = asyncio.run_coroutine_threadsafe(
+            _enqueue_video_window(analysis_id, camera_id, window), loop
+        )
+        # Do not decode the next window until this one is visible and queued.
+        future.result()
+
+    try:
+        await asyncio.to_thread(pipeline.stream_video_windows, event, on_window)
+    except Exception as exc:
+        logger.exception("async video producer failed analysis=%s", analysis_id)
+        await analysis_store.mark_producer_failed(analysis_id, str(exc))
+    else:
+        await analysis_store.mark_producer_complete(analysis_id)
 
 
 @app.post("/async/analyze/image", response_model=PipelineResult)
@@ -209,95 +288,28 @@ async def analyze_video_async(
     if not content:
         raise HTTPException(status_code=400, detail="empty upload")
     event = EventObject(camera_id=camera_id, image=content, media_type=MediaType.VIDEO)
-    try:
-        windows = await asyncio.to_thread(pipeline.detect_video_windows, event)
-    except Exception as exc:
-        logger.exception("async video detection failed")
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-    if not windows:
-        return PipelineResult(
-            media_type=MediaType.VIDEO,
-            camera_id=camera_id,
-            detections=[],
-            vlm=VLMResult(summary="Không có chuyển động — bỏ qua.", skipped=True, status="skipped"),
-            security=SecurityDecision(alert_level=AlertLevel.LOW),
-        )
-
-    # Build response first so first window shares its request_id (UI polls it)
-    all_detections: list = []
-    for w in windows:
-        all_detections.extend(w["detections"])
     result = PipelineResult(
         media_type=MediaType.VIDEO,
         camera_id=camera_id,
-        detections=all_detections,
         vlm=VLMResult(
-            summary=f"Đang phân tích {len(windows)} cửa sổ...",
+            summary="Đang đọc video theo từng cửa sổ 5 giây...",
             status="pending",
         ),
         security=SecurityDecision(alert_level=AlertLevel.LOW),
-        annotated_image=pipeline._annotate(
-            windows[0]["frames"][0], windows[0]["detections"]
-        ) if windows[0]["frames"] else None,
     )
-
-    result.alert_ids = [
-        result.request_id,
-        *(str(uuid.uuid4()) for _ in windows[1:]),
-    ]
-    result.video_windows = [
-        VideoWindowResult(
-            alert_id=alert_id,
-            window_index=window["window_index"],
-            start_seconds=window["start_seconds"],
-            end_seconds=window["start_seconds"] + pipeline.window_seconds,
-            detections=window["detections"],
-            vlm=VLMResult(summary="", status="pending"),
-            security=SecurityDecision(alert_level=AlertLevel.LOW),
-            keyframes=len(window["frames"]),
-            qwen_input=QwenInputSummary(
-                frame_indices=window["frame_indices"],
-                timestamps_seconds=window["timestamps_seconds"],
-                frame_count=len(window["frames"]),
-                detection_labels=sorted({d.label for d in window["detections"]}),
-            ),
-            timing=StageTiming(
-                motion_ms=window["motion_ms"],
-                detector_ms=window["detector_ms"],
-                total_ms=window["motion_ms"] + window["detector_ms"],
-            ),
-        )
-        for alert_id, window in zip(result.alert_ids, windows, strict=True)
-    ]
-
-    for alert_id, w in zip(result.alert_ids, windows, strict=True):
-        task = VLMTask(
-            task_id=alert_id,
-            camera_id=camera_id,
-            alert_id=alert_id,
-            frames=w["frames"],
-            detections=w["detections"],
-            rule_id="default",
-            priority=3,
-            enqueued_at=time.monotonic(),
-            max_keyframes=len(w["frames"]),
-        )
-        alert = Alert(
-            id=alert_id,
-            camera_id=camera_id,
-            vlm=VLMResult(summary="", status="pending"),
-            security=SecurityDecision(alert_level=AlertLevel.LOW),
-            timing=StageTiming(
-                motion_ms=w["motion_ms"],
-                detector_ms=w["detector_ms"],
-                total_ms=w["motion_ms"] + w["detector_ms"],
-            ),
-        )
-        await alert_store.create(alert)
-        await vlm_queue.enqueue(task)
-
+    await analysis_store.create(
+        VideoAnalysis(id=result.request_id, camera_id=camera_id)
+    )
+    asyncio.create_task(_produce_video_windows(event, result.request_id, camera_id))
     return result
+
+
+@app.get("/analyses/{analysis_id}", response_model=VideoAnalysis)
+async def get_analysis(analysis_id: str) -> VideoAnalysis:
+    analysis = await analysis_store.get(analysis_id)
+    if analysis is None:
+        raise HTTPException(status_code=404, detail="analysis not found")
+    return analysis
 
 
 @app.get("/alerts/{alert_id}")

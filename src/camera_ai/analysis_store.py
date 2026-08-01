@@ -15,6 +15,7 @@ class VideoAnalysis(BaseModel):
     windows: list[VideoWindowResult] = Field(default_factory=list)
     total_timing: StageTiming = Field(default_factory=StageTiming)
     error: str | None = None
+    producer_finished: bool = False
 
     def refresh_total_timing(self) -> None:
         self.total_timing = StageTiming(
@@ -43,6 +44,12 @@ class AnalysisStore(ABC):
     async def complete_window(
         self, analysis_id: str, alert_id: str, scene: SceneAnalysis, qwen_ms: float
     ) -> None: ...
+
+    @abstractmethod
+    async def mark_producer_complete(self, analysis_id: str) -> None: ...
+
+    @abstractmethod
+    async def mark_producer_failed(self, analysis_id: str, detail: str) -> None: ...
 
 
 class InMemoryAnalysisStore(AnalysisStore):
@@ -86,3 +93,27 @@ class InMemoryAnalysisStore(AnalysisStore):
                 )
                 break
         analysis.refresh_total_timing()
+        self._refresh_status(analysis)
+
+    async def mark_producer_complete(self, analysis_id: str) -> None:
+        analysis = self._analyses[analysis_id]
+        analysis.producer_finished = True
+        self._refresh_status(analysis)
+
+    async def mark_producer_failed(self, analysis_id: str, detail: str) -> None:
+        analysis = self._analyses[analysis_id]
+        analysis.status = "failed"
+        analysis.error = detail
+
+    @staticmethod
+    def _refresh_status(analysis: VideoAnalysis) -> None:
+        if analysis.status == "failed":
+            return
+        if analysis.producer_finished and all(
+            window.vlm.status == "completed" for window in analysis.windows
+        ):
+            analysis.status = "completed"
+        elif analysis.windows:
+            analysis.status = "queued"
+        else:
+            analysis.status = "reading"

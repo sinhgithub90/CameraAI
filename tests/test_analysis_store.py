@@ -34,3 +34,38 @@ async def test_analysis_store_updates_window_and_aggregate_timing():
     assert analysis.windows[0].vlm.status == "completed"
     assert analysis.windows[0].timing.qwen_ms == 56.0
     assert analysis.total_timing.total_ms == 102.0
+
+
+@pytest.mark.asyncio
+async def test_analysis_store_marks_completed_only_after_producer_finishes():
+    store = InMemoryAnalysisStore()
+    await store.create(VideoAnalysis(id="analysis-2", camera_id="cam_01"))
+    await store.append_window("analysis-2", pending_window("alert-2"))
+    await store.mark_producer_complete("analysis-2")
+
+    queued = await store.get("analysis-2")
+    assert queued is not None
+    assert queued.status == "queued"
+
+    await store.complete_window(
+        "analysis-2",
+        "alert-2",
+        SceneAnalysis(summary="done", alert_level=AlertLevel.LOW),
+        qwen_ms=10.0,
+    )
+    completed = await store.get("analysis-2")
+    assert completed is not None
+    assert completed.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_analysis_store_exposes_producer_failure():
+    store = InMemoryAnalysisStore()
+    await store.create(VideoAnalysis(id="analysis-3", camera_id="cam_01"))
+
+    await store.mark_producer_failed("analysis-3", "cannot read video")
+
+    analysis = await store.get("analysis-3")
+    assert analysis is not None
+    assert analysis.status == "failed"
+    assert analysis.error == "cannot read video"

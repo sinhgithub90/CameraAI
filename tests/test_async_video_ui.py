@@ -2,7 +2,7 @@
 from pathlib import Path
 
 
-def test_async_ui_passes_all_video_alert_ids_to_polling():
+def test_async_video_ui_polls_the_aggregate_analysis_endpoint():
     source = (
         Path(__file__).resolve().parents[1]
         / "apps"
@@ -11,8 +11,9 @@ def test_async_ui_passes_all_video_alert_ids_to_polling():
         / "index.html"
     ).read_text(encoding="utf-8")
 
-    assert "startPoll(data.alert_ids || [data.request_id], data)" in source
-    assert "Promise.all(alertIds.map" in source
+    assert "startVideoPoll(data.request_id, data)" in source
+    assert "'/analyses/' + analysisId" in source
+    assert "Promise.all(alertIds.map" not in source
 
 
 def test_video_ui_renders_window_vlm_results_and_timing_without_detection_table():

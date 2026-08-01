@@ -1,6 +1,7 @@
 """Async video endpoint exposes one queued alert per motion window."""
 from __future__ import annotations
 
+import asyncio
 from io import BytesIO
 
 import numpy as np
@@ -8,6 +9,7 @@ import pytest
 from fastapi import UploadFile
 
 from apps.api import main
+from camera_ai.analysis_store import InMemoryAnalysisStore
 from camera_ai.schemas import Detection
 
 
@@ -44,28 +46,38 @@ def _window(index: int, label: str) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_async_video_enqueues_and_exposes_every_motion_window(monkeypatch):
+async def test_async_video_streams_each_window_to_the_global_queue(monkeypatch):
     windows = [_window(0, "person"), _window(1, "car")]
     queue = RecordingQueue()
     store = RecordingAlertStore()
+    analysis_store = InMemoryAnalysisStore()
 
-    monkeypatch.setattr(main.pipeline, "detect_video_windows", lambda event: windows)
+    def stream_video_windows(event, on_window):
+        for window in windows:
+            on_window(window)
+
+    monkeypatch.setattr(main.pipeline, "stream_video_windows", stream_video_windows)
     monkeypatch.setattr(main, "vlm_queue", queue)
     monkeypatch.setattr(main, "alert_store", store)
+    monkeypatch.setattr(main, "analysis_store", analysis_store)
 
     upload = UploadFile(filename="clip.mp4", file=BytesIO(b"video-bytes"))
     result = await main.analyze_video_async(upload, camera_id="cam_01")
 
-    assert len(result.alert_ids) == 2
-    assert len(result.video_windows) == 2
-    assert [window.alert_id for window in result.video_windows] == result.alert_ids
-    assert [window.keyframes for window in result.video_windows] == [2, 2]
-    assert [window.timing.motion_ms for window in result.video_windows] == [10.0, 11.0]
-    assert [window.timing.detector_ms for window in result.video_windows] == [20.0, 21.0]
-    assert [window.qwen_input.frame_indices for window in result.video_windows] == [
+    assert result.request_id
+    assert result.alert_ids == []
+    assert result.video_windows == []
+
+    await asyncio.sleep(0.1)
+
+    analysis = await analysis_store.get(result.request_id)
+    assert analysis is not None
+    assert [window.window_index for window in analysis.windows] == [0, 1]
+    assert [window.keyframes for window in analysis.windows] == [2, 2]
+    assert [window.qwen_input.frame_indices for window in analysis.windows] == [
         [0, 5],
         [10, 15],
     ]
-    assert [task.alert_id for task in queue.tasks] == result.alert_ids
-    assert [alert.id for alert in store.alerts] == result.alert_ids
-    assert result.annotated_image is not None
+    assert [task.analysis_id for task in queue.tasks] == [result.request_id] * 2
+    assert [task.window_index for task in queue.tasks] == [0, 1]
+    assert [alert.id for alert in store.alerts] == [task.alert_id for task in queue.tasks]

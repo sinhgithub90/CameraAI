@@ -172,6 +172,36 @@ class TestVLMWorker:
         assert kwargs["qwen_ms"] >= 0
 
     @pytest.mark.asyncio
+    async def test_worker_updates_owning_video_analysis_window(self):
+        queue = VLMQueue()
+        mock_alert_store = AsyncMock()
+        mock_analysis_store = AsyncMock()
+        mock_pipeline = MagicMock()
+        mock_event_bus = AsyncMock()
+        scene = SceneAnalysis(summary="window done", alert_level=AlertLevel.LOW)
+        mock_pipeline.analyze_vlm = MagicMock(return_value=scene)
+
+        worker = VLMWorker(
+            queue=queue,
+            pipeline=mock_pipeline,
+            alert_store=mock_alert_store,
+            analysis_store=mock_analysis_store,
+            event_bus=mock_event_bus,
+        )
+        await worker.start()
+        task = _make_task("video-0")
+        task.analysis_id = "analysis-1"
+        task.window_index = 0
+        await queue.enqueue(task)
+        await asyncio.sleep(0.1)
+        await worker.stop()
+
+        mock_analysis_store.complete_window.assert_awaited_once()
+        args, kwargs = mock_analysis_store.complete_window.call_args
+        assert args[:3] == ("analysis-1", "alert-video-0", scene)
+        assert kwargs["qwen_ms"] >= 0
+
+    @pytest.mark.asyncio
     async def test_worker_handles_pipeline_error(self):
         """Worker should not crash on pipeline error, just log and continue."""
         queue = VLMQueue()
