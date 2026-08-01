@@ -69,30 +69,40 @@ class VLMQueue:
         self._queue: asyncio.PriorityQueue[VLMTask] = asyncio.PriorityQueue()
 
     async def enqueue(self, task: VLMTask) -> None:
-        # Re-wrap to capture effective priority at enqueue time
-        eff = task.effective_priority()
-        wrapper = VLMTask(
-            priority=eff,
-            enqueued_at=task.enqueued_at,
-            task_id=task.task_id,
-            camera_id=task.camera_id,
-            alert_id=task.alert_id,
-            frames=task.frames,
-            detections=task.detections,
-            rule_id=task.rule_id,
-            max_keyframes=task.max_keyframes,
-        )
-        await self._queue.put(wrapper)
+        await self._queue.put(task)
         logger.debug(
-            "[vlm-queue] enqueued alert=%s priority=%s effective=%s depth=%s",
+            "[vlm-queue] enqueued alert=%s priority=%s depth=%s",
             task.alert_id,
             task.priority,
-            eff,
             self._queue.qsize(),
         )
 
     async def dequeue(self) -> VLMTask:
         task = await self._queue.get()
+        now = time.monotonic()
+        eff = task.effective_priority(now=now)
+        if eff < task.priority:
+            # Task aged — re-push with boosted priority, then re-pop.
+            aged = VLMTask(
+                priority=eff,
+                enqueued_at=task.enqueued_at,   # keep original timestamp
+                task_id=task.task_id,
+                camera_id=task.camera_id,
+                alert_id=task.alert_id,
+                frames=task.frames,
+                detections=task.detections,
+                rule_id=task.rule_id,
+                max_keyframes=task.max_keyframes,
+            )
+            logger.debug(
+                "[vlm-queue] aged alert=%s priority=%s→%s wait=%.0fs",
+                task.alert_id,
+                task.priority,
+                eff,
+                now - task.enqueued_at,
+            )
+            await self._queue.put(aged)
+            return await self.dequeue()
         logger.debug(
             "[vlm-queue] dequeued alert=%s priority=%s depth=%s",
             task.alert_id,
@@ -124,13 +134,12 @@ class VLMWorker:
         self._pipeline = pipeline
         self._alert_store = alert_store
         self._event_bus = event_bus
-        self._running = False
+        self._task: asyncio.Task[None] | None = None
 
     async def run(self) -> None:
         """Infinite loop: dequeue → analyze → update. Run as asyncio task."""
-        self._running = True
         logger.info("[vlm-worker] started")
-        while self._running:
+        while True:
             try:
                 task = await self._queue.dequeue()
                 logger.info(
@@ -150,6 +159,7 @@ class VLMWorker:
                     analysis.alert_level.value,
                 )
             except asyncio.CancelledError:
+                logger.info("[vlm-worker] cancelled")
                 break
             except Exception:
                 logger.exception(
@@ -157,5 +167,16 @@ class VLMWorker:
                 )
         logger.info("[vlm-worker] stopped")
 
+    async def start(self, loop: asyncio.AbstractEventLoop | None = None) -> None:
+        """Create and track the background task so it can be cancelled on stop."""
+        self._task = asyncio.ensure_future(self.run(), loop=loop)
+
     async def stop(self) -> None:
-        self._running = False
+        """Cancel the background task and wait for it to finish."""
+        if self._task is None:
+            return
+        self._task.cancel()
+        try:
+            await self._task
+        except asyncio.CancelledError:
+            pass

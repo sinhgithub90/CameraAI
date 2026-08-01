@@ -38,7 +38,7 @@ async def test_detect_then_vlm_async_flow():
         alert_store=alert_store,
         event_bus=event_bus,
     )
-    worker_task = asyncio.create_task(worker.run())
+    await worker.start()
 
     # 1. Detect (fast)
     frame = np.zeros((64, 64, 3), dtype=np.uint8)
@@ -78,11 +78,7 @@ async def test_detect_then_vlm_async_flow():
         if updated is not None and updated.vlm.status == "completed":
             break
 
-    worker_task.cancel()
-    try:
-        await worker_task
-    except asyncio.CancelledError:
-        pass
+    await worker.stop()
 
     # 4. Verify
     final = await alert_store.get(result.request_id)

@@ -95,19 +95,19 @@ class TestVLMQueue:
 
     @pytest.mark.asyncio
     async def test_dynamic_priority_aging(self, queue):
-        """Task waiting > threshold gets effective priority boost."""
+        """Task waiting > threshold gets effective priority boost at dequeue."""
         old_time = 50.0  # simulate enqueued 80s ago
         task = _make_task("old", priority=3, enqueued_at=old_time)
 
-        # Patch time.monotonic to return "now"
-        now = old_time + 80.0  # 80 seconds later
+        # Patch time.monotonic so aging sees an 80s wait
+        now = old_time + 80.0
         original_monotonic = time.monotonic
         time.monotonic = lambda: now
         try:
             await queue.enqueue(task)
             dequeued = await queue.dequeue()
-            # priority 3 + 80s wait → effective priority = 1 (floor)
-            # but internal priority stays 3, effective used for ordering
+            # priority 3 + 80s wait → effective priority = 1
+            # The aged task should be dequeued even though it was enqueued last
             assert dequeued.task_id == "old"
         finally:
             time.monotonic = original_monotonic
@@ -152,7 +152,7 @@ class TestVLMWorker:
         )
 
         # Start worker in background
-        worker_task = asyncio.create_task(worker.run())
+        await worker.start()
 
         # Enqueue a task
         task = _make_task("worker-test")
@@ -162,11 +162,7 @@ class TestVLMWorker:
         await asyncio.sleep(0.1)
 
         # Stop worker
-        worker_task.cancel()
-        try:
-            await worker_task
-        except asyncio.CancelledError:
-            pass
+        await worker.stop()
 
         # Verify
         mock_pipeline.analyze_vlm.assert_called_once_with(task)
@@ -189,15 +185,11 @@ class TestVLMWorker:
             event_bus=mock_event_bus,
         )
 
-        worker_task = asyncio.create_task(worker.run())
+        await worker.start()
         await queue.enqueue(_make_task("error-task"))
         await asyncio.sleep(0.1)
 
-        worker_task.cancel()
-        try:
-            await worker_task
-        except asyncio.CancelledError:
-            pass
+        await worker.stop()
 
         # Alert store should NOT have been updated (pipeline failed)
         mock_alert_store.update_vlm.assert_not_called()

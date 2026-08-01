@@ -68,7 +68,7 @@ vlm_worker = VLMWorker(
 
 @app.on_event("startup")
 async def startup_vlm_worker() -> None:
-    asyncio.create_task(vlm_worker.run())
+    await vlm_worker.start()
 
 
 @app.on_event("shutdown")
@@ -147,7 +147,16 @@ async def analyze_image_async(
         # Decode frame từ request bytes → lưu vào VLMTask.frames
         data = np.frombuffer(content, dtype=np.uint8)
         frame = cv2.imdecode(data, cv2.IMREAD_COLOR)
-        if frame is not None:
+        if frame is None:
+            # Frame decode failed — VLM can't run. Mark degraded right away
+            # so the alert never gets stuck in "pending" forever.
+            result.vlm = VLMResult(
+                summary="Không decode được ảnh — bỏ qua phân tích VLM.",
+                degraded=True,
+                status="completed",
+            )
+            logger.warning("async image: frame decode failed for alert=%s", result.request_id)
+        else:
             h, w = frame.shape[:2]
             if max(h, w) > VLM_MAX_SIDE:
                 scale = VLM_MAX_SIDE / max(h, w)
@@ -157,16 +166,18 @@ async def analyze_image_async(
                     interpolation=cv2.INTER_AREA,
                 )
 
-        task = VLMTask(
-            camera_id=camera_id,
-            alert_id=result.request_id,
-            frames=[frame] if frame is not None else [],
-            detections=result.detections,
-            rule_id="default",
-            priority=3,  # Phase 2: Rule Engine sets this
-            enqueued_at=time.monotonic(),
-            max_keyframes=1,
-        )
+            task = VLMTask(
+                camera_id=camera_id,
+                alert_id=result.request_id,
+                frames=[frame],
+                detections=result.detections,
+                rule_id="default",
+                priority=3,  # Phase 2: Rule Engine sets this
+                enqueued_at=time.monotonic(),
+                max_keyframes=1,
+            )
+            await vlm_queue.enqueue(task)
+
         alert = Alert(
             id=result.request_id,
             camera_id=camera_id,
@@ -174,9 +185,104 @@ async def analyze_image_async(
             security=result.security,
         )
         await alert_store.create(alert)
-        await vlm_queue.enqueue(task)
 
     return result
+
+
+@app.post("/async/analyze/video", response_model=PipelineResult)
+async def analyze_video_async(
+    file: UploadFile = File(...),
+    camera_id: str = Form("unknown"),
+) -> PipelineResult:
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="empty upload")
+    event = EventObject(camera_id=camera_id, image=content, media_type=MediaType.VIDEO)
+    try:
+        result = await asyncio.to_thread(pipeline.detect, event)
+    except Exception as exc:
+        logger.exception("async video detection failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    if result.vlm.status == "pending":
+        # Extract a few keyframes from the video for VLM analysis
+        keyframes = _extract_video_keyframes(content, max_frames=2)
+        if not keyframes:
+            result.vlm = VLMResult(
+                summary="Không trích xuất được frame từ video — bỏ qua phân tích VLM.",
+                degraded=True,
+                status="completed",
+            )
+        else:
+            task = VLMTask(
+                camera_id=camera_id,
+                alert_id=result.request_id,
+                frames=keyframes,
+                detections=result.detections,
+                rule_id="default",
+                priority=3,
+                enqueued_at=time.monotonic(),
+                max_keyframes=len(keyframes),
+            )
+            alert = Alert(
+                id=result.request_id,
+                camera_id=camera_id,
+                vlm=result.vlm,
+                security=result.security,
+            )
+            await alert_store.create(alert)
+            await vlm_queue.enqueue(task)
+
+    return result
+
+
+def _extract_video_keyframes(content: bytes, max_frames: int = 2) -> list[np.ndarray]:
+    """Decode a few spread-out frames from video bytes for VLM."""
+    import tempfile
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+    try:
+        tmp.write(content)
+        tmp.close()
+        cap = cv2.VideoCapture(tmp.name)
+        if not cap.isOpened():
+            return []
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if total <= 0:
+            cap.release()
+            return []
+        frames: list[np.ndarray] = []
+        indices = _spread_indices(total, max_frames)
+        for idx in indices:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+            ok, frame = cap.read()
+            if ok:
+                h, w = frame.shape[:2]
+                if max(h, w) > VLM_MAX_SIDE:
+                    scale = VLM_MAX_SIDE / max(h, w)
+                    frame = cv2.resize(
+                        frame,
+                        (int(w * scale), int(h * scale)),
+                        interpolation=cv2.INTER_AREA,
+                    )
+                frames.append(frame)
+        cap.release()
+        return frames
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+
+
+def _spread_indices(total: int, count: int) -> list[int]:
+    """Return evenly-spread frame indices across [0, total)."""
+    if count <= 0 or total <= 0:
+        return []
+    if total <= count:
+        return list(range(total))
+    step = total / count
+    return [int(i * step) for i in range(count)]
 
 
 @app.get("/alerts/{alert_id}")
