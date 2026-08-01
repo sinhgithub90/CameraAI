@@ -129,3 +129,70 @@ def test_bad_image_bytes_raises():
     except ValueError:
         return
     raise AssertionError("expected ValueError for undecodable image bytes")
+
+
+def test_detect_image_returns_pending_status():
+    """detect() should return vlm.status='pending', not call VLM."""
+    from camera_ai.pipeline import SecurityAIPipeline
+
+    pipeline = SecurityAIPipeline(
+        detector=DummyDetector(),
+        vlm=MockAnalyzer(),
+    )
+    result = pipeline.detect(
+        EventObject(image=_png_bytes(), camera_id="async_cam", media_type=MediaType.IMAGE)
+    )
+    assert result.vlm.status == "pending"
+    assert result.vlm.skipped is False
+    assert result.detections  # detection vẫn có
+
+
+def test_detect_skips_vlm_when_gate_closed():
+    """detect() with no detections should still return vlm.status='skipped'."""
+    from camera_ai.pipeline import SecurityAIPipeline
+
+    pipeline = SecurityAIPipeline(
+        detector=EmptyDetector(),
+        vlm=MockAnalyzer(),
+    )
+    result = pipeline.detect(
+        EventObject(image=_png_bytes(), media_type=MediaType.IMAGE)
+    )
+    assert result.vlm.status == "skipped"
+    assert result.vlm.skipped is True
+
+
+def test_analyze_vlm_runs_on_task():
+    """analyze_vlm() takes a VLMTask and returns SceneAnalysis."""
+    from camera_ai.pipeline import SecurityAIPipeline
+    from camera_ai.queue import VLMTask
+    import time
+
+    pipeline = SecurityAIPipeline(
+        detector=DummyDetector(),
+        vlm=MockAnalyzer(),
+    )
+    frame = np.zeros((64, 64, 3), dtype=np.uint8)
+    task = VLMTask(
+        task_id="test-task",
+        camera_id="cam_01",
+        alert_id="alert-1",
+        frames=[frame],
+        detections=[Detection(label="person", confidence=0.91, bbox=[1, 2, 3, 4])],
+        rule_id="test_rule",
+        priority=3,
+        enqueued_at=time.monotonic(),
+        max_keyframes=2,
+    )
+    analysis = pipeline.analyze_vlm(task)
+    assert analysis.alert_level.value in ("low", "medium", "high")
+    assert analysis.degraded is True  # mock
+
+
+def test_analyze_event_still_works_backward_compat():
+    """Existing analyze_event() should still work (backward compat)."""
+    result = _make_pipeline(detector=DummyDetector()).analyze_event(
+        EventObject(image=_png_bytes(), camera_id="cam_legacy", media_type=MediaType.IMAGE)
+    )
+    assert result.vlm.status == "completed"  # đồng bộ → completed ngay
+    assert result.vlm.degraded is True
