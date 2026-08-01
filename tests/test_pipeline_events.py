@@ -1,5 +1,6 @@
 import numpy as np
 
+from camera_ai.event_models import Severity
 from camera_ai.schemas import (
     Detection,
     MotionResult,
@@ -169,6 +170,7 @@ def test_processor_routes_before_vlm_and_preserves_exact_trace(tmp_path):
     assert result.decision.decision.value == "yes"
     assert result.decision.event_type == "traffic_accident"
     assert result.alert_event.event_type == "traffic_accident"
+    assert result.alert_event.severity is Severity.HIGH
     artifact_dir = tmp_path / "cam_trace" / "cam_trace_000000"
     assert (artifact_dir / "vlm_prompt.txt").read_text(encoding="utf-8") == result.vlm_trace.prompt
     assert (artifact_dir / "vlm_raw_output.txt").read_text(encoding="utf-8") == result.vlm_trace.raw_output

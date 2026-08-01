@@ -203,6 +203,18 @@ _PRIORITY_RANK = {
     Priority.CRITICAL: 4,
 }
 
+_EVENT_TYPE_SEVERITY = {
+    "person_fall": Severity.MEDIUM,
+    "camera_tamper": Severity.MEDIUM,
+    "traffic_accident": Severity.HIGH,
+    "fighting": Severity.HIGH,
+    "fire_smoke": Severity.HIGH,
+}
+
+
+def _severity_for_event_type(event_type: str | None) -> Severity:
+    return _EVENT_TYPE_SEVERITY.get(event_type or "", Severity.LOW)
+
 
 def select_primary_candidate(
     candidates: Iterable[CandidateEvent],
@@ -276,12 +288,7 @@ def alert_from_decision(
 ) -> AlertEvent | None:
     if decision.decision is not DecisionValue.YES or not decision.raw_output_valid:
         return None
-    severity = {
-        Priority.LOW: Severity.LOW,
-        Priority.MEDIUM: Severity.MEDIUM,
-        Priority.HIGH: Severity.HIGH,
-        Priority.CRITICAL: Severity.CRITICAL,
-    }[candidate.priority]
+    severity = _severity_for_event_type(decision.event_type)
     return AlertEvent(
         alert_id=stable_event_id("alert", candidate.candidate_id),
         camera_id=camera_id,
