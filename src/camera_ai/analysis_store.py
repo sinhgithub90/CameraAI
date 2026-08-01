@@ -1,0 +1,88 @@
+"""Aggregate lifecycle state for one asynchronously processed video."""
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+
+from pydantic import BaseModel, Field
+
+from .schemas import SceneAnalysis, StageTiming, VideoWindowResult, VLMResult, SecurityDecision
+
+
+class VideoAnalysis(BaseModel):
+    id: str
+    camera_id: str
+    status: str = "reading"
+    windows: list[VideoWindowResult] = Field(default_factory=list)
+    total_timing: StageTiming = Field(default_factory=StageTiming)
+    error: str | None = None
+
+    def refresh_total_timing(self) -> None:
+        self.total_timing = StageTiming(
+            motion_ms=sum(window.timing.motion_ms for window in self.windows),
+            detector_ms=sum(window.timing.detector_ms for window in self.windows),
+            qwen_ms=sum(window.timing.qwen_ms for window in self.windows),
+        )
+        self.total_timing.total_ms = (
+            self.total_timing.motion_ms
+            + self.total_timing.detector_ms
+            + self.total_timing.qwen_ms
+        )
+
+
+class AnalysisStore(ABC):
+    @abstractmethod
+    async def create(self, analysis: VideoAnalysis) -> None: ...
+
+    @abstractmethod
+    async def get(self, analysis_id: str) -> VideoAnalysis | None: ...
+
+    @abstractmethod
+    async def append_window(self, analysis_id: str, window: VideoWindowResult) -> None: ...
+
+    @abstractmethod
+    async def complete_window(
+        self, analysis_id: str, alert_id: str, scene: SceneAnalysis, qwen_ms: float
+    ) -> None: ...
+
+
+class InMemoryAnalysisStore(AnalysisStore):
+    def __init__(self) -> None:
+        self._analyses: dict[str, VideoAnalysis] = {}
+
+    async def create(self, analysis: VideoAnalysis) -> None:
+        self._analyses[analysis.id] = analysis
+
+    async def get(self, analysis_id: str) -> VideoAnalysis | None:
+        return self._analyses.get(analysis_id)
+
+    async def append_window(self, analysis_id: str, window: VideoWindowResult) -> None:
+        analysis = self._analyses[analysis_id]
+        analysis.windows.append(window)
+        analysis.status = "queued"
+        analysis.refresh_total_timing()
+
+    async def complete_window(
+        self, analysis_id: str, alert_id: str, scene: SceneAnalysis, qwen_ms: float
+    ) -> None:
+        analysis = self._analyses[analysis_id]
+        for window in analysis.windows:
+            if window.alert_id == alert_id:
+                window.vlm = VLMResult(
+                    summary=scene.summary,
+                    observations=scene.observations,
+                    degraded=scene.degraded,
+                    status="completed",
+                )
+                window.security = SecurityDecision(
+                    alert_level=scene.alert_level,
+                    risks=scene.risks,
+                    recommended_action=scene.recommended_action,
+                )
+                window.timing.qwen_ms = qwen_ms
+                window.timing.total_ms = (
+                    window.timing.motion_ms
+                    + window.timing.detector_ms
+                    + window.timing.qwen_ms
+                )
+                break
+        analysis.refresh_total_timing()
