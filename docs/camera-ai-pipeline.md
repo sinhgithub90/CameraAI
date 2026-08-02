@@ -20,52 +20,72 @@ nhãn COCO được Qwen đánh giá trực tiếp từ keyframe.
 ## 2. Luồng video hiện tại
 
 ```text
-Video upload/path
+Video upload/stream
   |
-  |-- Mặc định chỉ đọc cửa sổ 5 giây đầu
+  |-- đọc stream và đóng ranh giới theo source time mỗi 5 giây
   |
-  |-- grab từng frame để giữ đúng chỉ số và timestamp
-  |     `-- chỉ retrieve/decode ở nhịp Motion 5 FPS
+  |-- pre-queue admission theo (analysis_id, camera_id)
+  |     |-- cooldown còn hiệu lực -> bỏ cửa sổ, chỉ cộng cooldown summary
+  |     |-- đến hạn recheck -> reserve nguyên tử đúng 1 cửa sổ
+  |     `-- trạng thái bình thường -> admit
   |
-  |-- resize cạnh dài tối đa 1280 (INTER_LINEAR)
+  |-- global priority queue
   |
-  |-- MotionDetector so sánh với frame Motion trước đó
-  |     |-- cửa sổ không có motion -> bỏ qua YOLO và Qwen
-  |     `-- có motion -> cho phép chạy YOLO tối đa 2 FPS
+  |-- Motion 5 FPS -> YOLO tối đa 2 FPS -> Event Router
   |
-  |-- chọn tối đa 2 keyframe theo điểm Motion/YOLO
+  |-- chọn tối đa 2 keyframe -> ghép TRUOC/SAU
   |
-  |-- ghép TRUOC/SAU thành 1 ảnh và gọi Qwen một lần
-  |
-  `-- tạo VideoWindowResult, VideoAnalysisStats và PipelineResult
+  `-- Qwen -> severity -> episode/cooldown state -> compact result
 ```
 
-`frames_read` vẫn đếm mọi frame đã `grab`, nhưng pipeline không giải mã ảnh BGR
-cho mọi frame. Ví dụ video 30 FPS trong 5 giây có 150 frame: pipeline `grab` 150
-lần nhưng thường chỉ `retrieve` khoảng 25 frame ở nhịp Motion 5 FPS.
+Producer vẫn đọc nguồn và tạo ranh giới 5 giây khi camera đang cooldown để
+stream không bị trễ. Tuy nhiên cửa sổ bị suppress không tạo `VLMTask`, alert
+tương thích hay `VideoWindowResult`; vì vậy nó không chạy Motion, YOLO, router,
+keyframe hoặc Qwen và không chiếm queue.
 
-Mặc định `max_video_windows=1`, vì vậy endpoint upload hiện chỉ phân tích tối đa
-5 giây đầu. Muốn xử lý toàn bộ video phải khởi tạo
-`SecurityAIPipeline(max_video_windows=None)`; hiện chưa có biến môi trường hoặc
-tham số HTTP để đổi giá trị này.
+`SecurityAIPipeline` được khởi tạo trực tiếp vẫn có mặc định phát triển
+`max_video_windows=1`. FastAPI chủ động dùng `max_video_windows=None`, nên
+`POST /async/analyze/video` đọc toàn bộ video thay vì chỉ 5 giây đầu. API không
+nhận phân tích thứ hai đang hoạt động cho cùng `camera_id` và trả HTTP 409.
+
+Với đường synchronous/direct-construction, `frames_read` vẫn đếm mọi frame đã
+`grab`, nhưng ảnh BGR chỉ được `retrieve` theo nhịp Motion. Ví dụ 5 giây video
+30 FPS có 150 lần `grab` và khoảng 25 lần `retrieve` ở Motion 5 FPS.
 
 ## 3. Điều kiện gọi YOLO và Qwen trong video
 
-| Trạng thái cửa sổ 5 giây | YOLO26n | Qwen |
-|---|---:|---:|
-| Không có motion | Không gọi | Không gọi |
-| Có motion | Tối đa 2 FPS | Gọi 1 lần |
-| Có motion, YOLO không có detection | Có gọi | Vẫn gọi 1 lần |
-| YOLO gặp lỗi ở một frame | Ghi log và tiếp tục | Vẫn giữ đường gọi Qwen |
+| Trạng thái ranh giới 5 giây | Vào queue | Motion/YOLO | Qwen |
+|---|---:|---:|---:|
+| Đang red/orange cooldown, chưa đến hạn | Không | Không | Không |
+| Recheck đến hạn | Có, đúng 1 reservation | Có | Bắt buộc nếu có frame dùng được |
+| Đã admit nhưng cửa sổ tĩnh | Có | Motion có, YOLO không | Không |
+| Router không tạo candidate | Có | Có theo motion | Không |
+| Router có candidate | Có | Có theo motion | Gọi 1 lần |
+| Recheck không có frame dùng được | Có | Có thể dừng sớm | Không; đánh dấu failed và retry |
 
-`VLMGate` không được dùng trong luồng video. Quyết định gọi Qwen của video dựa
-trên Motion: chỉ cần cửa sổ có ít nhất một frame báo motion thì Qwen được gọi,
-kể cả danh sách detection rỗng. Cách này giảm nguy cơ bỏ sót sự kiện không có
-nhãn COCO như khói, lửa, té ngã hoặc vật cản.
+Luồng async dùng `Event Router` và `VLMCallPolicy`: candidate mới quyết định có
+gọi Qwen hay không. Motion không detection vẫn có thể tạo
+`unexplained_motion`, nhờ đó Qwen có thể đánh giá khói, vật cản hoặc vật thể nằm
+ngoài nhãn COCO. `VLMGate` chỉ là policy của ảnh tĩnh.
 
-Với camera luôn có chuyển động, Qwen có thể được gọi một lần ở mỗi cửa sổ 5
-giây. Pipeline hiện chưa có cooldown, tracking hay dedup cảnh báo giữa các cửa
-sổ.
+### 3.1 Cooldown và xử lý đồng thời
+
+Khi Qwen xác nhận red, runtime đặt `next_recheck_event_seconds` bằng cuối cửa
+sổ cộng 60 giây. Producer kiểm tra state trước persistence/queue. Đến hạn,
+`recheck_reserved` cùng `state_version` bảo đảm chỉ một cửa sổ được enqueue;
+completion hoặc failure đều giải phóng đúng reservation token. Red lặp lại gia
+hạn 60 giây, medium chuyển sang orange watch 15 giây, low resolve episode, còn
+failure giữ cảnh báo và dùng retry backoff 15, 15, 30 rồi tối đa 60 giây.
+
+Ngay khi red được tạo hoặc gia hạn, worker prune các task đang chờ có cùng
+`(analysis_id, camera_id)` và source start trước deadline mới. Queue đồng thời
+lưu cutoff để từ chối task đã được admit ngay trước red nhưng enqueue đến sau
+lúc prune. Camera/analysis khác không bị ảnh hưởng. `VideoWindowProcessor` vẫn
+kiểm tra cooldown ở đầu hàm như lớp bảo vệ dự phòng cho task cũ hoặc adapter
+không dùng producer admission; đây không phải đường suppress chính.
+
+Video upload so sánh deadline bằng source seconds. Adapter live-camera phải
+dùng `time.monotonic()` cho quyết định cooldown; UTC chỉ nên dùng để hiển thị.
 
 ## 4. Motion và YOLO26n
 
@@ -151,19 +171,19 @@ Qwen nhận:
 - yêu cầu trả cảnh báo an ninh ngắn bằng tiếng Việt;
 - `temperature=0`, context 4096 và tối đa 128 output token.
 
-JSON Schema yêu cầu đúng bốn trường:
+JSON Schema của Qwen yêu cầu đúng ba trường:
 
 ```json
 {
-  "alert_level": "low | medium | high",
-  "summary": "Mô tả ngắn",
-  "risks": [],
-  "recommended_action": "Hành động đề xuất"
+  "decision": "yes | no | uncertain",
+  "event_type": "traffic_accident",
+  "summary": "Mô tả ngắn bằng tiếng Việt"
 }
 ```
 
-`observations` trong API không còn được yêu cầu từ Qwen; pipeline tự tạo từ
-`summary` để giữ tương thích schema cũ.
+`event_type` đã validate quyết định severity cuối cùng; router priority không
+được nâng hoặc hạ cảnh báo. `no` chỉ hợp lệ với `no_event`, `uncertain` với
+`unknown_event`, còn `yes` phải đi cùng event cụ thể.
 
 Nếu không kết nối được Ollama hoặc request lỗi, pipeline không làm hỏng toàn bộ
 request mà trả `degraded=true`, kèm cảnh báo fallback dựa trên detection hiện
@@ -187,7 +207,11 @@ qua, output có `vlm.skipped=true` và `alert_level=low`.
 
 ## 8. Cách tổng hợp kết quả video
 
-Mỗi cửa sổ có motion tạo một `VideoWindowResult` gồm:
+Trong async API, chỉ cửa sổ đã được admission và thực sự đi vào processing mới
+tạo `VideoWindowResult`. Cửa sổ bị producer drop hoặc worker prune không tạo
+record giả trong `windows`; chúng được cộng dồn vào top-level `cooldown`.
+
+Một cửa sổ processed gồm:
 
 - khoảng thời gian cửa sổ;
 - toàn bộ detection thu được trong cửa sổ;
@@ -195,17 +219,38 @@ Mỗi cửa sổ có motion tạo một `VideoWindowResult` gồm:
 - số keyframe và các frame/timestamp đã gửi Qwen;
 - timing Motion, detector và Qwen.
 
-Nếu phân tích nhiều cửa sổ, `PipelineResult` dùng cửa sổ có mức cảnh báo cao
-nhất làm summary/security tổng. Ảnh minh họa là frame đại diện của cửa sổ đó,
-được vẽ bounding box và JPEG encode quality 80. Danh sách detection cấp cao
-nhất là tổng detection của mọi cửa sổ đã phân tích.
+Response compact của `GET /analyses/{analysis_id}` bỏ detection boxes,
+candidate, raw alert, trace và `event_metadata`; các dữ liệu này vẫn có thể tồn
+tại model nội bộ. Trạng thái cooldown hiện tại được trả một lần:
+
+```json
+{
+  "cooldown": {
+    "active_alert_id": "alert_31cb0edeeef0fad5",
+    "alert_level": "high",
+    "timebase": "video",
+    "red_started": 10.0,
+    "recheck_at": 70.0,
+    "suppressed_windows": 2,
+    "suppressed_seconds": 10.0
+  }
+}
+```
+
+`suppressed_windows` gồm cả ranh giới producer đã drop và pending task worker
+đã prune. `suppressed_seconds` là tổng source duration tương ứng. Khi episode
+chuyển high sang medium, `alert_level` và `recheck_at` được cập nhật; episode
+red mới có `red_started` mới.
+
+Đường synchronous `PipelineResult` vẫn tổng hợp cửa sổ có mức cảnh báo cao
+nhất làm summary/security và dùng frame đại diện của cửa sổ đó.
 
 Nếu không cửa sổ nào có motion, pipeline trả kết quả skipped mức `low`, không
 gọi YOLO/Qwen, nhưng vẫn trả ảnh đại diện cuối cùng đã decode.
 
 ## 9. Output và timing
 
-Các trường chính của `PipelineResult`:
+Các trường chính của synchronous `PipelineResult`:
 
 - `request_id`, `media_type`, `camera_id`;
 - `detections`;
@@ -213,7 +258,12 @@ Các trường chính của `PipelineResult`:
 - `security.alert_level`, `security.risks`, `security.recommended_action`;
 - `annotated_image` là JPEG base64;
 - `video_stats` cho video;
-- `video_windows` cho các cửa sổ có motion đã gọi Qwen.
+- `video_windows` cho kết quả synchronous/direct-construction.
+
+Async API trả `CompactVideoAnalysis` gồm `id`, `camera_id`, `status`,
+`total_timing`, danh sách processed `windows` và optional top-level `cooldown`.
+Mỗi compact window chỉ giữ range, resolved alert level, Qwen status/summary,
+optional episode transition và timing.
 
 `video_stats` gồm:
 
@@ -242,6 +292,17 @@ Adapter Qwen ghi thêm:
 `qwen_ms` là thời gian phía client bao quanh toàn bộ lời gọi adapter, gồm chuẩn
 bị ảnh, JPEG/base64, HTTP và chờ Ollama. Dòng `[ollama]` là timing do server
 Ollama trả về, giúp tách thời gian load model, xử lý prompt và sinh output.
+
+Timing async cần đọc riêng từng lớp:
+
+- `total_ms`: Motion + detector + keyframe + Qwen của cửa sổ đã chạy;
+- `queue_wait_ms`: thời gian task chờ trước khi worker bắt đầu;
+- `wall_clock_ms`: từ lúc enqueue đến khi processing hoàn tất.
+
+Budget 5.000 ms và `processing_p95_ms` dùng `total_ms`, không gồm queue wait.
+Call rate dùng số cửa sổ logic
+`len(windows) + cooldown.suppressed_windows`; cửa sổ suppress không được thêm
+giá trị timing 0 giả vào p95.
 
 ## 10. Cấu hình mặc định
 
@@ -303,13 +364,15 @@ Cold-run đầu tiên thường chậm hơn do Ollama phải load model. Khi so 
 năng, nên chạy warm-up trước rồi dùng cùng một video cho các lần đo.
 ## Conservative Qwen gate for async video
 
-Each five-second async window now follows:
+Only a window accepted by pre-queue admission reaches this processing policy:
 
 ```text
-Motion -> YOLO / optional specialized detector -> Event Router -> VLMCallPolicy
+5-second boundary -> pre-queue admission -> global queue
+  admitted -> Motion -> YOLO / optional detector -> Event Router -> VLMCallPolicy
   no candidate and usable frames -> skip Qwen, emit a green window
   candidate -> call Qwen 4B once with the primary candidate
   no usable frames -> skip Qwen, emit a degraded window
+  active cooldown -> no queue task and no per-window result
 ```
 
 Bounding boxes remain internal evidence for proximity and future tracking/zone

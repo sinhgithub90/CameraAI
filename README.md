@@ -7,10 +7,17 @@ and compact result polling.
 
 ## Current async video pipeline
 
-The FastAPI video path processes the complete video in five-second windows:
+The FastAPI video path reads the complete video and closes one source-time
+window every five seconds:
 
 ```text
-Video
+Video/stream
+  -> close five-second source-time boundary
+  -> pre-queue camera admission
+       active cooldown -> drop before queue and all inference
+       due recheck     -> atomically reserve one window
+       normal          -> admit
+  -> global priority queue
   -> motion sampling (default 5 FPS)
   -> YOLO26n sampling on active windows (default 2 FPS)
   -> scene-composition router
@@ -21,21 +28,28 @@ Video
   -> event severity and per-window result
 ```
 
-Static windows skip YOLO and Qwen and are still written as green results. If a
-window contains motion but YOLO finds no supported object, it can still route
+Admitted static windows skip YOLO and Qwen and are written as green results. If
+a window contains motion but YOLO finds no supported object, it can still route
 to Qwen as `unexplained_motion`; this prevents YOLO from filtering out smoke,
 obstruction, spills, or fallen objects that it does not classify.
 
 After Qwen verifies a red security event, that camera/analysis enters a
-60-second cooldown measured in video event time. The producer still emits each
-five-second window to preserve the timeline, but suppressed windows return
-before Motion and therefore skip Motion, YOLO, routing, keyframe selection, and
-Qwen. They inherit the active red level with `verification_status=suppressed`;
-they are not new Qwen confirmations. The first window starting at or after the
-deadline runs the full pipeline and forces a Qwen recheck. A repeated red
-extends the same alert episode by another 60 seconds, orange rechecks after 15
-seconds, and green resolves the episode. The async API rejects a second active
-analysis for the same `camera_id` with HTTP 409.
+60-second cooldown measured in video source time. Later five-second boundaries
+are still read so the stream remains current, but they are rejected before a
+`VLMTask`, compatibility alert, or per-window result is created. They therefore
+do not enter the queue and do not run Motion, YOLO, routing, keyframe selection,
+or Qwen. The analysis records their count and duration once in the top-level
+`cooldown` summary instead of creating synthetic suppressed windows.
+
+Red confirmation also removes already queued backlog for the same
+`(analysis_id, camera_id)`. An atomic queue cutoff rejects a stale task that was
+admitted just before red but arrives after pruning; work for other cameras is
+untouched. The first boundary starting at or after the deadline atomically
+reserves the only eligible recheck. Repeated red extends the episode by 60
+seconds, orange rechecks after 15 seconds, green resolves it, and failed
+rechecks keep the alert with bounded retry backoff. The processor retains a
+second cooldown check only as defense in depth. The async API rejects a second
+active analysis for the same `camera_id` with HTTP 409.
 
 The router describes scene composition rather than claiming an event. Current
 candidate types include `person_vehicle_scene`, `multi_person_scene`,
@@ -150,8 +164,8 @@ sequentially. Each attempted video creates one `<video-stem>.json`; failed
 videos also create a report with `status` and `error`. The CLI uses each video
 stem as its `camera_id`.
 
-Every completed report keeps all green, orange, and red windows. A compact
-window looks like:
+Every completed report keeps the green, orange, and red windows that actually
+entered processing. A compact processed window looks like:
 
 ```json
 {
@@ -179,19 +193,37 @@ window looks like:
 }
 ```
 
+Dropped and pruned source windows are summarized once rather than appended to
+`windows`:
+
+```json
+{
+  "cooldown": {
+    "active_alert_id": "alert_31cb0edeeef0fad5",
+    "alert_level": "high",
+    "timebase": "video",
+    "red_started": 10.0,
+    "recheck_at": 70.0,
+    "suppressed_windows": 2,
+    "suppressed_seconds": 10.0
+  }
+}
+```
+
 Confirmed alert severity takes precedence over the scene security level when
 the internal pipeline resolves `alert_level`. The public analysis response and
 per-video benchmark JSON omit detections, Qwen input frames, candidate data,
 raw alerts, traces, risks, actions, and internal `event_metadata`. Empty
 cooldown values and false episode transition flags are omitted.
 
-The processing target is `total_ms <= 5000` for every window. The top-level
-`performance_summary` reports Qwen call rate, p95 processing time, and the
-number of windows over budget. It also reports cooldown suppressions and rate,
-created red episodes, rechecks, cooldown extensions, and failed rechecks.
-`wall_clock_ms` may be higher than `total_ms` when the task waits in the worker
-queue. A video must continue for at least 60 seconds after its first verified
-red window to contain an eligible recheck window.
+The processing target is `total_ms <= 5000` for every processed window. The
+top-level `performance_summary` reports Qwen call rate, p95 processing time,
+and the number of processed windows over budget. Call and cooldown rates use
+the logical count `len(windows) + cooldown.suppressed_windows`; p95 only uses
+work that actually ran. `queue_wait_ms` is time before a worker starts,
+`total_ms` is Motion + Detection + keyframe + Qwen processing, and
+`wall_clock_ms` covers both. A video must continue for at least 60 seconds after
+its first verified red window to contain an eligible recheck boundary.
 
 ## Tests
 

@@ -77,9 +77,11 @@ replacement for a versioned, balanced benchmark report.
 The CLI can process one video for a quick check or scan a directory
 sequentially. It calls an already-running FastAPI async endpoint; it does not
 start the server itself. Every attempted video creates one `<video-stem>.json`.
-Completed reports contain every low/medium/high window and counts named
-`green`, `orange`, and `red`. Failed videos also create JSON with `status` and
-`error` so batch failures remain visible.
+Completed reports contain every processed low/medium/high window and counts
+named `green`, `orange`, and `red`. Windows dropped by cooldown are represented
+by the top-level aggregate rather than synthetic `windows` entries. Failed
+videos also create JSON with `status` and `error` so batch failures remain
+visible.
 
 The runtime default is 128 output tokens. Invalid or truncated Qwen JSON cannot
 create a confirmed alert. For a confirmed event, the report resolves
@@ -105,13 +107,14 @@ directory extensions are `.mp4`, `.avi`, `.mov`, and `.mkv`. In directory mode,
 the CLI assigns each video stem as `camera_id`.
 
 After a verified red event, cooldown is measured in video event time rather
-than processing or queue time. The next 60 seconds of windows are still
-recorded but skip Motion, Detection, routing, keyframe selection, and Qwen.
-Their red level is inherited from the active episode and is explicitly
-unverified, not a new Qwen confirmation. The first window whose start time is
-at or beyond the deadline runs the full pipeline as a recheck. Use a source
-that continues at least 60 seconds beyond the first verified red window when a
-real run must demonstrate this recheck.
+than processing or queue time. During the next 60 seconds, the producer keeps
+reading source boundaries but drops them before persistence, queue, Motion,
+Detection, routing, keyframe selection, and Qwen. When red is confirmed, the
+worker also prunes same-analysis/camera backlog and installs a queue cutoff for
+stale late arrivals. The first boundary whose start is at or beyond the
+deadline atomically reserves the only recheck. Use a source that continues at
+least 60 seconds beyond the first verified red window when a real run must
+demonstrate this recheck.
 
 ### Compact window contract and five-second budget
 
@@ -144,12 +147,47 @@ object, optional cooldown state, and a detailed `timing` object:
 }
 ```
 
+Dropped and pruned windows appear once at the report top level:
+
+```json
+{
+  "cooldown": {
+    "active_alert_id": "alert_31cb0edeeef0fad5",
+    "alert_level": "high",
+    "timebase": "video",
+    "red_started": 10.0,
+    "recheck_at": 70.0,
+    "suppressed_windows": 2,
+    "suppressed_seconds": 10.0
+  }
+}
+```
+
+The logical window count is
+`len(windows) + cooldown.suppressed_windows`. `vlm_call_rate` is Qwen-called
+windows divided by that logical count, and `cooldown_suppression_rate` is
+suppressed windows divided by the same count. `processing_p95_ms` is computed
+only from processed windows because dropped work has no synthetic zero timing.
+
 `performance_summary` contains `vlm_called_windows`,
 `vlm_skipped_windows`, `vlm_call_rate`, `processing_p95_ms`,
 `windows_over_budget`, and the fixed `processing_budget_ms` value of 5000. It
 also contains `vlm_suppressed_by_cooldown`, `cooldown_suppression_rate`,
 `red_episodes_created`, `red_rechecks`, `red_cooldown_extensions`, and
 `failed_rechecks`.
+
+### Observed RoadAccidents010 run (2026-08-02)
+
+`runs/alerts/RoadAccidents010_x264.json` is one local runtime observation, not a
+latency guarantee. Its 0-5 second window was green and its 5-10 second window
+verified a red traffic accident. Red started at source second 10, so recheck
+was due at second 70. The remaining two five-second boundaries were dropped
+before queue, giving two processed windows plus two suppressed windows, 10
+suppressed seconds, two Qwen calls, and a call rate of 0.5.
+
+In that run both processed windows had `queue_wait_ms=0`; processing p95 was
+approximately 3,794 ms and `windows_over_budget=0`. Another machine, model
+state, concurrent workload, or cold Ollama load can produce different timing.
 
 Run one arbitrary video quickly with:
 
@@ -170,6 +208,6 @@ and internal `event_metadata`. Empty cooldown values and false episode
 transition flags are omitted. This keeps review output compact while retaining
 every requested stage measurement.
 
-The processing budget compares `timing.total_ms` with 5000 ms. Queue waiting is
-reported separately, so `wall_clock_ms` can exceed the processing total even
-when `within_budget` is true.
+The processing budget compares `timing.total_ms` with 5000 ms. `queue_wait_ms`
+is reported separately, and `wall_clock_ms` covers queue wait plus processing,
+so wall time can exceed the processing total even when `within_budget` is true.
