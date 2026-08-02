@@ -15,12 +15,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
+import tempfile
 import time
 import uuid
+from pathlib import Path
 
 import cv2
 import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from pydantic import BaseModel
 
 from dotenv import load_dotenv
 
@@ -53,6 +57,61 @@ logger = logging.getLogger(__name__)
 
 # Load .env (repo root) before building the pipeline so env config applies.
 load_dotenv()
+
+MAX_BATCH_VIDEOS = 20
+UPLOAD_CHUNK_BYTES = 1024 * 1024
+
+
+class StagedVideo(BaseModel):
+    filename: str
+    camera_id: str
+    path: Path
+
+
+class MultiVideoItem(BaseModel):
+    filename: str
+    camera_id: str
+    analysis_id: str
+
+
+class MultiVideoResponse(BaseModel):
+    batch_id: str
+    items: list[MultiVideoItem]
+
+
+def _camera_ids(files: list[UploadFile]) -> list[str]:
+    used: dict[str, int] = {}
+    result: list[str] = []
+    for index, upload in enumerate(files, start=1):
+        stem = Path(upload.filename or "").stem.lower()
+        base = re.sub(r"[^a-z0-9]+", "-", stem).strip("-") or f"camera-{index}"
+        used[base] = used.get(base, 0) + 1
+        result.append(base if used[base] == 1 else f"{base}-{used[base]}")
+    return result
+
+
+async def _stage_video(upload: UploadFile) -> Path:
+    suffix = Path(upload.filename or "video.mp4").suffix or ".mp4"
+    handle = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+    path = Path(handle.name)
+    size = 0
+    try:
+        while chunk := await upload.read(UPLOAD_CHUNK_BYTES):
+            handle.write(chunk)
+            size += len(chunk)
+    except Exception:
+        handle.close()
+        path.unlink(missing_ok=True)
+        raise
+    finally:
+        if not handle.closed:
+            handle.close()
+
+    if size == 0:
+        path.unlink(missing_ok=True)
+        raise ValueError(f"empty upload: {upload.filename or 'unnamed'}")
+    return path
+
 
 def _build_pipeline(
     alert_state_store: InMemoryCameraAlertStateStore | None = None,
@@ -250,7 +309,10 @@ async def _persist_admitted_video_window(
 
 
 async def _produce_video_windows(
-    event: EventObject, analysis_id: str, camera_id: str,
+    event: EventObject,
+    analysis_id: str,
+    camera_id: str,
+    cleanup_path: Path | None = None,
 ) -> None:
     """Run blocking decoding in a thread and submit each flush to asyncio."""
     loop = asyncio.get_running_loop()
@@ -263,12 +325,16 @@ async def _produce_video_windows(
         future.result()
 
     try:
-        await asyncio.to_thread(pipeline.stream_video_chunks, event, on_window)
-    except Exception as exc:
-        logger.exception("async video producer failed analysis=%s", analysis_id)
-        await analysis_store.mark_producer_failed(analysis_id, str(exc))
-    else:
-        await analysis_store.mark_producer_complete(analysis_id)
+        try:
+            await asyncio.to_thread(pipeline.stream_video_chunks, event, on_window)
+        except Exception as exc:
+            logger.exception("async video producer failed analysis=%s", analysis_id)
+            await analysis_store.mark_producer_failed(analysis_id, str(exc))
+        else:
+            await analysis_store.mark_producer_complete(analysis_id)
+    finally:
+        if cleanup_path is not None:
+            cleanup_path.unlink(missing_ok=True)
 
 
 @app.post("/async/analyze/image", response_model=PipelineResult)
@@ -360,6 +426,60 @@ async def analyze_video_async(
     )
     asyncio.create_task(_produce_video_windows(event, result.request_id, camera_id))
     return result
+
+
+@app.post("/async/analyze/videos", response_model=MultiVideoResponse)
+async def analyze_videos_async(
+    files: list[UploadFile] = File(...),
+) -> MultiVideoResponse:
+    if not 1 <= len(files) <= MAX_BATCH_VIDEOS:
+        raise HTTPException(status_code=400, detail="files must contain 1..20 videos")
+
+    camera_ids = _camera_ids(files)
+    staged: list[StagedVideo] = []
+    try:
+        for upload, camera_id in zip(files, camera_ids, strict=True):
+            staged.append(
+                StagedVideo(
+                    filename=upload.filename or f"{camera_id}.mp4",
+                    camera_id=camera_id,
+                    path=await _stage_video(upload),
+                )
+            )
+    except Exception as exc:
+        for item in staged:
+            item.path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    batch_id = uuid.uuid4().hex
+    items: list[MultiVideoItem] = []
+    for item in staged:
+        analysis_id = uuid.uuid4().hex
+        await analysis_store.create(
+            VideoAnalysis(id=analysis_id, camera_id=item.camera_id)
+        )
+        event = EventObject(
+            camera_id=item.camera_id,
+            image=str(item.path),
+            media_type=MediaType.VIDEO,
+        )
+        asyncio.create_task(
+            _produce_video_windows(
+                event,
+                analysis_id,
+                item.camera_id,
+                cleanup_path=item.path,
+            )
+        )
+        items.append(
+            MultiVideoItem(
+                filename=item.filename,
+                camera_id=item.camera_id,
+                analysis_id=analysis_id,
+            )
+        )
+
+    return MultiVideoResponse(batch_id=batch_id, items=items)
 
 
 @app.get(

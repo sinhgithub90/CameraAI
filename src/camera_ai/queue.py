@@ -1,18 +1,18 @@
-# src/camera_ai/queue.py
 """VLM priority queue and background worker for async processing."""
 from __future__ import annotations
 
 import asyncio
-import heapq
 import logging
 import time
 import uuid
-from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Callable
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from .alert_cooldown import WindowAdmission
+from .messaging.contracts import Delivery, RejectMessageError, TaskQueue
+from .messaging.inprocess import InProcessTaskQueue
 from .schemas import Detection, SceneAnalysis
 from .video_windows import RawVideoWindow
 
@@ -24,7 +24,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Priority aging thresholds
 AGING_30S = 30.0
 AGING_60S = 60.0
 AGING_120S = 120.0
@@ -34,11 +33,8 @@ AGING_120S = 120.0
 class VLMTask:
     """One VLM analysis task in the priority queue."""
 
-    # Sort fields (order=True uses these in declaration order)
     priority: int
     enqueued_at: float
-
-    # Non-sort fields
     task_id: str = field(default_factory=lambda: uuid.uuid4().hex, compare=False)
     camera_id: str = field(default="unknown", compare=False)
     alert_id: str = field(default="", compare=False)
@@ -66,20 +62,21 @@ class VLMTask:
         return max(1, self.priority - boost)
 
 
-class VLMQueue:
-    """Priority queue for VLM analysis tasks.
+class VLMQueue(InProcessTaskQueue[VLMTask]):
+    """Backward-compatible in-process VLM work queue."""
 
-    One condition protects the heap across enqueue, dequeue, and pruning.
-    Lower priority number means higher urgency; aging prevents starvation.
-    """
-
-    def __init__(self) -> None:
-        self._heap: list[VLMTask] = []
-        self._condition = asyncio.Condition()
+    def __init__(self, *, max_queue_size: int = 1024, max_attempts: int = 3) -> None:
+        super().__init__(
+            max_queue_size=max_queue_size,
+            max_attempts=max_attempts,
+            priority_resolver=lambda task, _queued: task.effective_priority(),
+        )
+        self._stream_lock = asyncio.Lock()
         self._stream_cutoffs: dict[tuple[str, str], float] = {}
 
-    async def enqueue(self, task: VLMTask) -> bool:
-        async with self._condition:
+    async def enqueue(self, task: VLMTask, *, priority: int | None = None) -> bool:
+        resolved_priority = task.priority if priority is None else priority
+        async with self._stream_lock:
             cutoff = self._stream_cutoffs.get((task.analysis_id, task.camera_id))
             if (
                 cutoff is not None
@@ -87,88 +84,50 @@ class VLMQueue:
                 and task.raw_window.start_seconds < cutoff
             ):
                 return False
-            heapq.heappush(self._heap, task)
-            self._condition.notify()
+            await super().enqueue(task, priority=resolved_priority)
         logger.debug(
             "[vlm-queue] enqueued alert=%s priority=%s depth=%s",
             task.alert_id,
-            task.priority,
+            resolved_priority,
             self.depth,
         )
         return True
 
     async def dequeue(self) -> VLMTask:
-        async with self._condition:
-            while True:
-                while not self._heap:
-                    await self._condition.wait()
-                task = heapq.heappop(self._heap)
-                effective = task.effective_priority(now=time.monotonic())
-                if effective < task.priority:
-                    heapq.heappush(
-                        self._heap, replace(task, priority=effective)
-                    )
-                    continue
-                break
+        """Legacy helper that auto-ACKs its delivery."""
+        delivery = await self.receive()
+        await delivery.ack()
         logger.debug(
             "[vlm-queue] dequeued alert=%s priority=%s depth=%s",
-            task.alert_id,
-            task.priority,
+            delivery.task.alert_id,
+            delivery.task.priority,
             self.depth,
         )
-        return task
-
-    @property
-    def depth(self) -> int:
-        return len(self._heap)
-
-    async def remove_where(
-        self, predicate: Callable[[VLMTask], bool]
-    ) -> list[VLMTask]:
-        """Remove matching pending tasks while holding the queue lock."""
-        async with self._condition:
-            removed = [task for task in self._heap if predicate(task)]
-            if removed:
-                self._heap = [task for task in self._heap if not predicate(task)]
-                heapq.heapify(self._heap)
-            return removed
+        return delivery.task
 
     async def suppress_stream_before(
         self, *, analysis_id: str, camera_id: str, deadline: float
     ) -> list[VLMTask]:
         """Atomically register a cutoff and remove already queued stale work."""
-        async with self._condition:
+        async with self._stream_lock:
             key = (analysis_id, camera_id)
             self._stream_cutoffs[key] = max(
                 deadline, self._stream_cutoffs.get(key, deadline)
             )
-            removed = [
-                task
-                for task in self._heap
-                if task.analysis_id == analysis_id
+            return await super().remove_where(
+                lambda task: task.analysis_id == analysis_id
                 and task.camera_id == camera_id
                 and task.raw_window is not None
                 and task.raw_window.start_seconds < deadline
-            ]
-            if removed:
-                removed_ids = {task.task_id for task in removed}
-                self._heap = [
-                    task for task in self._heap if task.task_id not in removed_ids
-                ]
-                heapq.heapify(self._heap)
-            return removed
+            )
 
 
 class VLMWorker:
-    """Background worker that dequeues VLM tasks and runs analysis.
-
-    One worker = one asyncio task = one GPU inference slot. For multi-GPU,
-    create multiple workers pointing to the same queue.
-    """
+    """Background worker; one worker represents one inference slot."""
 
     def __init__(
         self,
-        queue: VLMQueue,
+        queue: TaskQueue[VLMTask],
         pipeline: SecurityAIPipeline,
         alert_store: AlertStore,
         event_bus: EventBus,
@@ -182,11 +141,12 @@ class VLMWorker:
         self._task: asyncio.Task[None] | None = None
 
     async def run(self) -> None:
-        """Infinite loop: dequeue → analyze → update. Run as asyncio task."""
         logger.info("[vlm-worker] started")
         while True:
+            delivery: Delivery[VLMTask] | None = None
             try:
-                task = await self._queue.dequeue()
+                delivery = await self._queue.receive()
+                task = delivery.task
                 logger.info(
                     "[vlm-worker] processing alert=%s camera=%s rule=%s",
                     task.alert_id,
@@ -194,18 +154,25 @@ class VLMWorker:
                     task.rule_id,
                 )
                 analysis = await self._process_task(task)
+                await delivery.ack()
                 logger.info(
                     "[vlm-worker] completed alert=%s level=%s",
                     task.alert_id,
                     analysis.alert_level.value,
                 )
             except asyncio.CancelledError:
+                if delivery is not None and delivery.state.value == "pending":
+                    await delivery.retry()
                 logger.info("[vlm-worker] cancelled")
                 break
+            except RejectMessageError:
+                logger.exception("[vlm-worker] rejected invalid task")
+                if delivery is not None:
+                    await delivery.reject()
             except Exception:
-                logger.exception(
-                    "[vlm-worker] error processing alert=%s", task.alert_id
-                )
+                logger.exception("[vlm-worker] error processing task")
+                if delivery is not None:
+                    await delivery.retry()
         logger.info("[vlm-worker] stopped")
 
     async def _process_task(self, task: VLMTask) -> SceneAnalysis:
@@ -286,11 +253,9 @@ class VLMWorker:
         return analysis
 
     async def start(self, loop: asyncio.AbstractEventLoop | None = None) -> None:
-        """Create and track the background task so it can be cancelled on stop."""
         self._task = asyncio.ensure_future(self.run(), loop=loop)
 
     async def stop(self) -> None:
-        """Cancel the background task and wait for it to finish."""
         if self._task is None:
             return
         self._task.cancel()

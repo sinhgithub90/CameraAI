@@ -1,5 +1,9 @@
 # Camera AI Platform — Kiến Trúc Hệ Thống
 
+> **Implementation status (2026-08-01):** RabbitMQ code is present as dormant
+> adapters. The API continues using in-process messaging until `FrameStore` and a
+> transport-safe VLM job DTO exist. Do not send raw frames through the broker.
+
 > **Loại tài liệu**: Target Architecture — bức tranh đích của hệ thống khi hoàn chỉnh.
 > **Ngày**: 2026-08-01.
 > **Trạng thái**: Draft.

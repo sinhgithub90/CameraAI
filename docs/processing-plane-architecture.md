@@ -1,5 +1,10 @@
 # Processing Plane — Kiến Trúc Pipeline & Thuật Toán
 
+> **Implementation status (2026-08-01):** Default runtime uses `InProcessEventBus`
+> and `VLMQueue`. RabbitMQ adapters are available but not wired into API startup.
+> EventBus is fan-out; TaskQueue is competing-consumer work. Broker payloads must
+> be JSON metadata, never raw frames.
+
 > **Phạm vi**: Thiết kế chi tiết tầng xử lý lõi (Processing Plane) cho Camera AI Platform.
 > **Ngày**: 2026-08-01.
 

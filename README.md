@@ -1,5 +1,24 @@
 # CameraAI
 
+## Messaging backends
+
+The current API runtime remains fully in-process: `InProcessEventBus` for
+broadcast events and `VLMQueue` for one-worker VLM jobs. RabbitMQ adapters are
+implemented but deliberately not wired into `apps/api/main.py` yet.
+
+RabbitMQ separates two semantics: `RabbitMQEventBus` uses a topic exchange and a
+queue per subscriber identity; `RabbitMQTaskQueue` is a competing-consumer work
+queue with priority, retry and dead-letter support. Messages must be JSON metadata
+only. Raw frames stay in a Frame Store and are represented later by references.
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[rabbitmq]"
+$env:RABBITMQ_TEST_URL = "amqp://guest:guest@localhost/"
+.\.venv\Scripts\python.exe -m pytest tests/integration/test_rabbitmq_messaging.py -q
+```
+
+The VLM RabbitMQ backend remains blocked until a transport-safe `VLMJob` plus
+`FrameStore` are introduced; `VLMTask` currently contains in-memory frames.
 CameraAI analyzes camera images and videos with a lightweight computer-vision
 router and a local Qwen vision-language model. The core package lives in
 `src/camera_ai/`; FastAPI is an adapter for uploads, asynchronous processing,
