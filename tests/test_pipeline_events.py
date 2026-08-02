@@ -1,7 +1,12 @@
 import numpy as np
 
+from camera_ai.alert_cooldown import (
+    InMemoryCameraAlertStateStore,
+    VerificationStatus,
+)
 from camera_ai.event_models import Severity
 from camera_ai.schemas import (
+    AlertLevel,
     Detection,
     MotionResult,
     SceneAnalysis,
@@ -9,6 +14,7 @@ from camera_ai.schemas import (
     VLMAnalysisTrace,
 )
 from camera_ai.video_windows import RawVideoWindow, VideoWindowProcessor
+from camera_ai.vlm_policy import VLMCallReason
 
 
 class Detector:
@@ -19,6 +25,15 @@ class Detector:
 class EmptyDetector:
     def detect(self, frame):
         return []
+
+
+class CountingDetector(Detector):
+    def __init__(self):
+        self.calls = 0
+
+    def detect(self, frame):
+        self.calls += 1
+        return super().detect(frame)
 
 
 class FireSignalDetector:
@@ -74,6 +89,21 @@ class TraceVLM(VLM):
         )
 
 
+class ResultVLM(VLM):
+    def __init__(self, result):
+        super().__init__()
+        self.result = result
+
+    def _scene(self):
+        return self.result
+
+
+class RaisingVLM(VLM):
+    def analyze_sequence(self, frames, detections):
+        self.calls += 1
+        raise RuntimeError("qwen failed")
+
+
 def raw_window():
     frame = np.zeros((32, 32, 3), dtype=np.uint8)
     changed = frame.copy()
@@ -116,6 +146,107 @@ def test_static_window_skips_vlm_and_returns_green_result():
     assert result.timing.qwen_ms == 0
     assert result.decision is None
     assert result.alert_event is None
+
+
+def test_red_cooldown_skips_motion_detector_and_qwen():
+    state = InMemoryCameraAlertStateStore.seeded_red(
+        stream_id="analysis-a",
+        camera_id="cam-a",
+        active_alert_id="episode-1",
+        next_recheck_event_seconds=65.0,
+    )
+    detector = CountingDetector()
+    vlm = VLM()
+    processor = VideoWindowProcessor(
+        detector=detector,
+        vlm=vlm,
+        yolo_fps=1.0,
+        max_keyframes=2,
+        alert_state_store=state,
+    )
+
+    result = processor.process(
+        raw_window().model_copy(
+            update={"window_index": 1, "start_seconds": 5.0}
+        ),
+        camera_id="cam-a",
+        stream_id="analysis-a",
+    )
+
+    assert detector.calls == 0
+    assert vlm.calls == 0
+    assert result.vlm_call.reason is VLMCallReason.ACTIVE_ALERT_COOLDOWN
+    assert result.timing.model_dump() == {
+        "total_ms": 0.0,
+        "motion_ms": 0.0,
+        "detector_ms": 0.0,
+        "keyframe_ms": 0.0,
+        "qwen_ms": 0.0,
+        "queue_wait_ms": 0.0,
+        "wall_clock_ms": 0.0,
+    }
+    assert result.alert_context.verification_status is VerificationStatus.SUPPRESSED
+    assert result.alert_context.effective_level is AlertLevel.HIGH
+    assert result.scene.alert_level is AlertLevel.HIGH
+
+
+def test_due_static_window_forces_one_qwen_recheck_and_resolves_red():
+    state = InMemoryCameraAlertStateStore.seeded_red(
+        stream_id="analysis-a",
+        camera_id="cam-a",
+        active_alert_id="episode-1",
+        next_recheck_event_seconds=65.0,
+    )
+    vlm = ResultVLM(SceneAnalysis(alert_level=AlertLevel.LOW))
+    processor = VideoWindowProcessor(
+        detector=EmptyDetector(),
+        vlm=vlm,
+        yolo_fps=2,
+        max_keyframes=2,
+        alert_state_store=state,
+    )
+
+    result = processor.process(
+        static_window().model_copy(
+            update={"window_index": 13, "start_seconds": 65.0}
+        ),
+        camera_id="cam-a",
+        stream_id="analysis-a",
+    )
+
+    assert vlm.calls == 1
+    assert result.vlm_call.reason is VLMCallReason.ACTIVE_ALERT_RECHECK
+    assert result.alert_context.episode_resolved is True
+    assert state.get("analysis-a", "cam-a").phase.value == "normal"
+
+
+def test_failed_recheck_returns_degraded_window_and_keeps_red():
+    state = InMemoryCameraAlertStateStore.seeded_red(
+        stream_id="analysis-a",
+        camera_id="cam-a",
+        active_alert_id="episode-1",
+        next_recheck_event_seconds=65.0,
+    )
+    processor = VideoWindowProcessor(
+        detector=EmptyDetector(),
+        vlm=RaisingVLM(),
+        yolo_fps=2,
+        max_keyframes=2,
+        alert_state_store=state,
+    )
+
+    result = processor.process(
+        static_window().model_copy(
+            update={"window_index": 13, "start_seconds": 65.0}
+        ),
+        camera_id="cam-a",
+        stream_id="analysis-a",
+    )
+
+    assert result.scene.degraded is True
+    assert result.scene.alert_level is AlertLevel.HIGH
+    assert result.alert_context.verification_status is VerificationStatus.FAILED
+    assert state.get("analysis-a", "cam-a").active_alert_id == "episode-1"
 
 
 def test_window_processor_exposes_typed_event_lifecycle_with_one_vlm_call():

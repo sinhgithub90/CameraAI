@@ -6,6 +6,7 @@ dependency on the application queue, HTTP layer, or analysis persistence.
 """
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
 import time
@@ -15,6 +16,13 @@ import cv2
 import numpy as np
 from pydantic import BaseModel, Field
 
+from .alert_cooldown import (
+    CameraAlertStateStore,
+    CooldownGateDecision,
+    VerificationStatus,
+    WindowAdmission,
+    WindowAlertContext,
+)
 from .detectors.base import Detector
 from .detectors.motion import MotionDetector
 from .schemas import (
@@ -47,6 +55,7 @@ from .vlm_policy import VLMCallDecision, VLMCallReason, decide_vlm_call
 from .detection_aggregation import aggregate_window_detections
 
 VIDEO_MAX_SIDE = 1280
+logger = logging.getLogger(__name__)
 
 
 class RawVideoWindow(BaseModel):
@@ -71,6 +80,7 @@ class ProcessedVideoWindow(BaseModel):
     alert_event: AlertEvent | None = None
     vlm_trace: VLMAnalysisTrace | None = None
     vlm_call: VLMCallDecision
+    alert_context: WindowAlertContext = Field(default_factory=WindowAlertContext)
 
 
 class StreamWindowProducer:
@@ -175,6 +185,7 @@ class VideoWindowProcessor:
         yolo_fps: float,
         max_keyframes: int,
         artifact_writer: WindowArtifactWriter | None = None,
+        alert_state_store: CameraAlertStateStore | None = None,
     ) -> None:
         self.detector = detector
         self.fire_detector = fire_detector
@@ -182,8 +193,33 @@ class VideoWindowProcessor:
         self.yolo_fps = yolo_fps
         self.max_keyframes = max_keyframes
         self.artifact_writer = artifact_writer
+        self.alert_state_store = alert_state_store
 
-    def process(self, window: RawVideoWindow, camera_id: str = "unknown") -> ProcessedVideoWindow:
+    def process(
+        self,
+        window: RawVideoWindow,
+        camera_id: str = "unknown",
+        stream_id: str = "default",
+    ) -> ProcessedVideoWindow:
+        admission = (
+            self.alert_state_store.inspect_window(
+                stream_id=stream_id,
+                camera_id=camera_id,
+                start_seconds=window.start_seconds,
+                end_seconds=window.end_seconds,
+                processing_now=time.monotonic(),
+            )
+            if self.alert_state_store is not None
+            else WindowAdmission.normal(
+                stream_id=stream_id,
+                camera_id=camera_id,
+                start_seconds=window.start_seconds,
+                end_seconds=window.end_seconds,
+            )
+        )
+        if not admission.process_window:
+            return self._build_suppressed_window(window, camera_id, admission)
+
         motion_detector = MotionDetector()
         detections: list[Detection] = []
         motion_ms = detector_ms = 0.0
@@ -251,11 +287,17 @@ class VideoWindowProcessor:
                 )
             )
         routing_primary = select_primary_candidate(routing_candidates)
-        vlm_call = decide_vlm_call(
+        base_vlm_call = decide_vlm_call(
             routing_observation,
             routing_candidates,
             usable_frame_count=len(frames),
         )
+        gate = (
+            self.alert_state_store.claim_vlm(admission, base_vlm_call)
+            if self.alert_state_store is not None
+            else CooldownGateDecision.from_base(admission, base_vlm_call)
+        )
+        vlm_call = gate.as_vlm_call_decision()
         started = time.perf_counter()
         if not vlm_call.call_vlm:
             no_frames = vlm_call.reason is VLMCallReason.NO_USABLE_FRAMES
@@ -269,29 +311,47 @@ class VideoWindowProcessor:
                 degraded=no_frames,
             )
             trace = VLMAnalysisTrace(scene=scene)
-        elif hasattr(self.vlm, "analyze_with_trace"):
-            trace = self.vlm.analyze_with_trace(
-                frames, detections, candidate=routing_primary
-            )
-            scene = trace.scene
         else:
-            scene = (
-                self.vlm.analyze(frames[0], detections)
-                if len(frames) == 1
-                else self.vlm.analyze_sequence(frames, detections)
-            )
-            trace = VLMAnalysisTrace(
-                scene=scene,
-                raw_output=scene.model_dump_json(),
-                raw_output_valid=not scene.degraded,
-                decision=(
-                    "uncertain"
-                    if scene.degraded
-                    else "no"
-                    if scene.alert_level is AlertLevel.LOW and not scene.risks
-                    else "yes"
-                ),
-            )
+            try:
+                if hasattr(self.vlm, "analyze_with_trace"):
+                    trace = self.vlm.analyze_with_trace(
+                        frames, detections, candidate=routing_primary
+                    )
+                    scene = trace.scene
+                else:
+                    scene = (
+                        self.vlm.analyze(frames[0], detections)
+                        if len(frames) == 1
+                        else self.vlm.analyze_sequence(frames, detections)
+                    )
+                    trace = VLMAnalysisTrace(
+                        scene=scene,
+                        raw_output=scene.model_dump_json(),
+                        raw_output_valid=not scene.degraded,
+                        decision=(
+                            "uncertain"
+                            if scene.degraded
+                            else "no"
+                            if scene.alert_level is AlertLevel.LOW and not scene.risks
+                            else "yes"
+                        ),
+                    )
+            except Exception as exc:
+                logger.exception(
+                    "VLM verification failed camera=%s window=%s",
+                    camera_id,
+                    window.window_index,
+                )
+                scene = SceneAnalysis(
+                    summary=f"VLM verification failed: {exc}",
+                    alert_level=gate.effective_level,
+                    degraded=True,
+                )
+                trace = VLMAnalysisTrace(
+                    scene=scene,
+                    raw_output_valid=False,
+                    decision="uncertain",
+                )
         qwen_ms = (
             (time.perf_counter() - started) * 1000
             if vlm_call.call_vlm
@@ -316,6 +376,47 @@ class VideoWindowProcessor:
             if primary is not None and decision is not None
             else None
         )
+        if self.alert_state_store is not None and vlm_call.call_vlm:
+            alert_context = self.alert_state_store.record_result(
+                gate=gate,
+                end_seconds=window.end_seconds,
+                scene=scene,
+                alert_event=alert,
+                trace_valid=trace.raw_output_valid,
+                processing_now=time.monotonic(),
+            )
+            if alert_context.verification_status is VerificationStatus.FAILED:
+                scene = scene.model_copy(
+                    update={
+                        "alert_level": alert_context.effective_level,
+                        "degraded": True,
+                    }
+                )
+                trace = trace.model_copy(update={"scene": scene})
+        else:
+            alert_context = WindowAlertContext(
+                stream_id=stream_id,
+                camera_id=camera_id,
+                state=admission.state,
+                detected_level=scene.alert_level if vlm_call.call_vlm else None,
+                effective_level=scene.alert_level,
+                verification_status=(
+                    VerificationStatus.VERIFIED
+                    if vlm_call.call_vlm and not scene.degraded
+                    else VerificationStatus.FAILED
+                    if vlm_call.call_vlm
+                    else VerificationStatus.NOT_REQUIRED
+                ),
+                source=(
+                    "window_verification" if vlm_call.call_vlm else "policy_skip"
+                ),
+                window_start_seconds=window.start_seconds,
+                window_end_seconds=window.end_seconds,
+                active_alert_id=admission.active_alert_id,
+                event_type=admission.event_type,
+                recheck=admission.recheck,
+                next_recheck_event_seconds=admission.next_recheck_event_seconds,
+            )
         result = ProcessedVideoWindow(
             scene=scene,
             detections=detections,
@@ -338,6 +439,7 @@ class VideoWindowProcessor:
             alert_event=alert,
             vlm_trace=trace,
             vlm_call=vlm_call,
+            alert_context=alert_context,
         )
         if self.artifact_writer is not None:
             self.artifact_writer.write(
@@ -350,3 +452,53 @@ class VideoWindowProcessor:
                 alert=alert,
             )
         return result
+
+    @staticmethod
+    def _build_suppressed_window(
+        window: RawVideoWindow,
+        camera_id: str,
+        admission: WindowAdmission,
+    ) -> ProcessedVideoWindow:
+        scene = SceneAnalysis(
+            summary=(
+                "Cảnh báo đang hoạt động; cửa sổ này không được Qwen xác minh lại."
+            ),
+            alert_level=admission.effective_level,
+            degraded=False,
+        )
+        reason = admission.reason or VLMCallReason.ACTIVE_ALERT_COOLDOWN
+        return ProcessedVideoWindow(
+            scene=scene,
+            qwen_input=QwenInputSummary(),
+            timing=StageTiming(),
+            observation=VideoWindowObservation(
+                camera_id=camera_id,
+                window_id=f"{camera_id}_{window.window_index:06d}",
+                start_ms=round(window.start_seconds * 1000),
+                end_ms=round(window.end_seconds * 1000),
+            ),
+            vlm_trace=VLMAnalysisTrace(scene=scene),
+            vlm_call=VLMCallDecision(
+                call_vlm=False,
+                reason=reason,
+            ),
+            alert_context=WindowAlertContext(
+                stream_id=admission.stream_id,
+                camera_id=admission.camera_id,
+                state=admission.state,
+                detected_level=None,
+                effective_level=admission.effective_level,
+                verification_status=VerificationStatus.SUPPRESSED,
+                source=(
+                    "inherited_active_alert"
+                    if admission.active_alert_id is not None
+                    else "camera_vlm_inflight"
+                ),
+                window_start_seconds=window.start_seconds,
+                window_end_seconds=window.end_seconds,
+                active_alert_id=admission.active_alert_id,
+                event_type=admission.event_type,
+                recheck=False,
+                next_recheck_event_seconds=admission.next_recheck_event_seconds,
+            ),
+        )

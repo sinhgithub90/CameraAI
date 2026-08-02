@@ -20,6 +20,7 @@ import cv2
 import numpy as np
 
 from .detectors.base import Detector
+from .alert_cooldown import CameraAlertStateStore
 from .detectors.motion import MotionDetector
 from .detectors.yolo import YOLODetector
 from .gate import VLMGate
@@ -70,6 +71,7 @@ class SecurityAIPipeline:
         window_seconds: float = 5.0,
         max_video_windows: int | None = 1,
         artifact_dir: str | None = None,
+        alert_state_store: CameraAlertStateStore | None = None,
     ) -> None:
         self.detector = detector or YOLODetector()
         self.vlm = vlm or OllamaQwenAnalyzer()
@@ -93,6 +95,7 @@ class SecurityAIPipeline:
             yolo_fps=yolo_fps,
             max_keyframes=max_keyframes,
             artifact_writer=artifact_writer,
+            alert_state_store=alert_state_store,
         )
 
     # -- public API -------------------------------------------------------
@@ -642,10 +645,17 @@ class SecurityAIPipeline:
         self._stream_window_producer.stream(event, on_window)
 
     def process_video_window(
-        self, window: RawVideoWindow, camera_id: str = "unknown"
+        self,
+        window: RawVideoWindow,
+        camera_id: str = "unknown",
+        stream_id: str = "default",
     ) -> ProcessedVideoWindow:
         """Compatibility facade for the queue-independent window processor."""
-        return self._video_window_processor.process(window, camera_id=camera_id)
+        return self._video_window_processor.process(
+            window,
+            camera_id=camera_id,
+            stream_id=stream_id,
+        )
 
     def analyze_vlm(self, task: VLMTask) -> SceneAnalysis:
         """Run VLM analysis on pre-detected frames. Called by VLMWorker (via asyncio.to_thread)."""
