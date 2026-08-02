@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import heapq
 import logging
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 import numpy as np
 
@@ -66,24 +67,30 @@ class VLMTask:
 class VLMQueue:
     """Priority queue for VLM analysis tasks.
 
-    Uses asyncio.PriorityQueue under the hood. Lower priority number = higher
-    urgency. Dynamic priority aging prevents starvation of low-priority tasks.
+    One condition protects the heap across enqueue, dequeue, and pruning.
+    Lower priority number means higher urgency; aging prevents starvation.
     """
 
     def __init__(self) -> None:
-        self._queue: asyncio.PriorityQueue[VLMTask] = asyncio.PriorityQueue()
+        self._heap: list[VLMTask] = []
+        self._condition = asyncio.Condition()
 
     async def enqueue(self, task: VLMTask) -> None:
-        await self._queue.put(task)
+        async with self._condition:
+            heapq.heappush(self._heap, task)
+            self._condition.notify()
         logger.debug(
             "[vlm-queue] enqueued alert=%s priority=%s depth=%s",
             task.alert_id,
             task.priority,
-            self._queue.qsize(),
+            self.depth,
         )
 
     async def dequeue(self) -> VLMTask:
-        task = await self._queue.get()
+        async with self._condition:
+            while not self._heap:
+                await self._condition.wait()
+            task = heapq.heappop(self._heap)
         now = time.monotonic()
         eff = task.effective_priority(now=now)
         if eff < task.priority:
@@ -109,19 +116,30 @@ class VLMQueue:
                 eff,
                 now - task.enqueued_at,
             )
-            await self._queue.put(aged)
+            await self.enqueue(aged)
             return await self.dequeue()
         logger.debug(
             "[vlm-queue] dequeued alert=%s priority=%s depth=%s",
             task.alert_id,
             task.priority,
-            self._queue.qsize(),
+            self.depth,
         )
         return task
 
     @property
     def depth(self) -> int:
-        return self._queue.qsize()
+        return len(self._heap)
+
+    async def remove_where(
+        self, predicate: Callable[[VLMTask], bool]
+    ) -> list[VLMTask]:
+        """Remove matching pending tasks while holding the queue lock."""
+        async with self._condition:
+            removed = [task for task in self._heap if predicate(task)]
+            if removed:
+                self._heap = [task for task in self._heap if not predicate(task)]
+                heapq.heapify(self._heap)
+            return removed
 
 
 class VLMWorker:

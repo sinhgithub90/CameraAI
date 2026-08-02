@@ -142,6 +142,39 @@ class TestVLMQueue:
         assert result.task_id == "delayed"
         assert elapsed >= 0.04  # waited for enqueue
 
+    @pytest.mark.asyncio
+    async def test_remove_where_prunes_only_matching_camera_backlog(self, queue):
+        """Catches pruning another camera or leaving removed work in queue depth."""
+        stale = _make_task("a-stale", priority=2, camera_id="cam-a")
+        stale.analysis_id = "analysis-a"
+        stale.raw_window = RawVideoWindow(
+            window_index=1, start_seconds=5.0, observations=[]
+        )
+        after_deadline = _make_task("a-later", priority=3, camera_id="cam-a")
+        after_deadline.analysis_id = "analysis-a"
+        after_deadline.raw_window = RawVideoWindow(
+            window_index=13, start_seconds=65.0, observations=[]
+        )
+        other_camera = _make_task("b-stale", priority=1, camera_id="cam-b")
+        other_camera.analysis_id = "analysis-b"
+        other_camera.raw_window = RawVideoWindow(
+            window_index=1, start_seconds=5.0, observations=[]
+        )
+        for task in (stale, after_deadline, other_camera):
+            await queue.enqueue(task)
+
+        removed = await queue.remove_where(
+            lambda task: task.analysis_id == "analysis-a"
+            and task.camera_id == "cam-a"
+            and task.raw_window is not None
+            and task.raw_window.start_seconds < 65.0
+        )
+
+        assert [task.task_id for task in removed] == ["a-stale"]
+        assert queue.depth == 2
+        assert (await queue.dequeue()).task_id == "b-stale"
+        assert (await queue.dequeue()).task_id == "a-later"
+
 
 class TestVLMWorker:
     @pytest.mark.asyncio
