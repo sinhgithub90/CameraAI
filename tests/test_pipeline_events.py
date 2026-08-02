@@ -220,6 +220,44 @@ def test_due_static_window_forces_one_qwen_recheck_and_resolves_red():
     assert state.get("analysis-a", "cam-a").phase.value == "normal"
 
 
+def test_reserved_prequeue_recheck_is_not_suppressed_by_processor():
+    """Catches a reserved recheck suppressing itself when the worker starts it."""
+    state = InMemoryCameraAlertStateStore.seeded_red(
+        stream_id="analysis-a",
+        camera_id="cam-a",
+        active_alert_id="episode-1",
+        next_recheck_event_seconds=65.0,
+    )
+    window = static_window().model_copy(
+        update={"window_index": 13, "start_seconds": 65.0}
+    )
+    admission = state.admit_before_queue(
+        stream_id="analysis-a",
+        camera_id="cam-a",
+        start_seconds=window.start_seconds,
+        end_seconds=window.end_seconds,
+        processing_now=165.0,
+    )
+    vlm = ResultVLM(SceneAnalysis(alert_level=AlertLevel.LOW))
+    processor = VideoWindowProcessor(
+        detector=EmptyDetector(),
+        vlm=vlm,
+        yolo_fps=2,
+        max_keyframes=2,
+        alert_state_store=state,
+    )
+
+    result = processor.process(
+        window,
+        camera_id="cam-a",
+        stream_id="analysis-a",
+        admission=admission,
+    )
+
+    assert vlm.calls == 1
+    assert result.alert_context.episode_resolved is True
+
+
 def test_failed_recheck_returns_degraded_window_and_keeps_red():
     state = InMemoryCameraAlertStateStore.seeded_red(
         stream_id="analysis-a",

@@ -204,3 +204,65 @@ def test_second_window_is_suppressed_while_same_camera_vlm_is_inflight():
     assert second.process_window is False
     assert second.disposition is WindowDisposition.SUPPRESS
     assert second.reason is VLMCallReason.CAMERA_VLM_INFLIGHT
+
+
+def test_prequeue_admission_does_not_drop_normal_window_while_vlm_is_inflight():
+    """Catches producer admission accidentally treating ordinary in-flight work as red."""
+    store = InMemoryCameraAlertStateStore()
+    first = store.inspect_window(
+        stream_id="analysis-a",
+        camera_id="cam-a",
+        start_seconds=0.0,
+        end_seconds=5.0,
+        processing_now=100.0,
+    )
+    store.claim_vlm(first, call_decision())
+
+    admission = store.admit_before_queue(
+        stream_id="analysis-a",
+        camera_id="cam-a",
+        start_seconds=5.0,
+        end_seconds=10.0,
+        processing_now=101.0,
+    )
+
+    assert admission.disposition is WindowDisposition.PROCESS_NORMAL
+    assert admission.process_window is True
+
+
+def test_prequeue_admission_reserves_exactly_one_due_recheck():
+    """Catches multiple five-second windows entering the queue for one recheck."""
+    store = InMemoryCameraAlertStateStore.seeded_red(
+        stream_id="analysis-a",
+        camera_id="cam-a",
+        active_alert_id="episode-1",
+        next_recheck_event_seconds=65.0,
+    )
+
+    blocked = store.admit_before_queue(
+        stream_id="analysis-a",
+        camera_id="cam-a",
+        start_seconds=60.0,
+        end_seconds=65.0,
+        processing_now=160.0,
+    )
+    first_due = store.admit_before_queue(
+        stream_id="analysis-a",
+        camera_id="cam-a",
+        start_seconds=65.0,
+        end_seconds=70.0,
+        processing_now=165.0,
+    )
+    second_due = store.admit_before_queue(
+        stream_id="analysis-a",
+        camera_id="cam-a",
+        start_seconds=70.0,
+        end_seconds=75.0,
+        processing_now=170.0,
+    )
+
+    assert blocked.process_window is False
+    assert first_due.disposition is WindowDisposition.PROCESS_RECHECK
+    assert first_due.reservation_version is not None
+    assert second_due.process_window is False
+    assert store.get("analysis-a", "cam-a").recheck_reserved is True

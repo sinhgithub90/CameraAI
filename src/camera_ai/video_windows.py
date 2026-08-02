@@ -200,8 +200,9 @@ class VideoWindowProcessor:
         window: RawVideoWindow,
         camera_id: str = "unknown",
         stream_id: str = "default",
+        admission: WindowAdmission | None = None,
     ) -> ProcessedVideoWindow:
-        admission = (
+        admission = admission or (
             self.alert_state_store.inspect_window(
                 stream_id=stream_id,
                 camera_id=camera_id,

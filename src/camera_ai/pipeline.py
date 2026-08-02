@@ -20,7 +20,7 @@ import cv2
 import numpy as np
 
 from .detectors.base import Detector
-from .alert_cooldown import CameraAlertStateStore
+from .alert_cooldown import CameraAlertStateStore, WindowAdmission
 from .detectors.motion import MotionDetector
 from .detectors.yolo import YOLODetector
 from .gate import VLMGate
@@ -649,12 +649,14 @@ class SecurityAIPipeline:
         window: RawVideoWindow,
         camera_id: str = "unknown",
         stream_id: str = "default",
+        admission: WindowAdmission | None = None,
     ) -> ProcessedVideoWindow:
         """Compatibility facade for the queue-independent window processor."""
         return self._video_window_processor.process(
             window,
             camera_id=camera_id,
             stream_id=stream_id,
+            admission=admission,
         )
 
     def analyze_vlm(self, task: VLMTask) -> SceneAnalysis:

@@ -53,6 +53,7 @@ class CameraAlertRuntime(BaseModel):
     retry_due_processing_at: float | None = None
     verification_status: VerificationStatus = VerificationStatus.NOT_REQUIRED
     vlm_inflight: bool = False
+    recheck_reserved: bool = False
     retry_count: int = 0
     state_version: int = 0
 
@@ -71,6 +72,7 @@ class WindowAdmission(BaseModel):
     reason: VLMCallReason | None = None
     recheck: bool = False
     next_recheck_event_seconds: float | None = None
+    reservation_version: int | None = None
 
     @classmethod
     def normal(
@@ -157,6 +159,16 @@ class WindowAlertContext(BaseModel):
 
 
 class CameraAlertStateStore(Protocol):
+    def admit_before_queue(
+        self,
+        *,
+        stream_id: str,
+        camera_id: str,
+        start_seconds: float,
+        end_seconds: float,
+        processing_now: float,
+    ) -> WindowAdmission: ...
+
     def inspect_window(
         self,
         *,
@@ -277,6 +289,48 @@ class InMemoryCameraAlertStateStore:
                 start_seconds,
                 end_seconds,
                 VLMCallReason.ACTIVE_ALERT_COOLDOWN,
+            )
+
+    def admit_before_queue(
+        self,
+        *,
+        stream_id: str,
+        camera_id: str,
+        start_seconds: float,
+        end_seconds: float,
+        processing_now: float,
+    ) -> WindowAdmission:
+        """Atomically admit producer work without dropping normal in-flight windows."""
+        with self._lock:
+            runtime = self._runtime(stream_id, camera_id)
+            if runtime.phase is AlertRuntimePhase.NORMAL:
+                return WindowAdmission.normal(
+                    stream_id=stream_id,
+                    camera_id=camera_id,
+                    start_seconds=start_seconds,
+                    end_seconds=end_seconds,
+                )
+
+            if runtime.phase is AlertRuntimePhase.ALERT_ACTIVE_UNVERIFIED:
+                due = runtime.retry_due_processing_at
+                recheck_due = due is None or processing_now >= due
+            else:
+                deadline = runtime.next_recheck_event_seconds
+                recheck_due = deadline is not None and start_seconds >= deadline
+
+            if not recheck_due or runtime.recheck_reserved or runtime.vlm_inflight:
+                return self._suppressed_admission(
+                    runtime,
+                    start_seconds,
+                    end_seconds,
+                    VLMCallReason.ACTIVE_ALERT_COOLDOWN,
+                )
+
+            runtime.recheck_reserved = True
+            runtime.state_version += 1
+            admission = self._recheck_admission(runtime, start_seconds, end_seconds)
+            return admission.model_copy(
+                update={"reservation_version": runtime.state_version}
             )
 
     @staticmethod
@@ -411,6 +465,7 @@ class InMemoryCameraAlertStateStore:
         with self._lock:
             runtime = self._runtime(gate.stream_id, gate.camera_id)
             runtime.vlm_inflight = False
+            runtime.recheck_reserved = False
             detected = self._verified_level(scene, alert_event)
             had_episode = runtime.active_alert_id is not None
             created = extended = resolved = False
@@ -470,6 +525,7 @@ class InMemoryCameraAlertStateStore:
         with self._lock:
             runtime = self._runtime(gate.stream_id, gate.camera_id)
             runtime.vlm_inflight = False
+            runtime.recheck_reserved = False
             if runtime.active_alert_id is not None:
                 runtime.phase = AlertRuntimePhase.ALERT_ACTIVE_UNVERIFIED
                 runtime.verification_status = VerificationStatus.FAILED
