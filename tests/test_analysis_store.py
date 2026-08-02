@@ -1,5 +1,10 @@
 import pytest
 
+from camera_ai.alert_cooldown import (
+    AlertRuntimePhase,
+    VerificationStatus,
+    WindowAlertContext,
+)
 from camera_ai.analysis_store import InMemoryAnalysisStore, VideoAnalysis
 from camera_ai.schemas import (
     AlertLevel,
@@ -119,3 +124,54 @@ async def test_processed_static_window_is_persisted_as_skipped_and_completes():
     }
     assert saved.timing.qwen_ms == 0
     assert analysis.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_suppressed_window_persists_inherited_alert_context():
+    store = InMemoryAnalysisStore()
+    await store.create(VideoAnalysis(id="analysis-a", camera_id="cam-a"))
+    await store.append_window("analysis-a", pending_window("window-2"))
+    processed = ProcessedVideoWindow(
+        scene=SceneAnalysis(summary="inherited", alert_level=AlertLevel.HIGH),
+        qwen_input=QwenInputSummary(),
+        timing=StageTiming(),
+        observation=VideoWindowObservation(
+            camera_id="cam-a",
+            window_id="cam-a_000001",
+            start_ms=5000,
+            end_ms=10000,
+        ),
+        vlm_call=VLMCallDecision(
+            call_vlm=False,
+            reason=VLMCallReason.ACTIVE_ALERT_COOLDOWN,
+        ),
+        alert_context=WindowAlertContext(
+            stream_id="analysis-a",
+            camera_id="cam-a",
+            state=AlertRuntimePhase.ALERT_ACTIVE,
+            effective_level=AlertLevel.HIGH,
+            verification_status=VerificationStatus.SUPPRESSED,
+            source="inherited_active_alert",
+            window_start_seconds=5.0,
+            window_end_seconds=10.0,
+            active_alert_id="episode-1",
+            event_type="traffic_accident",
+            next_recheck_event_seconds=65.0,
+        ),
+    )
+
+    await store.complete_processed_window(
+        "analysis-a", "window-2", processed, qwen_ms=0.0
+    )
+
+    saved = (await store.get("analysis-a")).windows[0]
+    assert saved.vlm.status == "suppressed"
+    assert saved.vlm.skipped is True
+    assert saved.security.alert_level is AlertLevel.HIGH
+    assert saved.timing.total_ms == 0
+    assert saved.timing.motion_ms == 0
+    assert saved.timing.detector_ms == 0
+    assert saved.timing.keyframe_ms == 0
+    assert saved.timing.qwen_ms == 0
+    assert saved.event_metadata["alert_context"]["verification_status"] == "suppressed"
+    assert saved.event_metadata["alert_context"]["active_alert_id"] == "episode-1"

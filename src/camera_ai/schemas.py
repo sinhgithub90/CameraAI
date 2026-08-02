@@ -167,7 +167,9 @@ class VLMResult(BaseModel):
     )
     status: str = Field(
         default="completed",
-        description="'pending' | 'completed' | 'skipped' — lifecycle state.",
+        description=(
+            "'pending' | 'completed' | 'skipped' | 'suppressed' — lifecycle state."
+        ),
     )
 
 

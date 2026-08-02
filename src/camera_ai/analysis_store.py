@@ -5,6 +5,7 @@ from abc import ABC, abstractmethod
 
 from pydantic import BaseModel, Field
 
+from .alert_cooldown import VerificationStatus
 from .schemas import SceneAnalysis, StageTiming, VideoWindowResult, VLMResult, SecurityDecision
 from .video_windows import ProcessedVideoWindow
 
@@ -117,7 +118,14 @@ class InMemoryAnalysisStore(AnalysisStore):
     async def complete_processed_window(self, analysis_id: str, alert_id: str, processed: ProcessedVideoWindow, qwen_ms: float) -> None:
         analysis = self._analyses[analysis_id]
         vlm_skipped = not processed.vlm_call.call_vlm
-        vlm_status = "skipped" if vlm_skipped else "completed"
+        vlm_status = (
+            "suppressed"
+            if processed.alert_context.verification_status
+            is VerificationStatus.SUPPRESSED
+            else "skipped"
+            if vlm_skipped
+            else "completed"
+        )
         for window in analysis.windows:
             if window.alert_id == alert_id:
                 window.detections = processed.detections
@@ -131,6 +139,7 @@ class InMemoryAnalysisStore(AnalysisStore):
                     "decision": processed.decision.model_dump(mode="json") if processed.decision else None,
                     "alert": processed.alert_event.model_dump(mode="json") if processed.alert_event else None,
                     "vlm_call": processed.vlm_call.model_dump(mode="json"),
+                    "alert_context": processed.alert_context.model_dump(mode="json"),
                     "vlm_trace": {
                         "prompt": processed.vlm_trace.prompt,
                         "raw_output": processed.vlm_trace.raw_output,

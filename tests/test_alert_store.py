@@ -4,6 +4,11 @@ import asyncio
 
 import pytest
 
+from camera_ai.alert_cooldown import (
+    AlertRuntimePhase,
+    VerificationStatus,
+    WindowAlertContext,
+)
 from camera_ai.alert_store import Alert, AlertStore, InMemoryAlertStore
 from camera_ai.events import Event, InProcessEventBus
 from camera_ai.schemas import AlertLevel, SceneAnalysis, SecurityDecision, StageTiming, VLMResult
@@ -132,6 +137,85 @@ class TestInMemoryAlertStore:
         assert len(received) == 1
         assert received[0].type == "alert.created"
         assert received[0].payload["alert_id"] == "evt-1"
+
+    @pytest.mark.asyncio
+    async def test_repeated_red_updates_one_episode_instead_of_creating_another(
+        self, store
+    ):
+        created = WindowAlertContext(
+            stream_id="analysis-a",
+            camera_id="cam-a",
+            state=AlertRuntimePhase.ALERT_ACTIVE,
+            detected_level=AlertLevel.HIGH,
+            effective_level=AlertLevel.HIGH,
+            verification_status=VerificationStatus.VERIFIED,
+            source="window_verification",
+            window_start_seconds=0.0,
+            window_end_seconds=5.0,
+            active_alert_id="episode-1",
+            event_type="traffic_accident",
+            episode_created=True,
+            next_recheck_event_seconds=65.0,
+        )
+        extended = created.model_copy(
+            update={
+                "window_start_seconds": 65.0,
+                "window_end_seconds": 70.0,
+                "episode_created": False,
+                "episode_extended": True,
+                "recheck": True,
+                "next_recheck_event_seconds": 130.0,
+            }
+        )
+
+        await store.apply_episode_context(created)
+        await store.apply_episode_context(extended)
+
+        assert len(store._episodes) == 1
+        episode = await store.get_episode("episode-1")
+        assert episode is not None
+        assert episode.extension_count == 1
+        assert episode.status == "active"
+        assert episode.next_recheck_event_seconds == 130.0
+
+    @pytest.mark.asyncio
+    async def test_green_recheck_resolves_existing_episode(self, store):
+        created = WindowAlertContext(
+            stream_id="analysis-a",
+            camera_id="cam-a",
+            state=AlertRuntimePhase.ALERT_ACTIVE,
+            detected_level=AlertLevel.HIGH,
+            effective_level=AlertLevel.HIGH,
+            verification_status=VerificationStatus.VERIFIED,
+            source="window_verification",
+            window_start_seconds=0.0,
+            window_end_seconds=5.0,
+            active_alert_id="episode-1",
+            event_type="traffic_accident",
+            episode_created=True,
+            next_recheck_event_seconds=65.0,
+        )
+        resolved = created.model_copy(
+            update={
+                "state": AlertRuntimePhase.NORMAL,
+                "detected_level": AlertLevel.LOW,
+                "effective_level": AlertLevel.LOW,
+                "window_start_seconds": 65.0,
+                "window_end_seconds": 70.0,
+                "episode_created": False,
+                "episode_resolved": True,
+                "recheck": True,
+                "next_recheck_event_seconds": None,
+            }
+        )
+
+        await store.apply_episode_context(created)
+        await store.apply_episode_context(resolved)
+
+        episode = await store.get_episode("episode-1")
+        assert episode is not None
+        assert episode.status == "resolved"
+        assert episode.resolved_event_seconds == 70.0
 
 
 class TestAlertStoreInterface:

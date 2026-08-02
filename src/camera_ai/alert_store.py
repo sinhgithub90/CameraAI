@@ -5,8 +5,24 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from datetime import datetime
 
+from pydantic import BaseModel
+
+from .alert_cooldown import VerificationStatus, WindowAlertContext
 from .events import Event, EventBus
 from .schemas import AlertLevel, SceneAnalysis, SecurityDecision, StageTiming, VLMResult
+
+
+class AlertEpisode(BaseModel):
+    id: str
+    camera_id: str
+    event_type: str | None = None
+    status: str = "active"
+    current_level: AlertLevel = AlertLevel.HIGH
+    started_event_seconds: float
+    last_verified_event_seconds: float
+    next_recheck_event_seconds: float | None = None
+    extension_count: int = 0
+    resolved_event_seconds: float | None = None
 
 
 class Alert:
@@ -86,12 +102,23 @@ class AlertStore(ABC):
         """List alerts with vlm.status == 'pending' for a camera."""
         ...
 
+    @abstractmethod
+    async def apply_episode_context(self, context: WindowAlertContext) -> None:
+        """Create or update one business alert episode idempotently."""
+        ...
+
+    @abstractmethod
+    async def get_episode(self, alert_id: str) -> AlertEpisode | None:
+        """Retrieve a business alert episode by ID."""
+        ...
+
 
 class InMemoryAlertStore(AlertStore):
     """Dict-backed store. Alerts lost on restart — acceptable for Phase 1."""
 
     def __init__(self, event_bus: EventBus) -> None:
         self._alerts: dict[str, Alert] = {}
+        self._episodes: dict[str, AlertEpisode] = {}
         self.event_bus = event_bus
 
     async def create(self, alert: Alert) -> None:
@@ -137,3 +164,58 @@ class InMemoryAlertStore(AlertStore):
             for a in self._alerts.values()
             if a.camera_id == camera_id and a.vlm.status == "pending"
         ]
+
+    async def apply_episode_context(self, context: WindowAlertContext) -> None:
+        alert_id = context.active_alert_id
+        if alert_id is None:
+            return
+        episode = self._episodes.get(alert_id)
+        event_type = context.event_type
+        event_name: str | None = None
+        if context.episode_created and episode is None:
+            episode = AlertEpisode(
+                id=alert_id,
+                camera_id=context.camera_id,
+                event_type=event_type,
+                status="active",
+                current_level=context.effective_level,
+                started_event_seconds=context.window_start_seconds,
+                last_verified_event_seconds=context.window_end_seconds,
+                next_recheck_event_seconds=context.next_recheck_event_seconds,
+            )
+            self._episodes[alert_id] = episode
+            event_name = "alert.episode_created"
+        elif episode is None:
+            return
+
+        if context.episode_extended:
+            episode.extension_count += 1
+            episode.status = "active"
+            event_name = "alert.episode_extended"
+        if context.episode_resolved:
+            episode.status = "resolved"
+            episode.resolved_event_seconds = context.window_end_seconds
+            event_name = "alert.episode_resolved"
+        if context.verification_status is VerificationStatus.VERIFIED:
+            episode.current_level = context.effective_level
+            episode.last_verified_event_seconds = context.window_end_seconds
+            episode.next_recheck_event_seconds = context.next_recheck_event_seconds
+        if event_type is not None:
+            episode.event_type = event_type
+
+        if event_name is not None:
+            await self.event_bus.publish(
+                Event(
+                    type=event_name,
+                    source="alert_store",
+                    camera_id=context.camera_id,
+                    payload={
+                        "alert_id": alert_id,
+                        "camera_id": context.camera_id,
+                    },
+                )
+            )
+
+    async def get_episode(self, alert_id: str) -> AlertEpisode | None:
+        episode = self._episodes.get(alert_id)
+        return episode.model_copy(deep=True) if episode is not None else None
