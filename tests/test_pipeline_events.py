@@ -307,6 +307,27 @@ def test_processor_routes_before_vlm_and_preserves_exact_trace(tmp_path):
     assert (artifact_dir / "vlm_raw_output.txt").read_text(encoding="utf-8") == result.vlm_trace.raw_output
 
 
+def test_verified_event_severity_becomes_effective_window_alert_level():
+    state = InMemoryCameraAlertStateStore()
+    processor = VideoWindowProcessor(
+        detector=Detector(),
+        vlm=TraceVLM(),
+        yolo_fps=2,
+        max_keyframes=2,
+        alert_state_store=state,
+    )
+
+    result = processor.process(
+        raw_window(), camera_id="cam_event", stream_id="analysis-event"
+    )
+
+    assert result.vlm_trace.scene.alert_level is AlertLevel.MEDIUM
+    assert result.alert_event.event_type == "traffic_accident"
+    assert result.alert_event.severity is Severity.HIGH
+    assert result.alert_context.effective_level is AlertLevel.HIGH
+    assert result.scene.alert_level is AlertLevel.HIGH
+
+
 def test_opt_in_fire_detector_requires_temporal_confirmation_for_candidate():
     frame = np.zeros((32, 32, 3), dtype=np.uint8)
     window = RawVideoWindow(

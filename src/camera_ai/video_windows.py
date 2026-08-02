@@ -393,6 +393,10 @@ class VideoWindowProcessor:
                     }
                 )
                 trace = trace.model_copy(update={"scene": scene})
+            elif scene.alert_level is not alert_context.effective_level:
+                scene = scene.model_copy(
+                    update={"alert_level": alert_context.effective_level}
+                )
         else:
             alert_context = WindowAlertContext(
                 stream_id=stream_id,
