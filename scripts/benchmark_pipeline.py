@@ -118,6 +118,11 @@ def build_video_report(
     windows = []
     processing_times = []
     called_windows = 0
+    cooldown_suppressed = 0
+    episodes_created = 0
+    red_rechecks = 0
+    cooldown_extensions = 0
+    failed_rechecks = 0
     counts = {"low": 0, "medium": 0, "high": 0}
     for window in payload.get("windows", []):
         level = resolve_window_alert_level(window)
@@ -131,6 +136,15 @@ def build_video_report(
             }
         call_vlm = bool(vlm_call.get("call_vlm"))
         called_windows += call_vlm
+        reason = vlm_call.get("reason", "legacy_payload")
+        alert_context = event_metadata.get("alert_context") or {}
+        verification_status = alert_context.get("verification_status")
+        recheck = bool(alert_context.get("recheck"))
+        cooldown_suppressed += reason == "active_alert_cooldown"
+        episodes_created += bool(alert_context.get("episode_created"))
+        red_rechecks += recheck
+        cooldown_extensions += bool(alert_context.get("episode_extended"))
+        failed_rechecks += recheck and verification_status == "failed"
         timing = window.get("timing", {})
         decision = event_metadata.get("decision") or {}
         qwen_input = window.get("qwen_input", {})
@@ -145,6 +159,11 @@ def build_video_report(
                 "candidate_type": primary_candidate_type(event_metadata),
                 "qwen": {
                     "called": call_vlm,
+                    "verified": verification_status == "verified",
+                    "reason": reason,
+                    "verification_status": verification_status,
+                    "source": alert_context.get("source"),
+                    "active_alert_id": alert_context.get("active_alert_id"),
                     "decision": decision.get("decision"),
                     "event_type": decision.get("event_type"),
                     "summary": window.get("vlm", {}).get("summary", ""),
@@ -180,6 +199,14 @@ def build_video_report(
             "vlm_called_windows": called_windows,
             "vlm_skipped_windows": len(windows) - called_windows,
             "vlm_call_rate": called_windows / len(windows) if windows else 0.0,
+            "vlm_suppressed_by_cooldown": cooldown_suppressed,
+            "cooldown_suppression_rate": (
+                cooldown_suppressed / len(windows) if windows else 0.0
+            ),
+            "red_episodes_created": episodes_created,
+            "red_rechecks": red_rechecks,
+            "red_cooldown_extensions": cooldown_extensions,
+            "failed_rechecks": failed_rechecks,
             "processing_p95_ms": nearest_rank_percentile(processing_times, 0.95),
             "windows_over_budget": sum(
                 value > PROCESSING_BUDGET_MS for value in processing_times

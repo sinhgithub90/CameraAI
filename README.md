@@ -26,6 +26,17 @@ window contains motion but YOLO finds no supported object, it can still route
 to Qwen as `unexplained_motion`; this prevents YOLO from filtering out smoke,
 obstruction, spills, or fallen objects that it does not classify.
 
+After Qwen verifies a red security event, that camera/analysis enters a
+60-second cooldown measured in video event time. The producer still emits each
+five-second window to preserve the timeline, but suppressed windows return
+before Motion and therefore skip Motion, YOLO, routing, keyframe selection, and
+Qwen. They inherit the active red level with `verification_status=suppressed`;
+they are not new Qwen confirmations. The first window starting at or after the
+deadline runs the full pipeline and forces a Qwen recheck. A repeated red
+extends the same alert episode by another 60 seconds, orange rechecks after 15
+seconds, and green resolves the episode. The async API rejects a second active
+analysis for the same `camera_id` with HTTP 409.
+
 The router describes scene composition rather than claiming an event. Current
 candidate types include `person_vehicle_scene`, `multi_person_scene`,
 `person_scene`, `vehicle_scene`, `unexplained_motion`, and
@@ -137,7 +148,8 @@ python -m scripts.benchmark_pipeline `
 
 Use `--input-dir` instead of `--input-file` to process a directory
 sequentially. Each attempted video creates one `<video-stem>.json`; failed
-videos also create a report with `status` and `error`.
+videos also create a report with `status` and `error`. The CLI uses each video
+stem as its `camera_id`.
 
 Every completed report keeps all green, orange, and red windows. A compact
 window looks like:
@@ -151,6 +163,11 @@ window looks like:
   "candidate_type": "vehicle_scene",
   "qwen": {
     "called": true,
+    "verified": true,
+    "reason": "candidate_requires_verification",
+    "verification_status": "verified",
+    "source": "window_verification",
+    "active_alert_id": "episode-1",
     "decision": "yes",
     "event_type": "traffic_accident",
     "summary": "Xe buýt va chạm với xe ô tô.",
@@ -176,8 +193,11 @@ the per-video benchmark JSON.
 
 The processing target is `total_ms <= 5000` for every window. The top-level
 `performance_summary` reports Qwen call rate, p95 processing time, and the
-number of windows over budget. `wall_clock_ms` may be higher than `total_ms`
-when the task waits in the worker queue.
+number of windows over budget. It also reports cooldown suppressions and rate,
+created red episodes, rechecks, cooldown extensions, and failed rechecks.
+`wall_clock_ms` may be higher than `total_ms` when the task waits in the worker
+queue. A video must continue for at least 60 seconds after its first verified
+red window to contain an eligible recheck window.
 
 ## Tests
 

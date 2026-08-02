@@ -101,7 +101,17 @@ python -m scripts.benchmark_pipeline `
 ```
 
 Use `--poll-interval` and `--timeout` to change polling behavior. Supported
-directory extensions are `.mp4`, `.avi`, `.mov`, and `.mkv`.
+directory extensions are `.mp4`, `.avi`, `.mov`, and `.mkv`. In directory mode,
+the CLI assigns each video stem as `camera_id`.
+
+After a verified red event, cooldown is measured in video event time rather
+than processing or queue time. The next 60 seconds of windows are still
+recorded but skip Motion, Detection, routing, keyframe selection, and Qwen.
+Their red level is inherited from the active episode and is explicitly
+unverified, not a new Qwen confirmation. The first window whose start time is
+at or beyond the deadline runs the full pipeline as a recheck. Use a source
+that continues at least 60 seconds beyond the first verified red window when a
+real run must demonstrate this recheck.
 
 ### Compact window contract and five-second budget
 
@@ -117,6 +127,11 @@ Each window contains only its range, resolved alert level, primary
   "candidate_type": "vehicle_scene",
   "qwen": {
     "called": true,
+    "verified": true,
+    "reason": "candidate_requires_verification",
+    "verification_status": "verified",
+    "source": "window_verification",
+    "active_alert_id": "episode-1",
     "decision": "yes",
     "event_type": "traffic_accident",
     "summary": "Xe buýt va chạm với xe ô tô.",
@@ -137,7 +152,10 @@ Each window contains only its range, resolved alert level, primary
 
 `performance_summary` contains `vlm_called_windows`,
 `vlm_skipped_windows`, `vlm_call_rate`, `processing_p95_ms`,
-`windows_over_budget`, and the fixed `processing_budget_ms` value of 5000.
+`windows_over_budget`, and the fixed `processing_budget_ms` value of 5000. It
+also contains `vlm_suppressed_by_cooldown`, `cooldown_suppression_rate`,
+`red_episodes_created`, `red_rechecks`, `red_cooldown_extensions`, and
+`failed_rechecks`.
 
 Run one arbitrary video quickly with:
 

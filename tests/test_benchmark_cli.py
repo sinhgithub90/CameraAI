@@ -153,6 +153,11 @@ def test_video_report_uses_confirmed_alert_severity_and_compact_qwen_output(tmp_
     assert window["candidate_type"] == "vehicle_scene"
     assert window["qwen"] == {
         "called": True,
+        "verified": False,
+        "reason": "legacy_payload",
+        "verification_status": None,
+        "source": None,
+        "active_alert_id": None,
         "decision": "yes",
         "event_type": "traffic_accident",
         "summary": "window 0",
@@ -180,6 +185,12 @@ def test_video_report_summarizes_vlm_calls_and_processing_budget(tmp_path):
         "vlm_called_windows": 1,
         "vlm_skipped_windows": 1,
         "vlm_call_rate": 0.5,
+        "vlm_suppressed_by_cooldown": 0,
+        "cooldown_suppression_rate": 0.0,
+        "red_episodes_created": 0,
+        "red_rechecks": 0,
+        "red_cooldown_extensions": 0,
+        "failed_rechecks": 0,
         "processing_p95_ms": 5200.0,
         "windows_over_budget": 1,
         "processing_budget_ms": 5000.0,
@@ -188,11 +199,70 @@ def test_video_report_summarizes_vlm_calls_and_processing_budget(tmp_path):
     assert report["windows"][1]["timing"]["within_budget"] is False
     assert report["windows"][0]["qwen"] == {
         "called": False,
+        "verified": False,
+        "reason": "static_window",
+        "verification_status": None,
+        "source": None,
+        "active_alert_id": None,
         "decision": None,
         "event_type": None,
         "summary": "window 0",
         "timestamps_seconds": [0.8, 4.8],
     }
+
+
+def test_video_report_counts_cooldown_suppression_and_rechecks(tmp_path):
+    payload = analysis_payload("high", "high", "high")
+    payload["windows"][0]["event_metadata"] = {
+        "vlm_call": {
+            "call_vlm": True,
+            "reason": "candidate_requires_verification",
+        },
+        "alert_context": {
+            "verification_status": "verified",
+            "episode_created": True,
+            "episode_extended": False,
+            "recheck": False,
+            "source": "window_verification",
+            "active_alert_id": "episode-1",
+        },
+    }
+    payload["windows"][1]["event_metadata"] = {
+        "vlm_call": {"call_vlm": False, "reason": "active_alert_cooldown"},
+        "alert_context": {
+            "verification_status": "suppressed",
+            "episode_created": False,
+            "episode_extended": False,
+            "recheck": False,
+            "source": "inherited_active_alert",
+            "active_alert_id": "episode-1",
+        },
+    }
+    payload["windows"][2]["event_metadata"] = {
+        "vlm_call": {"call_vlm": True, "reason": "active_alert_recheck"},
+        "alert_context": {
+            "verification_status": "verified",
+            "episode_created": False,
+            "episode_extended": True,
+            "recheck": True,
+            "source": "window_verification",
+            "active_alert_id": "episode-1",
+        },
+    }
+
+    report = build_video_report(tmp_path / "event.mp4", "analysis-a", payload)
+
+    summary = report["performance_summary"]
+    assert summary["vlm_suppressed_by_cooldown"] == 1
+    assert summary["cooldown_suppression_rate"] == 1 / 3
+    assert summary["red_episodes_created"] == 1
+    assert summary["red_rechecks"] == 1
+    assert summary["red_cooldown_extensions"] == 1
+    assert summary["failed_rechecks"] == 0
+    assert report["windows"][1]["qwen"]["verified"] is False
+    assert report["windows"][1]["qwen"]["reason"] == "active_alert_cooldown"
+    assert report["windows"][1]["qwen"]["source"] == "inherited_active_alert"
+    assert report["windows"][1]["qwen"]["active_alert_id"] == "episode-1"
 
 
 def test_video_report_omits_detection_summary_and_keeps_detailed_timing(tmp_path):
