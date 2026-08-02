@@ -1,7 +1,12 @@
 # Camera AI Platform — Kiến Trúc Hệ Thống
 
-> **Implementation status (2026-08-01):** RabbitMQ code is present as dormant
-> adapters. The API continues using in-process messaging until `FrameStore` and a
+> **Implementation status (2026-08-02):** The API demo is API-only and uses
+> `InProcessEventBus` plus a shared in-process `VLMQueue`. It accepts one video or
+> 1–20 independent uploads, returns an `analysis_id` for each, and polls compact
+> JSON results. Five-second windows pass a camera admission gate before Motion,
+> Detection, or queue creation. A verified red event starts a 60-second
+> source-time cooldown and prunes stale ready work for only that camera/analysis.
+> RabbitMQ adapters exist but remain dormant until `FrameStore` and a
 > transport-safe VLM job DTO exist. Do not send raw frames through the broker.
 
 > **Loại tài liệu**: Target Architecture — bức tranh đích của hệ thống khi hoàn chỉnh.
@@ -11,6 +16,12 @@
 Tài liệu này mô tả kiến trúc **mục tiêu** của Camera AI Platform — không bị
 giới hạn bởi code hiện tại. Đây là bản thiết kế để hướng tới, chia thành các
 phase triển khai ở cuối tài liệu.
+
+Phần trạng thái phía trên là đường biên của implementation hiện tại, không phải
+cam kết rằng toàn bộ thành phần trong tài liệu đã được xây dựng. Hiện chưa có UI
+quản trị/giám sát; FastAPI chỉ cung cấp endpoint upload, health, alert và polling
+analysis. Event bus và task queue đã có contract `ack/retry/reject`, nhưng chỉ
+runtime in-process đang được nối vào demo.
 
 ---
 

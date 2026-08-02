@@ -5,6 +5,11 @@
 > EventBus is fan-out; TaskQueue is competing-consumer work. Broker payloads must
 > be JSON metadata, never raw frames.
 
+> **Current demo boundary (2026-08-02):** The FastAPI demo is API-only and closes
+> uploaded video into five-second source-time windows. Admission runs before
+> Motion, Detection, and queue-record creation. A confirmed red event suppresses
+> the same camera stream for 60 seconds and removes its stale ready backlog.
+
 > **Phạm vi**: Thiết kế chi tiết tầng xử lý lõi (Processing Plane) cho Camera AI Platform.
 > **Ngày**: 2026-08-01.
 
@@ -39,6 +44,40 @@ Cameraₙ ───┘   └────┬─────┘    └────
 Pipeline xử lý theo mô hình **staged event-driven**: mỗi tầng nhận input, xử lý,
 publish output lên Event Bus. Tầng sau subscribe event của tầng trước. Các tầng
 hoạt động **bất đồng bộ và độc lập** — không tầng nào block tầng nào.
+
+### 1.1 Luồng đang triển khai cho video bất đồng bộ
+
+Luồng demo hiện tại khác sơ đồ kiến trúc đích ở chỗ mỗi upload được một producer
+đọc tuần tự theo ranh giới 5 giây. Với từng `(analysis_id, camera_id)`, producer
+gọi admission trước khi tạo `VLMTask`:
+
+```text
+Đóng window 5 giây
+  -> admission theo trạng thái camera
+       normal       -> tạo result pending + alert tương thích + VLMTask
+       cooldown     -> chỉ tăng cooldown summary; không chạy Motion/YOLO/Qwen
+       due recheck  -> giữ chỗ nguyên tử cho đúng một window
+  -> shared priority TaskQueue
+  -> worker receive delivery
+       thành công       -> ack
+       lỗi tạm thời     -> retry
+       task không hợp lệ -> reject/dead-letter
+```
+
+Khi Qwen xác nhận đỏ, worker đăng ký cutoff đến mốc recheck và xóa các ready task
+cũ chỉ thuộc cùng `(analysis_id, camera_id)`. Cutoff và enqueue dùng chung khóa,
+vì vậy task đã qua admission nhưng đến queue muộn cũng bị từ chối. Task của camera
+khác không bị ảnh hưởng. Producer vẫn đọc các ranh giới tiếp theo để không tụt
+khỏi stream, nhưng các window trong cooldown dừng ngay tại admission, trước cả
+Motion và Detection.
+
+`InProcessTaskQueue` hiện thực delivery lifecycle `ack/retry/reject` và priority
+aging. RabbitMQ adapters dùng cùng contract nhưng chưa được nối vào API cho VLM:
+`VLMTask` còn chứa frame/`RawVideoWindow` trong RAM. Trước khi bật RabbitMQ cần
+`FrameStore` và DTO job chỉ chứa metadata/reference; không truyền raw frame qua
+broker. Cơ chế prune ready backlog hiện là tối ưu cục bộ của `VLMQueue`; khi đưa
+VLM sang broker phải biểu diễn suppression/cancellation bằng metadata bền vững
+hoặc kiểm tra cutoff tại consumer.
 
 ---
 

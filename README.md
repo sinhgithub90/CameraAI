@@ -24,6 +24,9 @@ router and a local Qwen vision-language model. The core package lives in
 `src/camera_ai/`; FastAPI is an adapter for uploads, asynchronous processing,
 and compact result polling.
 
+The current demo is API-only. It does not serve a static HTML interface; clients
+submit one video or a batch of videos and poll each returned `analysis_id`.
+
 ## Current async video pipeline
 
 The FastAPI video path reads the complete video and closes one source-time
@@ -70,6 +73,13 @@ rechecks keep the alert with bounded retry backoff. The processor retains a
 second cooldown check only as defense in depth. The async API rejects a second
 active analysis for the same `camera_id` with HTTP 409.
 
+`VLMQueue` is the in-process implementation of the shared competing-consumer
+`TaskQueue` contract. A worker receives one delivery and finalizes it exactly
+once: `ack` after success, `retry` after a transient processing failure, or
+`reject` for an invalid task. Queue pruning only applies to ready in-memory
+tasks belonging to the confirmed-red stream; an in-flight delivery keeps its
+normal finalization lifecycle.
+
 The router describes scene composition rather than claiming an event. Current
 candidate types include `person_vehicle_scene`, `multi_person_scene`,
 `person_scene`, `vehicle_scene`, `unexplained_motion`, and
@@ -97,7 +107,7 @@ Qwen returns only:
 
 Supported event types are `no_event`, `person_vehicle_interaction`,
 `traffic_accident`, `person_fall`, `fighting`, `fire_smoke`, `camera_tamper`,
-and `unknown_event`. A validated event type determines UI severity independently
+and `unknown_event`. A validated event type determines alert severity independently
 of router priority:
 
 - Green: `no_event`, `person_vehicle_interaction`, `unknown_event`
@@ -161,7 +171,12 @@ Main endpoints:
 - `POST /analyze/image`: synchronous image analysis
 - `POST /analyze/video`: synchronous video analysis
 - `POST /async/analyze/video`: enqueue complete video analysis
+- `POST /async/analyze/videos`: stage and enqueue 1–20 independent videos
 - `GET /analyses/{analysis_id}`: poll asynchronous results
+
+The batch endpoint derives a distinct `camera_id` from each filename, returns
+one `analysis_id` per item, and processes the videos independently on the shared
+queue. It is an upload convenience endpoint, not a batch VLM inference call.
 
 Use `OLLAMA_FRAME_MODE=separate` only when comparing separate-image input with
 the default composite input. Set `CAMERA_AI_VLM=mock` for API development
