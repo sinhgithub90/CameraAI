@@ -6,7 +6,14 @@ from abc import ABC, abstractmethod
 from pydantic import BaseModel, Field
 
 from .alert_cooldown import VerificationStatus
-from .schemas import SceneAnalysis, StageTiming, VideoWindowResult, VLMResult, SecurityDecision
+from .schemas import (
+    AlertLevel,
+    SceneAnalysis,
+    SecurityDecision,
+    StageTiming,
+    VideoWindowResult,
+    VLMResult,
+)
 from .video_windows import ProcessedVideoWindow
 
 
@@ -33,6 +40,97 @@ class VideoAnalysis(BaseModel):
             + self.total_timing.detector_ms
             + self.total_timing.keyframe_ms
             + self.total_timing.qwen_ms
+        )
+
+
+class CompactWindowQwen(BaseModel):
+    status: str
+    summary: str
+    degraded: bool = False
+    verified: bool = False
+    reason: str | None = None
+
+
+class CompactWindowCooldown(BaseModel):
+    active_alert_id: str | None = None
+    next_recheck_seconds: float | None = None
+    recheck: bool | None = None
+    episode_created: bool | None = None
+    episode_extended: bool | None = None
+    episode_resolved: bool | None = None
+
+
+class CompactVideoWindow(BaseModel):
+    window_index: int
+    start_seconds: float
+    end_seconds: float
+    alert_level: AlertLevel
+    qwen: CompactWindowQwen
+    cooldown: CompactWindowCooldown | None = None
+    timing: StageTiming
+
+
+class CompactVideoAnalysis(BaseModel):
+    id: str
+    camera_id: str
+    status: str
+    error: str | None = None
+    total_timing: StageTiming
+    windows: list[CompactVideoWindow]
+
+    @classmethod
+    def from_analysis(cls, analysis: VideoAnalysis) -> CompactVideoAnalysis:
+        windows: list[CompactVideoWindow] = []
+        for window in analysis.windows:
+            metadata = window.event_metadata or {}
+            vlm_call = metadata.get("vlm_call") or {}
+            alert_context = metadata.get("alert_context") or {}
+            verification_status = alert_context.get("verification_status")
+            cooldown_values = {
+                "active_alert_id": alert_context.get("active_alert_id"),
+                "next_recheck_seconds": alert_context.get(
+                    "next_recheck_event_seconds"
+                ),
+                "recheck": True if alert_context.get("recheck") else None,
+                "episode_created": (
+                    True if alert_context.get("episode_created") else None
+                ),
+                "episode_extended": (
+                    True if alert_context.get("episode_extended") else None
+                ),
+                "episode_resolved": (
+                    True if alert_context.get("episode_resolved") else None
+                ),
+            }
+            cooldown = (
+                CompactWindowCooldown(**cooldown_values)
+                if any(value is not None for value in cooldown_values.values())
+                else None
+            )
+            windows.append(
+                CompactVideoWindow(
+                    window_index=window.window_index,
+                    start_seconds=window.start_seconds,
+                    end_seconds=window.end_seconds,
+                    alert_level=window.security.alert_level,
+                    qwen=CompactWindowQwen(
+                        status=window.vlm.status,
+                        summary=window.vlm.summary,
+                        degraded=window.vlm.degraded,
+                        verified=verification_status == "verified",
+                        reason=vlm_call.get("reason"),
+                    ),
+                    cooldown=cooldown,
+                    timing=window.timing,
+                )
+            )
+        return cls(
+            id=analysis.id,
+            camera_id=analysis.camera_id,
+            status=analysis.status,
+            error=analysis.error,
+            total_timing=analysis.total_timing,
+            windows=windows,
         )
 
 

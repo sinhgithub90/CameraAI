@@ -28,7 +28,11 @@ from dotenv import load_dotenv
 
 from camera_ai import SecurityAIPipeline
 from camera_ai.alert_cooldown import InMemoryCameraAlertStateStore
-from camera_ai.analysis_store import InMemoryAnalysisStore, VideoAnalysis
+from camera_ai.analysis_store import (
+    CompactVideoAnalysis,
+    InMemoryAnalysisStore,
+    VideoAnalysis,
+)
 from camera_ai.alert_store import Alert, InMemoryAlertStore
 from camera_ai.events import InProcessEventBus
 from camera_ai.queue import VLMTask, VLMQueue, VLMWorker
@@ -316,12 +320,16 @@ async def analyze_video_async(
     return result
 
 
-@app.get("/analyses/{analysis_id}", response_model=VideoAnalysis)
-async def get_analysis(analysis_id: str) -> VideoAnalysis:
+@app.get(
+    "/analyses/{analysis_id}",
+    response_model=CompactVideoAnalysis,
+    response_model_exclude_none=True,
+)
+async def get_analysis(analysis_id: str) -> CompactVideoAnalysis:
     analysis = await analysis_store.get(analysis_id)
     if analysis is None:
         raise HTTPException(status_code=404, detail="analysis not found")
-    return analysis
+    return CompactVideoAnalysis.from_analysis(analysis)
 
 
 @app.get("/alerts/{alert_id}")
