@@ -14,6 +14,9 @@ class VLMCallReason(str, Enum):
     STATIC_WINDOW = "static_window"
     NO_USABLE_FRAMES = "no_usable_frames"
     CANDIDATE_REQUIRES_VERIFICATION = "candidate_requires_verification"
+    ACTIVE_ALERT_COOLDOWN = "active_alert_cooldown"
+    ACTIVE_ALERT_RECHECK = "active_alert_recheck"
+    CAMERA_VLM_INFLIGHT = "camera_vlm_inflight"
 
 
 class VLMCallDecision(BaseModel):
