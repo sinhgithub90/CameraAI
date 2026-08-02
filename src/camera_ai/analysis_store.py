@@ -2,10 +2,16 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from .alert_cooldown import VerificationStatus
+from .alert_cooldown import (
+    RED_COOLDOWN_SECONDS,
+    VerificationStatus,
+    WindowAdmission,
+    WindowAlertContext,
+)
 from .schemas import (
     AlertLevel,
     SceneAnalysis,
@@ -17,6 +23,16 @@ from .schemas import (
 from .video_windows import ProcessedVideoWindow
 
 
+class CooldownSummary(BaseModel):
+    active_alert_id: str | None = None
+    alert_level: AlertLevel = AlertLevel.LOW
+    timebase: Literal["video", "monotonic"] = "video"
+    red_started: float | None = None
+    recheck_at: float | None = None
+    suppressed_windows: int = 0
+    suppressed_seconds: float = 0.0
+
+
 class VideoAnalysis(BaseModel):
     id: str
     camera_id: str
@@ -25,6 +41,7 @@ class VideoAnalysis(BaseModel):
     total_timing: StageTiming = Field(default_factory=StageTiming)
     error: str | None = None
     producer_finished: bool = False
+    cooldown: CooldownSummary | None = None
 
     def refresh_total_timing(self) -> None:
         self.total_timing = StageTiming(
@@ -77,6 +94,7 @@ class CompactVideoAnalysis(BaseModel):
     error: str | None = None
     total_timing: StageTiming
     windows: list[CompactVideoWindow]
+    cooldown: CooldownSummary | None = None
 
     @classmethod
     def from_analysis(cls, analysis: VideoAnalysis) -> CompactVideoAnalysis:
@@ -131,6 +149,7 @@ class CompactVideoAnalysis(BaseModel):
             error=analysis.error,
             total_timing=analysis.total_timing,
             windows=windows,
+            cooldown=analysis.cooldown,
         )
 
 
@@ -162,6 +181,25 @@ class AnalysisStore(ABC):
 
     @abstractmethod
     async def complete_processed_window(self, analysis_id: str, alert_id: str, processed: ProcessedVideoWindow, qwen_ms: float) -> None: ...
+
+    @abstractmethod
+    async def record_suppressed_window(
+        self,
+        analysis_id: str,
+        admission: WindowAdmission,
+        *,
+        timebase: Literal["video", "monotonic"],
+    ) -> None: ...
+
+    @abstractmethod
+    async def remove_pending_windows(
+        self,
+        analysis_id: str,
+        alert_ids: set[str],
+        *,
+        context: WindowAlertContext,
+        timebase: Literal["video", "monotonic"],
+    ) -> list[str]: ...
 
 
 class InMemoryAnalysisStore(AnalysisStore):
@@ -260,8 +298,110 @@ class InMemoryAnalysisStore(AnalysisStore):
                     } if processed.vlm_trace else None,
                 }
                 break
+        context = processed.alert_context
+        if context.episode_created or context.episode_extended:
+            self._add_cooldown_suppression(
+                analysis,
+                active_alert_id=context.active_alert_id,
+                alert_level=context.effective_level,
+                timebase="video",
+                red_started=context.window_end_seconds,
+                recheck_at=context.next_recheck_event_seconds,
+                windows=0,
+                seconds=0.0,
+            )
+        elif context.episode_resolved and analysis.cooldown is not None:
+            analysis.cooldown.active_alert_id = None
+            analysis.cooldown.alert_level = AlertLevel.LOW
+            analysis.cooldown.recheck_at = None
         analysis.refresh_total_timing()
         self._refresh_status(analysis)
+
+    async def record_suppressed_window(
+        self,
+        analysis_id: str,
+        admission: WindowAdmission,
+        *,
+        timebase: Literal["video", "monotonic"],
+    ) -> None:
+        analysis = self._analyses[analysis_id]
+        red_started = (
+            admission.next_recheck_event_seconds - RED_COOLDOWN_SECONDS
+            if admission.effective_level is AlertLevel.HIGH
+            and admission.next_recheck_event_seconds is not None
+            else None
+        )
+        self._add_cooldown_suppression(
+            analysis,
+            active_alert_id=admission.active_alert_id,
+            alert_level=admission.effective_level,
+            timebase=timebase,
+            red_started=red_started,
+            recheck_at=admission.next_recheck_event_seconds,
+            windows=1,
+            seconds=max(0.0, admission.end_seconds - admission.start_seconds),
+        )
+
+    async def remove_pending_windows(
+        self,
+        analysis_id: str,
+        alert_ids: set[str],
+        *,
+        context: WindowAlertContext,
+        timebase: Literal["video", "monotonic"],
+    ) -> list[str]:
+        analysis = self._analyses[analysis_id]
+        removed = [
+            window
+            for window in analysis.windows
+            if window.alert_id in alert_ids and window.vlm.status == "pending"
+        ]
+        removed_ids = [window.alert_id for window in removed]
+        if not removed:
+            return removed_ids
+        removed_set = set(removed_ids)
+        analysis.windows = [
+            window for window in analysis.windows if window.alert_id not in removed_set
+        ]
+        self._add_cooldown_suppression(
+            analysis,
+            active_alert_id=context.active_alert_id,
+            alert_level=context.effective_level,
+            timebase=timebase,
+            red_started=context.window_end_seconds,
+            recheck_at=context.next_recheck_event_seconds,
+            windows=len(removed),
+            seconds=sum(
+                max(0.0, window.end_seconds - window.start_seconds)
+                for window in removed
+            ),
+        )
+        analysis.refresh_total_timing()
+        self._refresh_status(analysis)
+        return removed_ids
+
+    @staticmethod
+    def _add_cooldown_suppression(
+        analysis: VideoAnalysis,
+        *,
+        active_alert_id: str | None,
+        alert_level: AlertLevel,
+        timebase: Literal["video", "monotonic"],
+        red_started: float | None,
+        recheck_at: float | None,
+        windows: int,
+        seconds: float,
+    ) -> None:
+        summary = analysis.cooldown or CooldownSummary(timebase=timebase)
+        summary.active_alert_id = active_alert_id
+        summary.alert_level = alert_level
+        summary.timebase = timebase
+        if summary.red_started is None:
+            summary.red_started = red_started
+        summary.recheck_at = recheck_at
+        summary.suppressed_windows += windows
+        summary.suppressed_seconds += seconds
+        analysis.cooldown = summary
 
     @staticmethod
     def _refresh_status(analysis: VideoAnalysis) -> None:

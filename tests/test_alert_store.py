@@ -71,6 +71,15 @@ class TestInMemoryAlertStore:
         assert await store.get("nonexistent") is None
 
     @pytest.mark.asyncio
+    async def test_delete_removes_pending_compatibility_alert(self, store):
+        """Catches pruned queue work leaving an orphan compatibility alert."""
+        await store.create(_make_alert(alert_id="stale"))
+
+        await store.delete("stale")
+
+        assert await store.get("stale") is None
+
+    @pytest.mark.asyncio
     async def test_update_vlm(self, store):
         alert = _make_alert(alert_id="a2", status="pending")
         await store.create(alert)

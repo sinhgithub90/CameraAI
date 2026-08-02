@@ -3,9 +3,15 @@ import pytest
 from camera_ai.alert_cooldown import (
     AlertRuntimePhase,
     VerificationStatus,
+    WindowAdmission,
     WindowAlertContext,
+    WindowDisposition,
 )
-from camera_ai.analysis_store import InMemoryAnalysisStore, VideoAnalysis
+from camera_ai.analysis_store import (
+    CompactVideoAnalysis,
+    InMemoryAnalysisStore,
+    VideoAnalysis,
+)
 from camera_ai.schemas import (
     AlertLevel,
     QwenInputSummary,
@@ -194,3 +200,108 @@ async def test_suppressed_window_persists_inherited_alert_context():
     assert saved.timing.qwen_ms == 0
     assert saved.event_metadata["alert_context"]["verification_status"] == "suppressed"
     assert saved.event_metadata["alert_context"]["active_alert_id"] == "episode-1"
+
+
+@pytest.mark.asyncio
+async def test_prequeue_drop_updates_one_compact_summary_without_window_record():
+    """Catches dropped cooldown work leaking back into the public windows list."""
+    store = InMemoryAnalysisStore()
+    await store.create(VideoAnalysis(id="analysis-red", camera_id="cam-a"))
+    admission = WindowAdmission(
+        stream_id="analysis-red",
+        camera_id="cam-a",
+        start_seconds=5.0,
+        end_seconds=10.0,
+        disposition=WindowDisposition.SUPPRESS,
+        process_window=False,
+        state=AlertRuntimePhase.ALERT_ACTIVE,
+        effective_level=AlertLevel.HIGH,
+        active_alert_id="episode-1",
+        next_recheck_event_seconds=65.0,
+    )
+
+    await store.record_suppressed_window(
+        "analysis-red", admission, timebase="video"
+    )
+
+    analysis = await store.get("analysis-red")
+    assert analysis is not None
+    assert analysis.windows == []
+    assert analysis.cooldown is not None
+    assert analysis.cooldown.suppressed_windows == 1
+    assert analysis.cooldown.suppressed_seconds == 5.0
+    assert analysis.cooldown.red_started == 5.0
+    compact = CompactVideoAnalysis.from_analysis(analysis)
+    assert compact.windows == []
+    assert compact.cooldown == analysis.cooldown
+
+
+@pytest.mark.asyncio
+async def test_remove_pending_windows_counts_only_removed_source_durations():
+    """Catches pruned jobs remaining visible or completed work being deleted."""
+    store = InMemoryAnalysisStore()
+    await store.create(VideoAnalysis(id="analysis-prune", camera_id="cam-a"))
+    stale = pending_window("stale")
+    survivor = pending_window("survivor").model_copy(
+        update={"window_index": 1, "start_seconds": 5.0, "end_seconds": 10.0}
+    )
+    await store.append_window("analysis-prune", stale)
+    await store.append_window("analysis-prune", survivor)
+    context = WindowAlertContext(
+        stream_id="analysis-prune",
+        camera_id="cam-a",
+        state=AlertRuntimePhase.ALERT_ACTIVE,
+        effective_level=AlertLevel.HIGH,
+        active_alert_id="episode-1",
+        window_end_seconds=5.0,
+        episode_created=True,
+        next_recheck_event_seconds=65.0,
+    )
+
+    removed = await store.remove_pending_windows(
+        "analysis-prune", {"stale"}, context=context, timebase="video"
+    )
+
+    analysis = await store.get("analysis-prune")
+    assert removed == ["stale"]
+    assert [window.alert_id for window in analysis.windows] == ["survivor"]
+    assert analysis.cooldown.suppressed_windows == 1
+    assert analysis.cooldown.suppressed_seconds == 5.0
+
+
+@pytest.mark.asyncio
+async def test_red_result_exposes_recheck_signal_before_any_window_is_dropped():
+    """Catches clients learning cooldown state only after a later suppression."""
+    store = InMemoryAnalysisStore()
+    await store.create(VideoAnalysis(id="analysis-signal", camera_id="cam-a"))
+    await store.append_window("analysis-signal", pending_window("red"))
+    processed = ProcessedVideoWindow(
+        scene=SceneAnalysis(alert_level=AlertLevel.HIGH),
+        qwen_input=QwenInputSummary(frame_count=2),
+        timing=StageTiming(qwen_ms=10.0, total_ms=10.0),
+        observation=VideoWindowObservation(
+            camera_id="cam-a", window_id="cam-a_000000", start_ms=0, end_ms=5000
+        ),
+        vlm_call=VLMCallDecision(
+            call_vlm=True,
+            reason=VLMCallReason.CANDIDATE_REQUIRES_VERIFICATION,
+        ),
+        alert_context=WindowAlertContext(
+            stream_id="analysis-signal",
+            camera_id="cam-a",
+            state=AlertRuntimePhase.ALERT_ACTIVE,
+            effective_level=AlertLevel.HIGH,
+            active_alert_id="episode-1",
+            window_end_seconds=5.0,
+            episode_created=True,
+            next_recheck_event_seconds=65.0,
+        ),
+    )
+
+    await store.complete_processed_window("analysis-signal", "red", processed, 10.0)
+
+    cooldown = (await store.get("analysis-signal")).cooldown
+    assert cooldown.active_alert_id == "episode-1"
+    assert cooldown.red_started == 5.0
+    assert cooldown.recheck_at == 65.0
+    assert cooldown.suppressed_windows == 0

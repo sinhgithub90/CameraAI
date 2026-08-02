@@ -91,6 +91,11 @@ class AlertStore(ABC):
         ...
 
     @abstractmethod
+    async def delete(self, alert_id: str) -> None:
+        """Delete a compatibility alert whose queued work was pruned."""
+        ...
+
+    @abstractmethod
     async def update_vlm(
         self, alert_id: str, analysis: SceneAnalysis, qwen_ms: float = 0.0
     ) -> None:
@@ -138,6 +143,9 @@ class InMemoryAlertStore(AlertStore):
 
     async def get(self, alert_id: str) -> Alert | None:
         return self._alerts.get(alert_id)
+
+    async def delete(self, alert_id: str) -> None:
+        self._alerts.pop(alert_id, None)
 
     async def update_vlm(
         self, alert_id: str, analysis: SceneAnalysis, qwen_ms: float = 0.0
