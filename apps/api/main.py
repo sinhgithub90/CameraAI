@@ -152,6 +152,19 @@ async def _enqueue_video_window(
     analysis_id: str, camera_id: str, window: RawVideoWindow,
 ) -> None:
     """Persist one detected window, then enqueue it on the sole VLM queue."""
+    admission = camera_alert_state_store.admit_before_queue(
+        stream_id=analysis_id,
+        camera_id=camera_id,
+        start_seconds=window.start_seconds,
+        end_seconds=window.end_seconds,
+        processing_now=time.monotonic(),
+    )
+    if not admission.process_window:
+        await analysis_store.record_suppressed_window(
+            analysis_id, admission, timebase="video"
+        )
+        return
+
     alert_id = uuid.uuid4().hex
     observations = window.observations
     timing = StageTiming()
@@ -181,7 +194,7 @@ async def _enqueue_video_window(
             timing=timing,
         )
     )
-    await vlm_queue.enqueue(
+    accepted = await vlm_queue.enqueue(
         VLMTask(
             task_id=alert_id,
             camera_id=camera_id,
@@ -193,8 +206,23 @@ async def _enqueue_video_window(
             priority=3,
             enqueued_at=time.monotonic(),
             max_keyframes=pipeline.max_keyframes,
+            admission=admission if admission.recheck else None,
         )
     )
+    if accepted is False:
+        await analysis_store.discard_pending_window(analysis_id, alert_id)
+        await alert_store.delete(alert_id)
+        current = camera_alert_state_store.inspect_window(
+            stream_id=analysis_id,
+            camera_id=camera_id,
+            start_seconds=window.start_seconds,
+            end_seconds=window.end_seconds,
+            processing_now=time.monotonic(),
+        )
+        if not current.process_window:
+            await analysis_store.record_suppressed_window(
+                analysis_id, current, timebase="video"
+            )
 
 
 async def _produce_video_windows(

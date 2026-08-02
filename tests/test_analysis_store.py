@@ -305,3 +305,18 @@ async def test_red_result_exposes_recheck_signal_before_any_window_is_dropped():
     assert cooldown.red_started == 5.0
     assert cooldown.recheck_at == 65.0
     assert cooldown.suppressed_windows == 0
+
+
+@pytest.mark.asyncio
+async def test_discard_pending_window_removes_late_rejected_queue_record():
+    """Catches a queue cutoff rejection leaving an analysis stuck pending."""
+    store = InMemoryAnalysisStore()
+    await store.create(VideoAnalysis(id="analysis-late", camera_id="cam-a"))
+    await store.append_window("analysis-late", pending_window("late"))
+
+    removed = await store.discard_pending_window("analysis-late", "late")
+
+    analysis = await store.get("analysis-late")
+    assert removed is True
+    assert analysis.windows == []
+    assert analysis.status == "reading"

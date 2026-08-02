@@ -201,6 +201,11 @@ class AnalysisStore(ABC):
         timebase: Literal["video", "monotonic"],
     ) -> list[str]: ...
 
+    @abstractmethod
+    async def discard_pending_window(
+        self, analysis_id: str, alert_id: str
+    ) -> bool: ...
+
 
 class InMemoryAnalysisStore(AnalysisStore):
     def __init__(self) -> None:
@@ -379,6 +384,22 @@ class InMemoryAnalysisStore(AnalysisStore):
         analysis.refresh_total_timing()
         self._refresh_status(analysis)
         return removed_ids
+
+    async def discard_pending_window(
+        self, analysis_id: str, alert_id: str
+    ) -> bool:
+        analysis = self._analyses[analysis_id]
+        before = len(analysis.windows)
+        analysis.windows = [
+            window
+            for window in analysis.windows
+            if not (window.alert_id == alert_id and window.vlm.status == "pending")
+        ]
+        removed = len(analysis.windows) != before
+        if removed:
+            analysis.refresh_total_timing()
+            self._refresh_status(analysis)
+        return removed
 
     @staticmethod
     def _add_cooldown_suppression(

@@ -9,6 +9,13 @@ import pytest
 from fastapi import UploadFile
 
 from apps.api import main
+from camera_ai.alert_cooldown import (
+    AlertRuntimePhase,
+    InMemoryCameraAlertStateStore,
+    WindowAdmission,
+    WindowDisposition,
+)
+from camera_ai.schemas import AlertLevel
 from camera_ai.analysis_store import InMemoryAnalysisStore, VideoAnalysis
 from camera_ai.schemas import VideoFrameObservation
 from camera_ai.video_windows import RawVideoWindow
@@ -28,6 +35,40 @@ class RecordingAlertStore:
 
     async def create(self, alert) -> None:
         self.alerts.append(alert)
+
+    async def delete(self, alert_id: str) -> None:
+        self.alerts = [alert for alert in self.alerts if alert.id != alert_id]
+
+
+class RejectingQueue(RecordingQueue):
+    async def enqueue(self, task) -> bool:
+        return False
+
+
+class RacingRedState:
+    """First admission sees normal; the post-rejection read sees newly active red."""
+
+    def admit_before_queue(self, **kwargs) -> WindowAdmission:
+        return WindowAdmission.normal(
+            stream_id=kwargs["stream_id"],
+            camera_id=kwargs["camera_id"],
+            start_seconds=kwargs["start_seconds"],
+            end_seconds=kwargs["end_seconds"],
+        )
+
+    def inspect_window(self, **kwargs) -> WindowAdmission:
+        return WindowAdmission(
+            stream_id=kwargs["stream_id"],
+            camera_id=kwargs["camera_id"],
+            start_seconds=kwargs["start_seconds"],
+            end_seconds=kwargs["end_seconds"],
+            disposition=WindowDisposition.SUPPRESS,
+            process_window=False,
+            state=AlertRuntimePhase.ALERT_ACTIVE,
+            effective_level=AlertLevel.HIGH,
+            active_alert_id="episode-race",
+            next_recheck_event_seconds=65.0,
+        )
 
 
 def _window(index: int, label: str) -> dict:
@@ -92,3 +133,82 @@ async def test_async_video_rejects_second_active_analysis_for_same_camera(monkey
 
     assert exc_info.value.status_code == 409
     assert "cam_01" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_known_red_window_is_dropped_before_records_and_global_queue(monkeypatch):
+    """Catches cooldown windows consuming queue slots or compatibility records."""
+    queue = RecordingQueue()
+    alerts = RecordingAlertStore()
+    analyses = InMemoryAnalysisStore()
+    await analyses.create(VideoAnalysis(id="analysis-red", camera_id="cam-red"))
+    state = InMemoryCameraAlertStateStore.seeded_red(
+        stream_id="analysis-red",
+        camera_id="cam-red",
+        active_alert_id="episode-1",
+        next_recheck_event_seconds=65.0,
+    )
+    monkeypatch.setattr(main, "vlm_queue", queue)
+    monkeypatch.setattr(main, "alert_store", alerts)
+    monkeypatch.setattr(main, "analysis_store", analyses)
+    monkeypatch.setattr(main, "camera_alert_state_store", state)
+
+    await main._enqueue_video_window("analysis-red", "cam-red", _window(1, "car"))
+
+    analysis = await analyses.get("analysis-red")
+    assert queue.tasks == []
+    assert alerts.alerts == []
+    assert analysis.windows == []
+    assert analysis.cooldown.suppressed_windows == 1
+    assert analysis.cooldown.recheck_at == 65.0
+
+
+@pytest.mark.asyncio
+async def test_only_one_due_recheck_window_enters_global_queue(monkeypatch):
+    """Catches adjacent due windows bypassing the atomic reservation."""
+    queue = RecordingQueue()
+    alerts = RecordingAlertStore()
+    analyses = InMemoryAnalysisStore()
+    await analyses.create(VideoAnalysis(id="analysis-red", camera_id="cam-red"))
+    state = InMemoryCameraAlertStateStore.seeded_red(
+        stream_id="analysis-red",
+        camera_id="cam-red",
+        active_alert_id="episode-1",
+        next_recheck_event_seconds=65.0,
+    )
+    monkeypatch.setattr(main, "vlm_queue", queue)
+    monkeypatch.setattr(main, "alert_store", alerts)
+    monkeypatch.setattr(main, "analysis_store", analyses)
+    monkeypatch.setattr(main, "camera_alert_state_store", state)
+
+    await main._enqueue_video_window("analysis-red", "cam-red", _window(13, "car"))
+    await main._enqueue_video_window("analysis-red", "cam-red", _window(14, "car"))
+
+    analysis = await analyses.get("analysis-red")
+    assert len(queue.tasks) == 1
+    assert queue.tasks[0].admission.reservation_version is not None
+    assert len(analysis.windows) == 1
+    assert analysis.cooldown.suppressed_windows == 1
+
+
+@pytest.mark.asyncio
+async def test_late_queue_cutoff_rejection_cleans_pending_records(monkeypatch):
+    """Catches the red transition race leaving a pending window outside the queue."""
+    queue = RejectingQueue()
+    alerts = RecordingAlertStore()
+    analyses = InMemoryAnalysisStore()
+    await analyses.create(VideoAnalysis(id="analysis-race", camera_id="cam-race"))
+    monkeypatch.setattr(main, "vlm_queue", queue)
+    monkeypatch.setattr(main, "alert_store", alerts)
+    monkeypatch.setattr(main, "analysis_store", analyses)
+    monkeypatch.setattr(main, "camera_alert_state_store", RacingRedState())
+
+    await main._enqueue_video_window(
+        "analysis-race", "cam-race", _window(1, "person")
+    )
+
+    analysis = await analyses.get("analysis-race")
+    assert analysis.windows == []
+    assert alerts.alerts == []
+    assert analysis.cooldown.active_alert_id == "episode-race"
+    assert analysis.cooldown.suppressed_windows == 1

@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Callable
 
 import numpy as np
 
+from .alert_cooldown import WindowAdmission
 from .schemas import Detection, SceneAnalysis
 from .video_windows import RawVideoWindow
 
@@ -48,6 +49,7 @@ class VLMTask:
     rule_id: str = field(default="default", compare=False)
     max_keyframes: int = field(default=2, compare=False)
     raw_window: RawVideoWindow | None = field(default=None, compare=False)
+    admission: WindowAdmission | None = field(default=None, compare=False)
 
     def effective_priority(self, now: float | None = None) -> int:
         """Priority with aging: tasks waiting too long get boosted."""
@@ -74,9 +76,17 @@ class VLMQueue:
     def __init__(self) -> None:
         self._heap: list[VLMTask] = []
         self._condition = asyncio.Condition()
+        self._stream_cutoffs: dict[tuple[str, str], float] = {}
 
-    async def enqueue(self, task: VLMTask) -> None:
+    async def enqueue(self, task: VLMTask) -> bool:
         async with self._condition:
+            cutoff = self._stream_cutoffs.get((task.analysis_id, task.camera_id))
+            if (
+                cutoff is not None
+                and task.raw_window is not None
+                and task.raw_window.start_seconds < cutoff
+            ):
+                return False
             heapq.heappush(self._heap, task)
             self._condition.notify()
         logger.debug(
@@ -85,6 +95,7 @@ class VLMQueue:
             task.priority,
             self.depth,
         )
+        return True
 
     async def dequeue(self) -> VLMTask:
         async with self._condition:
@@ -108,6 +119,7 @@ class VLMQueue:
                 rule_id=task.rule_id,
                 max_keyframes=task.max_keyframes,
                 raw_window=task.raw_window,
+                admission=task.admission,
             )
             logger.debug(
                 "[vlm-queue] aged alert=%s priority=%s→%s wait=%.0fs",
@@ -138,6 +150,31 @@ class VLMQueue:
             removed = [task for task in self._heap if predicate(task)]
             if removed:
                 self._heap = [task for task in self._heap if not predicate(task)]
+                heapq.heapify(self._heap)
+            return removed
+
+    async def suppress_stream_before(
+        self, *, analysis_id: str, camera_id: str, deadline: float
+    ) -> list[VLMTask]:
+        """Atomically register a cutoff and remove already queued stale work."""
+        async with self._condition:
+            key = (analysis_id, camera_id)
+            self._stream_cutoffs[key] = max(
+                deadline, self._stream_cutoffs.get(key, deadline)
+            )
+            removed = [
+                task
+                for task in self._heap
+                if task.analysis_id == analysis_id
+                and task.camera_id == camera_id
+                and task.raw_window is not None
+                and task.raw_window.start_seconds < deadline
+            ]
+            if removed:
+                removed_ids = {task.task_id for task in removed}
+                self._heap = [
+                    task for task in self._heap if task.task_id not in removed_ids
+                ]
                 heapq.heapify(self._heap)
             return removed
 
@@ -195,11 +232,14 @@ class VLMWorker:
         """Process one item so video lifecycle behavior is independently testable."""
         processing_started = time.monotonic()
         if task.raw_window is not None:
+            process_kwargs = {"stream_id": task.analysis_id or "default"}
+            if task.admission is not None:
+                process_kwargs["admission"] = task.admission
             processed = await asyncio.to_thread(
                 self._pipeline.process_video_window,
                 task.raw_window,
                 task.camera_id,
-                stream_id=task.analysis_id or "default",
+                **process_kwargs,
             )
             analysis = processed.scene
             qwen_ms = processed.timing.qwen_ms
@@ -236,6 +276,28 @@ class VLMWorker:
                 )
         if processed is not None:
             await self._alert_store.apply_episode_context(processed.alert_context)
+            context = processed.alert_context
+            deadline = context.next_recheck_event_seconds
+            if (
+                task.analysis_id
+                and self._analysis_store is not None
+                and deadline is not None
+                and (context.episode_created or context.episode_extended)
+            ):
+                removed = await self._queue.suppress_stream_before(
+                    analysis_id=task.analysis_id,
+                    camera_id=task.camera_id,
+                    deadline=deadline,
+                )
+                if removed:
+                    removed_ids = await self._analysis_store.remove_pending_windows(
+                        task.analysis_id,
+                        {queued.alert_id for queued in removed},
+                        context=context,
+                        timebase="video",
+                    )
+                    for alert_id in removed_ids:
+                        await self._alert_store.delete(alert_id)
         return analysis
 
     async def start(self, loop: asyncio.AbstractEventLoop | None = None) -> None:

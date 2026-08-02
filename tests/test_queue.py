@@ -8,6 +8,8 @@ import numpy as np
 import pytest
 
 from camera_ai.queue import VLMTask, VLMQueue, VLMWorker
+from camera_ai.alert_store import Alert, InMemoryAlertStore
+from camera_ai.analysis_store import InMemoryAnalysisStore, VideoAnalysis
 from camera_ai.alert_cooldown import (
     AlertRuntimePhase,
     VerificationStatus,
@@ -20,7 +22,11 @@ from camera_ai.schemas import (
     SceneAnalysis,
     StageTiming,
     VideoWindowObservation,
+    VideoWindowResult,
+    SecurityDecision,
+    VLMResult,
 )
+from camera_ai.events import InProcessEventBus
 from camera_ai.video_windows import ProcessedVideoWindow, RawVideoWindow
 from camera_ai.vlm_policy import VLMCallDecision, VLMCallReason
 
@@ -175,8 +181,141 @@ class TestVLMQueue:
         assert (await queue.dequeue()).task_id == "b-stale"
         assert (await queue.dequeue()).task_id == "a-later"
 
+    @pytest.mark.asyncio
+    async def test_stream_cutoff_rejects_stale_task_enqueued_after_prune(self, queue):
+        """Catches the admission-before-red/enqueue-after-prune race."""
+        existing = _make_task("existing", camera_id="cam-a")
+        existing.analysis_id = "analysis-a"
+        existing.raw_window = RawVideoWindow(
+            window_index=1, start_seconds=5.0, observations=[]
+        )
+        await queue.enqueue(existing)
+
+        removed = await queue.suppress_stream_before(
+            analysis_id="analysis-a", camera_id="cam-a", deadline=65.0
+        )
+        late = _make_task("late", camera_id="cam-a")
+        late.analysis_id = "analysis-a"
+        late.raw_window = RawVideoWindow(
+            window_index=2, start_seconds=10.0, observations=[]
+        )
+        due = _make_task("due", camera_id="cam-a")
+        due.analysis_id = "analysis-a"
+        due.raw_window = RawVideoWindow(
+            window_index=13, start_seconds=65.0, observations=[]
+        )
+
+        late_accepted = await queue.enqueue(late)
+        due_accepted = await queue.enqueue(due)
+
+        assert [task.task_id for task in removed] == ["existing"]
+        assert late_accepted is False
+        assert due_accepted is True
+        assert queue.depth == 1
+
 
 class TestVLMWorker:
+    @pytest.mark.asyncio
+    async def test_red_confirmation_prunes_only_same_analysis_camera_backlog(self):
+        """Catches confirmed-red backlog still consuming the global queue."""
+        queue = VLMQueue()
+        bus = InProcessEventBus()
+        alerts = InMemoryAlertStore(event_bus=bus)
+        analyses = InMemoryAnalysisStore()
+        await analyses.create(VideoAnalysis(id="analysis-a", camera_id="cam-a"))
+
+        def pending(alert_id: str, index: int) -> VideoWindowResult:
+            return VideoWindowResult(
+                alert_id=alert_id,
+                window_index=index,
+                start_seconds=index * 5.0,
+                end_seconds=index * 5.0 + 5.0,
+                vlm=VLMResult(summary="", status="pending"),
+                security=SecurityDecision(alert_level=AlertLevel.LOW),
+                qwen_input=QwenInputSummary(),
+                timing=StageTiming(),
+            )
+
+        await analyses.append_window("analysis-a", pending("current", 0))
+        await analyses.append_window("analysis-a", pending("stale", 1))
+        for alert_id, camera_id in (
+            ("current", "cam-a"),
+            ("stale", "cam-a"),
+            ("other", "cam-b"),
+        ):
+            await alerts.create(Alert(id=alert_id, camera_id=camera_id))
+
+        stale_task = VLMTask(
+            priority=2,
+            enqueued_at=time.monotonic(),
+            task_id="stale",
+            camera_id="cam-a",
+            alert_id="stale",
+            analysis_id="analysis-a",
+            raw_window=RawVideoWindow(window_index=1, start_seconds=5.0),
+        )
+        other_task = VLMTask(
+            priority=1,
+            enqueued_at=time.monotonic(),
+            task_id="other",
+            camera_id="cam-b",
+            alert_id="other",
+            analysis_id="analysis-b",
+            raw_window=RawVideoWindow(window_index=1, start_seconds=5.0),
+        )
+        await queue.enqueue(stale_task)
+        await queue.enqueue(other_task)
+
+        processed = ProcessedVideoWindow(
+            scene=SceneAnalysis(summary="red", alert_level=AlertLevel.HIGH),
+            qwen_input=QwenInputSummary(),
+            timing=StageTiming(qwen_ms=10.0),
+            observation=VideoWindowObservation(
+                camera_id="cam-a", window_id="cam-a_000000", start_ms=0, end_ms=5000
+            ),
+            vlm_call=VLMCallDecision(
+                call_vlm=True,
+                reason=VLMCallReason.CANDIDATE_REQUIRES_VERIFICATION,
+            ),
+            alert_context=WindowAlertContext(
+                stream_id="analysis-a",
+                camera_id="cam-a",
+                state=AlertRuntimePhase.ALERT_ACTIVE,
+                effective_level=AlertLevel.HIGH,
+                active_alert_id="episode-1",
+                window_end_seconds=5.0,
+                episode_created=True,
+                next_recheck_event_seconds=65.0,
+            ),
+        )
+        pipeline = MagicMock()
+        pipeline.process_video_window.return_value = processed
+        worker = VLMWorker(
+            queue=queue,
+            pipeline=pipeline,
+            alert_store=alerts,
+            event_bus=bus,
+            analysis_store=analyses,
+        )
+        current_task = VLMTask(
+            priority=1,
+            enqueued_at=time.monotonic(),
+            camera_id="cam-a",
+            alert_id="current",
+            analysis_id="analysis-a",
+            raw_window=RawVideoWindow(window_index=0, start_seconds=0.0),
+        )
+
+        await worker._process_task(current_task)
+
+        analysis = await analyses.get("analysis-a")
+        assert queue.depth == 1
+        assert (await queue.dequeue()).task_id == "other"
+        assert [window.alert_id for window in analysis.windows] == ["current"]
+        assert analysis.cooldown.suppressed_windows == 1
+        assert await alerts.get("stale") is None
+        assert await alerts.get("other") is not None
+
     @pytest.mark.asyncio
     async def test_video_task_uses_analysis_as_stream_and_persists_episode_context(self):
         pipeline = MagicMock()
