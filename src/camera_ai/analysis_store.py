@@ -44,6 +44,11 @@ class AnalysisStore(ABC):
     async def get(self, analysis_id: str) -> VideoAnalysis | None: ...
 
     @abstractmethod
+    async def has_active_camera(self, camera_id: str) -> bool:
+        """Return whether the camera already has a reading or queued analysis."""
+        ...
+
+    @abstractmethod
     async def append_window(self, analysis_id: str, window: VideoWindowResult) -> None: ...
 
     @abstractmethod
@@ -70,6 +75,13 @@ class InMemoryAnalysisStore(AnalysisStore):
 
     async def get(self, analysis_id: str) -> VideoAnalysis | None:
         return self._analyses.get(analysis_id)
+
+    async def has_active_camera(self, camera_id: str) -> bool:
+        return any(
+            analysis.camera_id == camera_id
+            and analysis.status in {"reading", "queued"}
+            for analysis in self._analyses.values()
+        )
 
     async def append_window(self, analysis_id: str, window: VideoWindowResult) -> None:
         analysis = self._analyses[analysis_id]
@@ -158,7 +170,8 @@ class InMemoryAnalysisStore(AnalysisStore):
         if analysis.status == "failed":
             return
         if analysis.producer_finished and all(
-            window.vlm.status in {"completed", "skipped"} for window in analysis.windows
+            window.vlm.status in {"completed", "skipped", "suppressed"}
+            for window in analysis.windows
         ):
             analysis.status = "completed"
         elif analysis.windows:

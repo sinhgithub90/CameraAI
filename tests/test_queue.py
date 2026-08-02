@@ -8,7 +8,21 @@ import numpy as np
 import pytest
 
 from camera_ai.queue import VLMTask, VLMQueue, VLMWorker
-from camera_ai.schemas import AlertLevel, Detection, SceneAnalysis
+from camera_ai.alert_cooldown import (
+    AlertRuntimePhase,
+    VerificationStatus,
+    WindowAlertContext,
+)
+from camera_ai.schemas import (
+    AlertLevel,
+    Detection,
+    QwenInputSummary,
+    SceneAnalysis,
+    StageTiming,
+    VideoWindowObservation,
+)
+from camera_ai.video_windows import ProcessedVideoWindow, RawVideoWindow
+from camera_ai.vlm_policy import VLMCallDecision, VLMCallReason
 
 
 def _make_task(
@@ -130,6 +144,75 @@ class TestVLMQueue:
 
 
 class TestVLMWorker:
+    @pytest.mark.asyncio
+    async def test_video_task_uses_analysis_as_stream_and_persists_episode_context(self):
+        pipeline = MagicMock()
+        processed = ProcessedVideoWindow(
+            scene=SceneAnalysis(summary="red", alert_level=AlertLevel.HIGH),
+            qwen_input=QwenInputSummary(frame_count=1),
+            timing=StageTiming(qwen_ms=12.5),
+            observation=VideoWindowObservation(
+                camera_id="cam_01",
+                window_id="cam_01_000000",
+                start_ms=0,
+                end_ms=5000,
+            ),
+            vlm_call=VLMCallDecision(
+                call_vlm=True,
+                reason=VLMCallReason.CANDIDATE_REQUIRES_VERIFICATION,
+            ),
+            alert_context=WindowAlertContext(
+                stream_id="analysis-1",
+                camera_id="cam_01",
+                state=AlertRuntimePhase.ALERT_ACTIVE,
+                detected_level=AlertLevel.HIGH,
+                effective_level=AlertLevel.HIGH,
+                verification_status=VerificationStatus.VERIFIED,
+                source="window_verification",
+                window_start_seconds=0.0,
+                window_end_seconds=5.0,
+                active_alert_id="episode-1",
+                event_type="intrusion",
+                episode_created=True,
+                next_recheck_event_seconds=65.0,
+            ),
+        )
+        pipeline.process_video_window.return_value = processed
+        alert_store = AsyncMock()
+        analysis_store = AsyncMock()
+        worker = VLMWorker(
+            queue=VLMQueue(),
+            pipeline=pipeline,
+            alert_store=alert_store,
+            event_bus=AsyncMock(),
+            analysis_store=analysis_store,
+        )
+        raw_window = RawVideoWindow(window_index=0, start_seconds=0.0)
+        task = VLMTask(
+            priority=1,
+            enqueued_at=time.monotonic(),
+            camera_id="cam_01",
+            alert_id="window-alert-1",
+            analysis_id="analysis-1",
+            window_index=0,
+            raw_window=raw_window,
+        )
+
+        await worker._process_task(task)
+
+        pipeline.process_video_window.assert_called_once_with(
+            raw_window, "cam_01", stream_id="analysis-1"
+        )
+        alert_store.update_vlm.assert_awaited_once_with(
+            "window-alert-1", processed.scene, qwen_ms=12.5
+        )
+        alert_store.apply_episode_context.assert_awaited_once_with(
+            processed.alert_context
+        )
+        analysis_store.complete_processed_window.assert_awaited_once_with(
+            "analysis-1", "window-alert-1", processed, 12.5
+        )
+
     @pytest.mark.asyncio
     async def test_worker_processes_task(self):
         """Worker dequeues task, calls pipeline.analyze_vlm, updates alert."""

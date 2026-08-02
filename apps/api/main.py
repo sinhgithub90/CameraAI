@@ -27,6 +27,7 @@ from fastapi.responses import HTMLResponse
 from dotenv import load_dotenv
 
 from camera_ai import SecurityAIPipeline
+from camera_ai.alert_cooldown import InMemoryCameraAlertStateStore
 from camera_ai.analysis_store import InMemoryAnalysisStore, VideoAnalysis
 from camera_ai.alert_store import Alert, InMemoryAlertStore
 from camera_ai.events import InProcessEventBus
@@ -54,15 +55,25 @@ load_dotenv()
 UI_FILE = Path(__file__).resolve().parent / "static" / "index.html"
 
 
-def _build_pipeline() -> SecurityAIPipeline:
+def _build_pipeline(
+    alert_state_store: InMemoryCameraAlertStateStore | None = None,
+) -> SecurityAIPipeline:
     vlm_provider = os.getenv("CAMERA_AI_VLM", "ollama").strip().lower()
     if vlm_provider == "mock":
         logger.info("Using mock VLM (CAMERA_AI_VLM=mock)")
-        return SecurityAIPipeline(vlm=MockAnalyzer(), max_video_windows=None)
-    return SecurityAIPipeline(max_video_windows=None)
+        return SecurityAIPipeline(
+            vlm=MockAnalyzer(),
+            max_video_windows=None,
+            alert_state_store=alert_state_store,
+        )
+    return SecurityAIPipeline(
+        max_video_windows=None,
+        alert_state_store=alert_state_store,
+    )
 
 
-pipeline = _build_pipeline()
+camera_alert_state_store = InMemoryCameraAlertStateStore()
+pipeline = _build_pipeline(camera_alert_state_store)
 
 app = FastAPI(title="Camera AI Demo", version="0.1.0")
 
@@ -280,6 +291,11 @@ async def analyze_video_async(
     file: UploadFile = File(...),
     camera_id: str = Form("unknown"),
 ) -> PipelineResult:
+    if await analysis_store.has_active_camera(camera_id):
+        raise HTTPException(
+            status_code=409,
+            detail=f"camera {camera_id} already has an active video analysis",
+        )
     content = await file.read()
     if not content:
         raise HTTPException(status_code=400, detail="empty upload")

@@ -9,7 +9,7 @@ import pytest
 from fastapi import UploadFile
 
 from apps.api import main
-from camera_ai.analysis_store import InMemoryAnalysisStore
+from camera_ai.analysis_store import InMemoryAnalysisStore, VideoAnalysis
 from camera_ai.schemas import VideoFrameObservation
 from camera_ai.video_windows import RawVideoWindow
 
@@ -78,3 +78,17 @@ async def test_async_video_streams_each_window_to_the_global_queue(monkeypatch):
     assert [task.analysis_id for task in queue.tasks] == [result.request_id] * 2
     assert [task.window_index for task in queue.tasks] == [0, 1]
     assert [alert.id for alert in store.alerts] == [task.alert_id for task in queue.tasks]
+
+
+@pytest.mark.asyncio
+async def test_async_video_rejects_second_active_analysis_for_same_camera(monkeypatch):
+    store = InMemoryAnalysisStore()
+    await store.create(VideoAnalysis(id="already-running", camera_id="cam_01"))
+    monkeypatch.setattr(main, "analysis_store", store)
+    upload = UploadFile(filename="clip.mp4", file=BytesIO(b"video-bytes"))
+
+    with pytest.raises(main.HTTPException) as exc_info:
+        await main.analyze_video_async(upload, camera_id="cam_01")
+
+    assert exc_info.value.status_code == 409
+    assert "cam_01" in exc_info.value.detail

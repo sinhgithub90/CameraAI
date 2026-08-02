@@ -152,42 +152,13 @@ class VLMWorker:
         while True:
             try:
                 task = await self._queue.dequeue()
-                processing_started = time.monotonic()
                 logger.info(
                     "[vlm-worker] processing alert=%s camera=%s rule=%s",
                     task.alert_id,
                     task.camera_id,
                     task.rule_id,
                 )
-                # A video item owns the whole stage pipeline; image items are VLM-only.
-                qwen_started = time.perf_counter()
-                if task.raw_window is not None:
-                    processed = await asyncio.to_thread(
-                        self._pipeline.process_video_window,
-                        task.raw_window,
-                        task.camera_id,
-                    )
-                    analysis = processed.scene
-                else:
-                    processed = None
-                    analysis = await asyncio.to_thread(self._pipeline.analyze_vlm, task)
-                qwen_ms = (time.perf_counter() - qwen_started) * 1000
-                if processed is not None:
-                    completed_at = time.monotonic()
-                    processed.timing.queue_wait_ms = max(
-                        0.0, (processing_started - task.enqueued_at) * 1000
-                    )
-                    processed.timing.wall_clock_ms = max(
-                        0.0, (completed_at - task.enqueued_at) * 1000
-                    )
-                await self._alert_store.update_vlm(
-                    task.alert_id, analysis, qwen_ms=qwen_ms
-                )
-                if task.analysis_id and self._analysis_store is not None:
-                    if processed is None:
-                        await self._analysis_store.complete_window(task.analysis_id, task.alert_id, analysis, qwen_ms=qwen_ms)
-                    else:
-                        await self._analysis_store.complete_processed_window(task.analysis_id, task.alert_id, processed, qwen_ms)
+                analysis = await self._process_task(task)
                 logger.info(
                     "[vlm-worker] completed alert=%s level=%s",
                     task.alert_id,
@@ -201,6 +172,53 @@ class VLMWorker:
                     "[vlm-worker] error processing alert=%s", task.alert_id
                 )
         logger.info("[vlm-worker] stopped")
+
+    async def _process_task(self, task: VLMTask) -> SceneAnalysis:
+        """Process one item so video lifecycle behavior is independently testable."""
+        processing_started = time.monotonic()
+        if task.raw_window is not None:
+            processed = await asyncio.to_thread(
+                self._pipeline.process_video_window,
+                task.raw_window,
+                task.camera_id,
+                stream_id=task.analysis_id or "default",
+            )
+            analysis = processed.scene
+            qwen_ms = processed.timing.qwen_ms
+            completed_at = time.monotonic()
+            processed.timing.queue_wait_ms = max(
+                0.0, (processing_started - task.enqueued_at) * 1000
+            )
+            processed.timing.wall_clock_ms = max(
+                0.0, (completed_at - task.enqueued_at) * 1000
+            )
+        else:
+            processed = None
+            qwen_started = time.perf_counter()
+            analysis = await asyncio.to_thread(self._pipeline.analyze_vlm, task)
+            qwen_ms = (time.perf_counter() - qwen_started) * 1000
+
+        await self._alert_store.update_vlm(
+            task.alert_id, analysis, qwen_ms=qwen_ms
+        )
+        if task.analysis_id and self._analysis_store is not None:
+            if processed is None:
+                await self._analysis_store.complete_window(
+                    task.analysis_id,
+                    task.alert_id,
+                    analysis,
+                    qwen_ms=qwen_ms,
+                )
+            else:
+                await self._analysis_store.complete_processed_window(
+                    task.analysis_id,
+                    task.alert_id,
+                    processed,
+                    qwen_ms,
+                )
+        if processed is not None:
+            await self._alert_store.apply_episode_context(processed.alert_context)
+        return analysis
 
     async def start(self, loop: asyncio.AbstractEventLoop | None = None) -> None:
         """Create and track the background task so it can be cancelled on stop."""

@@ -88,6 +88,23 @@ async def test_analysis_store_exposes_producer_failure():
 
 
 @pytest.mark.asyncio
+async def test_has_active_camera_only_matches_reading_or_queued_analyses():
+    store = InMemoryAnalysisStore()
+    await store.create(VideoAnalysis(id="reading", camera_id="cam-active"))
+    await store.create(
+        VideoAnalysis(id="completed", camera_id="cam-done", status="completed")
+    )
+    await store.create(
+        VideoAnalysis(id="failed", camera_id="cam-failed", status="failed")
+    )
+
+    assert await store.has_active_camera("cam-active") is True
+    assert await store.has_active_camera("cam-done") is False
+    assert await store.has_active_camera("cam-failed") is False
+    assert await store.has_active_camera("unknown") is False
+
+
+@pytest.mark.asyncio
 async def test_processed_static_window_is_persisted_as_skipped_and_completes():
     store = InMemoryAnalysisStore()
     await store.create(VideoAnalysis(id="analysis-4", camera_id="cam_01"))
@@ -131,6 +148,7 @@ async def test_suppressed_window_persists_inherited_alert_context():
     store = InMemoryAnalysisStore()
     await store.create(VideoAnalysis(id="analysis-a", camera_id="cam-a"))
     await store.append_window("analysis-a", pending_window("window-2"))
+    await store.mark_producer_complete("analysis-a")
     processed = ProcessedVideoWindow(
         scene=SceneAnalysis(summary="inherited", alert_level=AlertLevel.HIGH),
         qwen_input=QwenInputSummary(),
@@ -168,6 +186,7 @@ async def test_suppressed_window_persists_inherited_alert_context():
     assert saved.vlm.status == "suppressed"
     assert saved.vlm.skipped is True
     assert saved.security.alert_level is AlertLevel.HIGH
+    assert (await store.get("analysis-a")).status == "completed"
     assert saved.timing.total_ms == 0
     assert saved.timing.motion_ms == 0
     assert saved.timing.detector_ms == 0
