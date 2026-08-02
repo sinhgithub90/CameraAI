@@ -21,8 +21,8 @@ MVP bao gồm:
 
 - trạng thái cảnh báo độc lập theo camera trong bộ nhớ;
 - một alert episode cho mỗi chuỗi cảnh báo đang hoạt động;
-- suppress Qwen 60 giây sau khi Qwen xác nhận đỏ;
-- Motion, Detection, routing và keyframe selection vẫn chạy trong cooldown;
+- bỏ toàn bộ Motion, Detection, routing, keyframe selection và Qwen trong 60
+  giây sau khi Qwen xác nhận đỏ;
 - xác minh lại bằng một cửa sổ video đủ mới sau khi cooldown hết hạn;
 - phân biệt kết quả cửa sổ với mức cảnh báo đang được kế thừa;
 - retry có kiểm soát khi lần xác minh lại bị lỗi;
@@ -115,29 +115,33 @@ theo nhịp 5 giây. Khi tích hợp live camera thật, contract được mở 
 
 ```text
 RawVideoWindow
-  -> Motion
-  -> YOLO / Fire detector
-  -> candidate routing
   -> đọc camera alert state
-       NORMAL
-         -> áp dụng VLMCallPolicy hiện tại
        ALERT_ACTIVE và chưa đến hạn
-         -> suppress Qwen, kế thừa alert đang hoạt động
+         -> bỏ Motion/Detection/Qwen
+         -> tạo kết quả kế thừa alert đang hoạt động
        ALERT_ACTIVE và đã đến hạn
-         -> chỉ cửa sổ đủ điều kiện mới force Qwen recheck
+         -> chỉ cửa sổ đủ điều kiện mới chạy lại toàn pipeline để recheck
        vlm_inflight=true
-         -> không tạo thêm request Qwen cho cùng camera
+         -> bỏ cửa sổ, không chạy thêm pipeline cho cùng camera
+       NORMAL
+         -> Motion
+         -> YOLO / Fire detector
+         -> candidate routing
+         -> VLMCallPolicy hiện tại
+         -> Qwen nếu policy yêu cầu
   -> ProcessedVideoWindow
   -> AnalysisStore / AlertStore / benchmark JSON
 ```
 
-Kiểm tra cooldown phải diễn ra ngay trước quyết định gọi Qwen trong worker.
-Nhờ vậy, task đã nằm trong queue trước khi một cửa sổ khác trả đỏ vẫn được
-suppress đúng khi tới lượt xử lý. MVP không xóa task khỏi `PriorityQueue`.
+Kiểm tra cooldown phải diễn ra ngay khi worker bắt đầu xử lý `RawVideoWindow`,
+trước Motion. Nhờ vậy, task đã nằm trong queue trước khi một cửa sổ khác trả đỏ
+vẫn được bỏ toàn bộ inference đúng khi tới lượt xử lý. MVP không xóa task khỏi
+`PriorityQueue`; worker hoàn thành nhanh task đó bằng một kết quả suppressed.
 
-Trong cooldown, Motion và Detection vẫn chạy với cấu hình hiện tại để giữ dữ
-liệu quan sát và không thay đổi hành vi detector. Việc giảm tần suất YOLO nằm
-ngoài phạm vi MVP.
+Producer vẫn decode/lấy mẫu và tạo `RawVideoWindow` mỗi 5 giây để giữ timeline
+và có frame mới cho lần recheck. Chỉ các stage từ Motion trở đi bị bỏ trong
+cooldown. Cửa sổ đến hạn recheck chạy lại đầy đủ Motion, Detection, routing,
+keyframe selection và Qwen.
 
 ## Kết quả đỏ và alert episode
 
@@ -162,6 +166,8 @@ phải tách quan sát của cửa sổ và trạng thái vận hành của came
 {
   "window_observation": {
     "detected_level": null,
+    "motion_processed": false,
+    "detection_processed": false,
     "verification_status": "suppressed",
     "verified_by_vlm": false
   },
@@ -178,7 +184,8 @@ phải tách quan sát của cửa sổ và trạng thái vận hành của came
 }
 ```
 
-`qwen_ms` bằng `0`. Cửa sổ vẫn hoàn thành và xuất hiện trong API/benchmark.
+`motion_ms`, `detector_ms`, `keyframe_ms` và `qwen_ms` đều bằng `0`. Cửa sổ vẫn
+hoàn thành và xuất hiện trong API/benchmark.
 Frontend có thể hiển thị cảnh báo đỏ đang hoạt động cùng thông báo rằng cửa sổ
 hiện tại chưa được AI xác minh lại.
 
@@ -233,7 +240,8 @@ lại. Kết quả phải báo riêng mức cảnh báo được Qwen xác minh 
 
 ## Xử lý lỗi
 
-- Lỗi Motion/Detection giữ cách xử lý degraded hiện tại và không tự tạo đỏ.
+- Lỗi Motion/Detection ở cửa sổ bình thường hoặc recheck giữ cách xử lý degraded
+  hiện tại và không tự tạo đỏ.
 - Lỗi Qwen ở lần xác minh đầu không mở alert episode.
 - Lỗi Qwen khi recheck không đóng episode đang hoạt động.
 - Cửa sổ không đủ frame không được dùng để resolve cảnh báo; worker giữ trạng
@@ -246,8 +254,8 @@ lại. Kết quả phải báo riêng mức cảnh báo được Qwen xác minh 
 Hoàn thành MVP khi:
 
 1. Unit test chứng minh kết quả đỏ tạo đúng một episode và thời hạn 60 giây.
-2. Các cửa sổ trong cooldown chạy Motion/Detection nhưng không gọi fake Qwen.
-3. Cửa sổ suppressed có metadata kế thừa và `qwen_ms = 0`.
+2. Các cửa sổ trong cooldown không chạy Motion, Detection hoặc fake Qwen.
+3. Cửa sổ suppressed có metadata kế thừa và toàn bộ stage timing bằng `0`.
 4. Cửa sổ đủ điều kiện recheck gọi Qwen đúng một lần.
 5. Đỏ gia hạn 60 giây, cam chuyển sang watch, xanh resolve và lỗi giữ episode.
 6. Hai camera có state độc lập và cảnh báo của camera A không suppress camera B.
