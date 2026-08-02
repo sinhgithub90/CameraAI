@@ -16,6 +16,21 @@ def test_async_video_ui_polls_the_aggregate_analysis_endpoint():
     assert "Promise.all(alertIds.map" not in source
 
 
+def test_video_ui_labels_inherited_red_as_not_reverified():
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "apps"
+        / "api"
+        / "static"
+        / "index.html"
+    ).read_text(encoding="utf-8")
+
+    assert "inherited_active_alert" in source
+    assert "Chưa được Qwen xác minh lại" in source
+    assert "active_alert_cooldown" in source
+    assert "Active alert" in source
+
+
 def test_video_ui_renders_window_vlm_results_and_timing_without_detection_table():
     source = (
         Path(__file__).resolve().parents[1]

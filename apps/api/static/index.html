@@ -411,6 +411,16 @@ function renderVideoWindows(data, alerts) {
     const card = document.createElement('div');
     card.className = 'card';
     const status = alert?.vlm?.status || window.vlm?.status || 'pending';
+    const alertContext = window.event_metadata?.alert_context || {};
+    const vlmCall = window.event_metadata?.vlm_call || {};
+    const inherited = alertContext.source === 'inherited_active_alert';
+    const cooldownSuppressed = vlmCall.reason === 'active_alert_cooldown';
+    const verificationText = inherited || cooldownSuppressed
+      ? 'Chưa được Qwen xác minh lại — kế thừa cảnh báo đang hoạt động'
+      : status === 'completed'
+        ? 'Đã được Qwen xác minh'
+        : 'Không gọi Qwen';
+    const activeAlert = alertContext.active_alert_id || '—';
     const summary = alert?.vlm?.summary || window.vlm?.summary ||
       (status === 'pending' ? 'Đang chờ VLM...' : 'VLM không trả nội dung phân tích cho window này.');
     const level = alert?.security?.alert_level || window.security?.alert_level || 'low';
@@ -422,6 +432,9 @@ function renderVideoWindows(data, alerts) {
       ['Qwen frames', (window.qwen_input?.frame_indices || []).join(', ') || '—'],
       ['Timing', `Motion ${(timing.motion_ms || 0).toFixed(1)}ms | YOLO ${(timing.detector_ms || 0).toFixed(1)}ms | VLM ${(timing.qwen_ms || 0).toFixed(1)}ms`],
       ['Alert level', level.toUpperCase()],
+      ['Verification', verificationText],
+      ['Active alert', activeAlert],
+      ['VLM reason', vlmCall.reason || '—'],
       ['VLM', summary],
       ['Risks', risks],
       ['Action', action],
