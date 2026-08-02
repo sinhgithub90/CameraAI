@@ -17,12 +17,10 @@ import logging
 import os
 import time
 import uuid
-from pathlib import Path
 
 import cv2
 import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import HTMLResponse
 
 from dotenv import load_dotenv
 
@@ -55,9 +53,6 @@ logger = logging.getLogger(__name__)
 
 # Load .env (repo root) before building the pipeline so env config applies.
 load_dotenv()
-
-UI_FILE = Path(__file__).resolve().parent / "static" / "index.html"
-
 
 def _build_pipeline(
     alert_state_store: InMemoryCameraAlertStateStore | None = None,
@@ -104,11 +99,6 @@ async def startup_vlm_worker() -> None:
 @app.on_event("shutdown")
 async def shutdown_vlm_worker() -> None:
     await vlm_worker.stop()
-
-
-@app.get("/", response_class=HTMLResponse)
-async def index() -> str:
-    return UI_FILE.read_text(encoding="utf-8")
 
 
 @app.get("/health")

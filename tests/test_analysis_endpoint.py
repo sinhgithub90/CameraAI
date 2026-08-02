@@ -14,6 +14,12 @@ from camera_ai.schemas import (
 from test_analysis_store import pending_window
 
 
+def test_api_has_no_demo_root_route():
+    paths = {route.path for route in main.app.routes}
+
+    assert "/" not in paths
+
+
 @pytest.mark.asyncio
 async def test_get_analysis_returns_windows_and_total_timing(monkeypatch):
     store = InMemoryAnalysisStore()
