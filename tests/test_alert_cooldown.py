@@ -266,3 +266,29 @@ def test_prequeue_admission_reserves_exactly_one_due_recheck():
     assert first_due.reservation_version is not None
     assert second_due.process_window is False
     assert store.get("analysis-a", "cam-a").recheck_reserved is True
+
+
+def test_reserved_recheck_failure_clears_token_and_applies_retry_backoff():
+    """Catches pre-Qwen failures permanently suppressing every later window."""
+    store = InMemoryCameraAlertStateStore.seeded_red(
+        stream_id="analysis-a",
+        camera_id="cam-a",
+        active_alert_id="episode-1",
+        next_recheck_event_seconds=65.0,
+    )
+    admission = store.admit_before_queue(
+        stream_id="analysis-a",
+        camera_id="cam-a",
+        start_seconds=65.0,
+        end_seconds=70.0,
+        processing_now=200.0,
+    )
+
+    context = store.fail_reserved_admission(admission, processing_now=200.0)
+
+    runtime = store.get("analysis-a", "cam-a")
+    assert context is not None
+    assert context.verification_status is VerificationStatus.FAILED
+    assert runtime.recheck_reserved is False
+    assert runtime.phase is AlertRuntimePhase.ALERT_ACTIVE_UNVERIFIED
+    assert runtime.retry_due_processing_at == 215.0

@@ -1,6 +1,7 @@
 import numpy as np
 
 from camera_ai.alert_cooldown import (
+    AlertRuntimePhase,
     InMemoryCameraAlertStateStore,
     VerificationStatus,
 )
@@ -256,6 +257,48 @@ def test_reserved_prequeue_recheck_is_not_suppressed_by_processor():
 
     assert vlm.calls == 1
     assert result.alert_context.episode_resolved is True
+
+
+def test_reserved_recheck_with_no_usable_frames_releases_reservation(monkeypatch):
+    """Catches the no-frame policy branch permanently retaining its token."""
+    state = InMemoryCameraAlertStateStore.seeded_red(
+        stream_id="analysis-a",
+        camera_id="cam-a",
+        active_alert_id="episode-1",
+        next_recheck_event_seconds=65.0,
+    )
+    window = static_window().model_copy(
+        update={"window_index": 13, "start_seconds": 65.0}
+    )
+    admission = state.admit_before_queue(
+        stream_id="analysis-a",
+        camera_id="cam-a",
+        start_seconds=window.start_seconds,
+        end_seconds=window.end_seconds,
+        processing_now=165.0,
+    )
+    monkeypatch.setattr("camera_ai.video_windows.select_keyframes", lambda *args, **kwargs: [])
+    processor = VideoWindowProcessor(
+        detector=EmptyDetector(),
+        vlm=VLM(),
+        yolo_fps=2,
+        max_keyframes=2,
+        alert_state_store=state,
+    )
+
+    result = processor.process(
+        window,
+        camera_id="cam-a",
+        stream_id="analysis-a",
+        admission=admission,
+    )
+
+    runtime = state.get("analysis-a", "cam-a")
+    assert result.alert_context.verification_status is VerificationStatus.FAILED
+    assert result.scene.alert_level is AlertLevel.HIGH
+    assert result.scene.degraded is True
+    assert runtime.recheck_reserved is False
+    assert runtime.phase is AlertRuntimePhase.ALERT_ACTIVE_UNVERIFIED
 
 
 def test_failed_recheck_returns_degraded_window_and_keeps_red():

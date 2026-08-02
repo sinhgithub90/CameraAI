@@ -7,7 +7,7 @@ import heapq
 import logging
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Callable
 
 import numpy as np
@@ -99,37 +99,17 @@ class VLMQueue:
 
     async def dequeue(self) -> VLMTask:
         async with self._condition:
-            while not self._heap:
-                await self._condition.wait()
-            task = heapq.heappop(self._heap)
-        now = time.monotonic()
-        eff = task.effective_priority(now=now)
-        if eff < task.priority:
-            # Task aged — re-push with boosted priority, then re-pop.
-            aged = VLMTask(
-                priority=eff,
-                enqueued_at=task.enqueued_at,   # keep original timestamp
-                task_id=task.task_id,
-                camera_id=task.camera_id,
-                alert_id=task.alert_id,
-                analysis_id=task.analysis_id,
-                window_index=task.window_index,
-                frames=task.frames,
-                detections=task.detections,
-                rule_id=task.rule_id,
-                max_keyframes=task.max_keyframes,
-                raw_window=task.raw_window,
-                admission=task.admission,
-            )
-            logger.debug(
-                "[vlm-queue] aged alert=%s priority=%s→%s wait=%.0fs",
-                task.alert_id,
-                task.priority,
-                eff,
-                now - task.enqueued_at,
-            )
-            await self.enqueue(aged)
-            return await self.dequeue()
+            while True:
+                while not self._heap:
+                    await self._condition.wait()
+                task = heapq.heappop(self._heap)
+                effective = task.effective_priority(now=time.monotonic())
+                if effective < task.priority:
+                    heapq.heappush(
+                        self._heap, replace(task, priority=effective)
+                    )
+                    continue
+                break
         logger.debug(
             "[vlm-queue] dequeued alert=%s priority=%s depth=%s",
             task.alert_id,
@@ -235,12 +215,17 @@ class VLMWorker:
             process_kwargs = {"stream_id": task.analysis_id or "default"}
             if task.admission is not None:
                 process_kwargs["admission"] = task.admission
-            processed = await asyncio.to_thread(
-                self._pipeline.process_video_window,
-                task.raw_window,
-                task.camera_id,
-                **process_kwargs,
-            )
+            try:
+                processed = await asyncio.to_thread(
+                    self._pipeline.process_video_window,
+                    task.raw_window,
+                    task.camera_id,
+                    **process_kwargs,
+                )
+            except Exception:
+                if task.admission is not None:
+                    self._pipeline.fail_video_window_admission(task.admission)
+                raise
             analysis = processed.scene
             qwen_ms = processed.timing.qwen_ms
             completed_at = time.monotonic()

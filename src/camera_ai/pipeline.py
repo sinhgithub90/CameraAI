@@ -659,6 +659,15 @@ class SecurityAIPipeline:
             admission=admission,
         )
 
+    def fail_video_window_admission(self, admission: WindowAdmission) -> None:
+        """Release a reserved recheck when processing fails before state recording."""
+        store = self._video_window_processor.alert_state_store
+        if store is not None:
+            store.fail_reserved_admission(
+                admission,
+                processing_now=time.monotonic(),
+            )
+
     def analyze_vlm(self, task: VLMTask) -> SceneAnalysis:
         """Run VLM analysis on pre-detected frames. Called by VLMWorker (via asyncio.to_thread)."""
         if len(task.frames) == 0:

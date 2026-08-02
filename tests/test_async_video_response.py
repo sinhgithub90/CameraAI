@@ -45,6 +45,11 @@ class RejectingQueue(RecordingQueue):
         return False
 
 
+class FailingAlertStore(RecordingAlertStore):
+    async def create(self, alert) -> None:
+        raise RuntimeError("alert persistence failed")
+
+
 class RacingRedState:
     """First admission sees normal; the post-rejection read sees newly active red."""
 
@@ -212,3 +217,31 @@ async def test_late_queue_cutoff_rejection_cleans_pending_records(monkeypatch):
     assert alerts.alerts == []
     assert analysis.cooldown.active_alert_id == "episode-race"
     assert analysis.cooldown.suppressed_windows == 1
+
+
+@pytest.mark.asyncio
+async def test_recheck_persistence_failure_releases_reservation(monkeypatch):
+    """Catches producer setup failure suppressing all future rechecks."""
+    analyses = InMemoryAnalysisStore()
+    await analyses.create(VideoAnalysis(id="analysis-fail", camera_id="cam-fail"))
+    state = InMemoryCameraAlertStateStore.seeded_red(
+        stream_id="analysis-fail",
+        camera_id="cam-fail",
+        active_alert_id="episode-1",
+        next_recheck_event_seconds=65.0,
+    )
+    monkeypatch.setattr(main, "vlm_queue", RecordingQueue())
+    monkeypatch.setattr(main, "alert_store", FailingAlertStore())
+    monkeypatch.setattr(main, "analysis_store", analyses)
+    monkeypatch.setattr(main, "camera_alert_state_store", state)
+
+    with pytest.raises(RuntimeError, match="alert persistence failed"):
+        await main._enqueue_video_window(
+            "analysis-fail", "cam-fail", _window(13, "person")
+        )
+
+    analysis = await analyses.get("analysis-fail")
+    runtime = state.get("analysis-fail", "cam-fail")
+    assert analysis.windows == []
+    assert runtime.recheck_reserved is False
+    assert runtime.phase is AlertRuntimePhase.ALERT_ACTIVE_UNVERIFIED

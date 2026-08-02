@@ -12,6 +12,7 @@ from camera_ai.alert_store import Alert, InMemoryAlertStore
 from camera_ai.analysis_store import InMemoryAnalysisStore, VideoAnalysis
 from camera_ai.alert_cooldown import (
     AlertRuntimePhase,
+    InMemoryCameraAlertStateStore,
     VerificationStatus,
     WindowAlertContext,
 )
@@ -213,8 +214,77 @@ class TestVLMQueue:
         assert due_accepted is True
         assert queue.depth == 1
 
+    @pytest.mark.asyncio
+    async def test_aging_does_not_reenter_cutoff_aware_public_enqueue(self, queue):
+        """Catches an aged task disappearing between heap pop and re-enqueue."""
+        old = _make_task(
+            "old", priority=3, camera_id="cam-a", enqueued_at=time.monotonic() - 80
+        )
+        old.analysis_id = "analysis-a"
+        old.raw_window = RawVideoWindow(
+            window_index=1, start_seconds=5.0, observations=[]
+        )
+        await queue.enqueue(old)
+        original_enqueue = queue.enqueue
+
+        async def cutoff_then_enqueue(task):
+            await queue.suppress_stream_before(
+                analysis_id="analysis-a", camera_id="cam-a", deadline=65.0
+            )
+            return await original_enqueue(task)
+
+        queue.enqueue = cutoff_then_enqueue
+
+        dequeued = await asyncio.wait_for(queue.dequeue(), timeout=0.1)
+
+        assert dequeued.task_id == "old"
+
 
 class TestVLMWorker:
+    @pytest.mark.asyncio
+    async def test_preprocessor_exception_releases_reserved_recheck(self):
+        """Catches worker exceptions leaving the producer reservation stuck."""
+        state = InMemoryCameraAlertStateStore.seeded_red(
+            stream_id="analysis-a",
+            camera_id="cam-a",
+            active_alert_id="episode-1",
+            next_recheck_event_seconds=65.0,
+        )
+        admission = state.admit_before_queue(
+            stream_id="analysis-a",
+            camera_id="cam-a",
+            start_seconds=65.0,
+            end_seconds=70.0,
+            processing_now=200.0,
+        )
+        pipeline = MagicMock()
+        pipeline.process_video_window.side_effect = RuntimeError("detector failed")
+        pipeline.fail_video_window_admission.side_effect = (
+            lambda reserved: state.fail_reserved_admission(
+                reserved, processing_now=200.0
+            )
+        )
+        worker = VLMWorker(
+            queue=VLMQueue(),
+            pipeline=pipeline,
+            alert_store=AsyncMock(),
+            event_bus=AsyncMock(),
+        )
+        task = VLMTask(
+            priority=1,
+            enqueued_at=time.monotonic(),
+            camera_id="cam-a",
+            analysis_id="analysis-a",
+            raw_window=RawVideoWindow(window_index=13, start_seconds=65.0),
+            admission=admission,
+        )
+
+        with pytest.raises(RuntimeError, match="detector failed"):
+            await worker._process_task(task)
+
+        pipeline.fail_video_window_admission.assert_called_once_with(admission)
+        assert state.get("analysis-a", "cam-a").recheck_reserved is False
+
     @pytest.mark.asyncio
     async def test_red_confirmation_prunes_only_same_analysis_camera_backlog(self):
         """Catches confirmed-red backlog still consuming the global queue."""

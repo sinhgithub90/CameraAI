@@ -203,6 +203,13 @@ class CameraAlertStateStore(Protocol):
         processing_now: float,
     ) -> WindowAlertContext: ...
 
+    def fail_reserved_admission(
+        self,
+        admission: WindowAdmission,
+        *,
+        processing_now: float,
+    ) -> WindowAlertContext | None: ...
+
     def get(self, stream_id: str, camera_id: str) -> CameraAlertRuntime: ...
 
 
@@ -424,6 +431,37 @@ class InMemoryCameraAlertStateStore:
                 call_vlm=base_decision.call_vlm,
                 reason=base_decision.reason,
             )
+
+    def fail_reserved_admission(
+        self,
+        admission: WindowAdmission,
+        *,
+        processing_now: float,
+    ) -> WindowAlertContext | None:
+        """Fail only the still-current producer reservation token."""
+        with self._lock:
+            runtime = self._runtime(admission.stream_id, admission.camera_id)
+            if (
+                not admission.recheck
+                or admission.reservation_version is None
+                or admission.reservation_version != runtime.state_version
+                or not runtime.recheck_reserved
+            ):
+                return None
+            gate = CooldownGateDecision(
+                stream_id=admission.stream_id,
+                camera_id=admission.camera_id,
+                start_seconds=admission.start_seconds,
+                end_seconds=admission.end_seconds,
+                disposition=CooldownDisposition.FORCE_RECHECK,
+                call_vlm=False,
+                reason=VLMCallReason.ACTIVE_ALERT_RECHECK,
+                effective_level=admission.effective_level,
+                active_alert_id=admission.active_alert_id,
+                event_type=admission.event_type,
+                recheck=True,
+            )
+            return self.record_failure(gate=gate, processing_now=processing_now)
 
     @staticmethod
     def _gate(

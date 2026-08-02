@@ -25,7 +25,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from dotenv import load_dotenv
 
 from camera_ai import SecurityAIPipeline
-from camera_ai.alert_cooldown import InMemoryCameraAlertStateStore
+from camera_ai.alert_cooldown import InMemoryCameraAlertStateStore, WindowAdmission
 from camera_ai.analysis_store import (
     CompactVideoAnalysis,
     InMemoryAnalysisStore,
@@ -165,6 +165,25 @@ async def _enqueue_video_window(
         )
         return
 
+    try:
+        await _persist_admitted_video_window(
+            analysis_id, camera_id, window, admission
+        )
+    except Exception:
+        camera_alert_state_store.fail_reserved_admission(
+            admission,
+            processing_now=time.monotonic(),
+        )
+        raise
+
+
+async def _persist_admitted_video_window(
+    analysis_id: str,
+    camera_id: str,
+    window: RawVideoWindow,
+    admission: WindowAdmission,
+) -> None:
+    """Create records and queue one already admitted raw video window."""
     alert_id = uuid.uuid4().hex
     observations = window.observations
     timing = StageTiming()
@@ -184,31 +203,36 @@ async def _enqueue_video_window(
         ),
         timing=timing,
     )
-    await analysis_store.append_window(analysis_id, window_result)
-    await alert_store.create(
-        Alert(
-            id=alert_id,
-            camera_id=camera_id,
-            vlm=window_result.vlm,
-            security=window_result.security,
-            timing=timing,
+    try:
+        await analysis_store.append_window(analysis_id, window_result)
+        await alert_store.create(
+            Alert(
+                id=alert_id,
+                camera_id=camera_id,
+                vlm=window_result.vlm,
+                security=window_result.security,
+                timing=timing,
+            )
         )
-    )
-    accepted = await vlm_queue.enqueue(
-        VLMTask(
-            task_id=alert_id,
-            camera_id=camera_id,
-            alert_id=alert_id,
-            analysis_id=analysis_id,
-            window_index=window.window_index,
-            raw_window=window,
-            rule_id="default",
-            priority=3,
-            enqueued_at=time.monotonic(),
-            max_keyframes=pipeline.max_keyframes,
-            admission=admission if admission.recheck else None,
+        accepted = await vlm_queue.enqueue(
+            VLMTask(
+                task_id=alert_id,
+                camera_id=camera_id,
+                alert_id=alert_id,
+                analysis_id=analysis_id,
+                window_index=window.window_index,
+                raw_window=window,
+                rule_id="default",
+                priority=3,
+                enqueued_at=time.monotonic(),
+                max_keyframes=pipeline.max_keyframes,
+                admission=admission if admission.recheck else None,
+            )
         )
-    )
+    except Exception:
+        await analysis_store.discard_pending_window(analysis_id, alert_id)
+        await alert_store.delete(alert_id)
+        raise
     if accepted is False:
         await analysis_store.discard_pending_window(analysis_id, alert_id)
         await alert_store.delete(alert_id)

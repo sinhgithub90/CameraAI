@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from .alert_cooldown import (
+    AlertRuntimePhase,
     RED_COOLDOWN_SECONDS,
     VerificationStatus,
     WindowAdmission,
@@ -304,21 +305,26 @@ class InMemoryAnalysisStore(AnalysisStore):
                 }
                 break
         context = processed.alert_context
-        if context.episode_created or context.episode_extended:
+        if context.episode_resolved and analysis.cooldown is not None:
+            analysis.cooldown.active_alert_id = None
+            analysis.cooldown.alert_level = AlertLevel.LOW
+            analysis.cooldown.recheck_at = None
+        elif (
+            context.active_alert_id is not None
+            and context.state is not AlertRuntimePhase.NORMAL
+        ):
             self._add_cooldown_suppression(
                 analysis,
                 active_alert_id=context.active_alert_id,
                 alert_level=context.effective_level,
                 timebase="video",
-                red_started=context.window_end_seconds,
+                red_started=(
+                    context.window_end_seconds if context.episode_created else None
+                ),
                 recheck_at=context.next_recheck_event_seconds,
                 windows=0,
                 seconds=0.0,
             )
-        elif context.episode_resolved and analysis.cooldown is not None:
-            analysis.cooldown.active_alert_id = None
-            analysis.cooldown.alert_level = AlertLevel.LOW
-            analysis.cooldown.recheck_at = None
         analysis.refresh_total_timing()
         self._refresh_status(analysis)
 
@@ -414,10 +420,14 @@ class InMemoryAnalysisStore(AnalysisStore):
         seconds: float,
     ) -> None:
         summary = analysis.cooldown or CooldownSummary(timebase=timebase)
+        episode_changed = (
+            active_alert_id is not None
+            and active_alert_id != summary.active_alert_id
+        )
         summary.active_alert_id = active_alert_id
         summary.alert_level = alert_level
         summary.timebase = timebase
-        if summary.red_started is None:
+        if episode_changed or summary.red_started is None:
             summary.red_started = red_started
         summary.recheck_at = recheck_at
         summary.suppressed_windows += windows

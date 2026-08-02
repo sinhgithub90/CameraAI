@@ -398,6 +398,36 @@ class VideoWindowProcessor:
                 scene = scene.model_copy(
                     update={"alert_level": alert_context.effective_level}
                 )
+        elif (
+            self.alert_state_store is not None
+            and admission.recheck
+            and vlm_call.reason is VLMCallReason.NO_USABLE_FRAMES
+        ):
+            failed_context = self.alert_state_store.fail_reserved_admission(
+                admission,
+                processing_now=time.monotonic(),
+            )
+            alert_context = failed_context or WindowAlertContext(
+                stream_id=stream_id,
+                camera_id=camera_id,
+                state=admission.state,
+                effective_level=admission.effective_level,
+                verification_status=VerificationStatus.FAILED,
+                source="verification_failed",
+                window_start_seconds=window.start_seconds,
+                window_end_seconds=window.end_seconds,
+                active_alert_id=admission.active_alert_id,
+                event_type=admission.event_type,
+                recheck=True,
+                next_recheck_event_seconds=admission.next_recheck_event_seconds,
+            )
+            scene = scene.model_copy(
+                update={
+                    "alert_level": alert_context.effective_level,
+                    "degraded": True,
+                }
+            )
+            trace = trace.model_copy(update={"scene": scene})
         else:
             alert_context = WindowAlertContext(
                 stream_id=stream_id,
