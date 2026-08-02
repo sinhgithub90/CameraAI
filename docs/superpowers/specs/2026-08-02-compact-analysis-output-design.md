@@ -57,9 +57,8 @@ the benchmark to private storage structures.
 ## Benchmark contract
 
 `build_video_report` accepts the compact API payload. Its per-window output
-uses the same compact `qwen`, cooldown, and timing values, plus
-`candidate_type` only when the input explicitly contains one. Since the new API
-does not expose candidate data, normal runtime reports omit it.
+uses the same compact `qwen`, cooldown, and timing values. Candidate data is
+never emitted by the compact runtime report.
 
 The report retains `level_summary` and `performance_summary`, including Qwen
 call rate, cooldown suppression rate, episode/recheck counters, processing p95,

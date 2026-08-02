@@ -192,7 +192,7 @@ git commit -m "refactor: remove unused demo UI"
 - [ ] **Step 1: Replace redundant shape fixtures with one compact payload test**
 
 Use a compact payload that contains one verified red window and one suppressed
-window. Assert the report omits `candidate_type` when absent, preserves Qwen
+window. Assert the report has no `candidate_type`, preserves Qwen
 reason/verification, and keeps cooldown metrics:
 
 ```python
@@ -217,9 +217,8 @@ Expected: FAIL because `build_video_report` still reads `event_metadata`.
 
 In `build_video_report`, read `window["alert_level"]`, `window["qwen"]`, and
 `window.get("cooldown", {})`. Derive `called` from
-`qwen.status == "completed"`, count episode flags from `cooldown`, omit
-`candidate_type` when absent, and build nested dictionaries without `None`
-values.
+`qwen.status == "completed"`, count episode flags from `cooldown`, never emit
+`candidate_type`, and build nested dictionaries without `None` values.
 
 - [ ] **Step 4: Update docs to describe the compact API and removed UI**
 

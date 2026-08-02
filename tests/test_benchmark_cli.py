@@ -4,7 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from camera_ai.benchmark import BenchmarkObservation
+from camera_ai.benchmark import BenchmarkCase, BenchmarkObservation
 from scripts.benchmark_pipeline import (
     HttpAsyncBenchmarkClient,
     build_video_report,
@@ -57,16 +57,13 @@ def analysis_payload(*levels):
                 "window_index": index,
                 "start_seconds": index * 5,
                 "end_seconds": (index + 1) * 5,
-                "vlm": {"summary": f"window {index}"},
-                "security": {
-                    "alert_level": level,
-                    "risks": [f"risk-{index}"],
-                    "recommended_action": "review",
-                },
-                "detections": [],
-                "qwen_input": {
-                    "frame_count": 2,
-                    "timestamps_seconds": [index * 5 + 0.8, index * 5 + 4.8],
+                "alert_level": level,
+                "qwen": {
+                    "status": "completed",
+                    "summary": f"window {index}",
+                    "degraded": False,
+                    "verified": True,
+                    "reason": "candidate_requires_verification",
                 },
                 "timing": {
                     "motion_ms": 10.0,
@@ -117,137 +114,74 @@ def test_video_report_keeps_all_green_orange_and_red_windows(tmp_path):
     ]
 
 
-def test_video_report_uses_confirmed_alert_severity_and_compact_qwen_output(tmp_path):
-    payload = analysis_payload("low")
-    payload["windows"][0]["event_metadata"] = {
-        "candidates": [
-            {
-                "candidate_id": "candidate-1",
-                "candidate_type": "vehicle_scene",
-                "priority": "low",
-                "evidence": {"vehicle_peak_count": 4},
-            }
-        ],
-        "decision": {
-            "candidate_id": "candidate-1",
-            "model": "qwen",
-            "decision": "yes",
-            "event_type": "traffic_accident",
-            "evidence": [],
-            "raw_output_valid": True,
-        },
-        "alert": {"severity": "high", "event_type": "traffic_accident"},
-        "vlm_call": {"call_vlm": True, "candidate_id": "candidate-1"},
+def test_video_report_keeps_only_compact_public_window_fields(tmp_path):
+    payload = analysis_payload("high", "high")
+    payload["windows"][0]["cooldown"] = {
+        "active_alert_id": "episode-1",
+        "next_recheck_seconds": 65.0,
+        "episode_created": True,
+    }
+    payload["windows"][0]["timing"]["total_ms"] = 5200.0
+    payload["windows"][1]["qwen"] = {
+        "status": "suppressed",
+        "summary": "Inherited active alert",
+        "degraded": False,
+        "verified": False,
+        "reason": "active_alert_cooldown",
+    }
+    payload["windows"][1]["cooldown"] = {
+        "active_alert_id": "episode-1",
+        "next_recheck_seconds": 65.0,
+    }
+    payload["windows"][1]["timing"] = {
+        "motion_ms": 0.0,
+        "detector_ms": 0.0,
+        "keyframe_ms": 0.0,
+        "qwen_ms": 0.0,
+        "total_ms": 0.0,
+        "queue_wait_ms": 25.0,
+        "wall_clock_ms": 25.0,
     }
 
     report = build_video_report(tmp_path / "event.mp4", "analysis-3", payload)
 
-    assert report["level_summary"] == {
-        "green": 0,
-        "orange": 0,
-        "red": 1,
-        "highest_level": "high",
+    first, suppressed = report["windows"]
+    assert set(first) == {
+        "window_index",
+        "start_seconds",
+        "end_seconds",
+        "alert_level",
+        "qwen",
+        "cooldown",
+        "timing",
     }
-    window = report["windows"][0]
-    assert window["alert_level"] == "high"
-    assert window["candidate_type"] == "vehicle_scene"
-    assert window["qwen"] == {
-        "called": True,
-        "verified": False,
-        "reason": "legacy_payload",
-        "verification_status": None,
-        "source": None,
-        "active_alert_id": None,
-        "decision": "yes",
-        "event_type": "traffic_accident",
-        "summary": "window 0",
-        "timestamps_seconds": [0.8, 4.8],
-    }
-
-
-def test_video_report_summarizes_vlm_calls_and_processing_budget(tmp_path):
-    payload = analysis_payload("low", "medium")
-    payload["windows"][0]["timing"]["total_ms"] = 100
-    payload["windows"][0]["event_metadata"] = {
-        "vlm_call": {"call_vlm": False, "reason": "static_window"}
-    }
-    payload["windows"][1]["timing"]["total_ms"] = 5200
-    payload["windows"][1]["event_metadata"] = {
-        "vlm_call": {
-            "call_vlm": True,
-            "reason": "candidate_requires_verification",
-        }
-    }
-
-    report = build_video_report(tmp_path / "mixed.mp4", "analysis-4", payload)
-
-    assert report["performance_summary"] == {
-        "vlm_called_windows": 1,
-        "vlm_skipped_windows": 1,
-        "vlm_call_rate": 0.5,
-        "vlm_suppressed_by_cooldown": 0,
-        "cooldown_suppression_rate": 0.0,
-        "red_episodes_created": 0,
-        "red_rechecks": 0,
-        "red_cooldown_extensions": 0,
-        "failed_rechecks": 0,
-        "processing_p95_ms": 5200.0,
-        "windows_over_budget": 1,
-        "processing_budget_ms": 5000.0,
-    }
-    assert report["windows"][0]["timing"]["within_budget"] is True
-    assert report["windows"][1]["timing"]["within_budget"] is False
-    assert report["windows"][0]["qwen"] == {
-        "called": False,
-        "verified": False,
-        "reason": "static_window",
-        "verification_status": None,
-        "source": None,
-        "active_alert_id": None,
-        "decision": None,
-        "event_type": None,
-        "summary": "window 0",
-        "timestamps_seconds": [0.8, 4.8],
-    }
+    assert first["qwen"] == payload["windows"][0]["qwen"]
+    assert suppressed["qwen"]["reason"] == "active_alert_cooldown"
+    assert suppressed["qwen"]["verified"] is False
+    assert suppressed["cooldown"]["active_alert_id"] == "episode-1"
+    assert report["performance_summary"]["vlm_called_windows"] == 1
+    assert report["performance_summary"]["windows_over_budget"] == 1
 
 
 def test_video_report_counts_cooldown_suppression_and_rechecks(tmp_path):
     payload = analysis_payload("high", "high", "high")
-    payload["windows"][0]["event_metadata"] = {
-        "vlm_call": {
-            "call_vlm": True,
-            "reason": "candidate_requires_verification",
-        },
-        "alert_context": {
-            "verification_status": "verified",
-            "episode_created": True,
-            "episode_extended": False,
-            "recheck": False,
-            "source": "window_verification",
-            "active_alert_id": "episode-1",
-        },
+    payload["windows"][0]["cooldown"] = {
+        "active_alert_id": "episode-1",
+        "episode_created": True,
     }
-    payload["windows"][1]["event_metadata"] = {
-        "vlm_call": {"call_vlm": False, "reason": "active_alert_cooldown"},
-        "alert_context": {
-            "verification_status": "suppressed",
-            "episode_created": False,
-            "episode_extended": False,
-            "recheck": False,
-            "source": "inherited_active_alert",
-            "active_alert_id": "episode-1",
-        },
+    payload["windows"][1]["qwen"] = {
+        "status": "suppressed",
+        "summary": "Inherited active alert",
+        "degraded": False,
+        "verified": False,
+        "reason": "active_alert_cooldown",
     }
-    payload["windows"][2]["event_metadata"] = {
-        "vlm_call": {"call_vlm": True, "reason": "active_alert_recheck"},
-        "alert_context": {
-            "verification_status": "verified",
-            "episode_created": False,
-            "episode_extended": True,
-            "recheck": True,
-            "source": "window_verification",
-            "active_alert_id": "episode-1",
-        },
+    payload["windows"][1]["cooldown"] = {"active_alert_id": "episode-1"}
+    payload["windows"][2]["qwen"]["reason"] = "active_alert_recheck"
+    payload["windows"][2]["cooldown"] = {
+        "active_alert_id": "episode-1",
+        "recheck": True,
+        "episode_extended": True,
     }
 
     report = build_video_report(tmp_path / "event.mp4", "analysis-a", payload)
@@ -261,41 +195,7 @@ def test_video_report_counts_cooldown_suppression_and_rechecks(tmp_path):
     assert summary["failed_rechecks"] == 0
     assert report["windows"][1]["qwen"]["verified"] is False
     assert report["windows"][1]["qwen"]["reason"] == "active_alert_cooldown"
-    assert report["windows"][1]["qwen"]["source"] == "inherited_active_alert"
-    assert report["windows"][1]["qwen"]["active_alert_id"] == "episode-1"
-
-
-def test_video_report_omits_detection_summary_and_keeps_detailed_timing(tmp_path):
-    payload = analysis_payload("low")
-    payload["windows"][0]["detections"] = [
-        {"label": "person", "confidence": 0.9, "bbox": [0, 0, 10, 20]}
-    ]
-
-    window = build_video_report(
-        tmp_path / "objects.mp4", "analysis-5", payload
-    )["windows"][0]
-
-    assert set(window) == {
-        "window_index",
-        "start_seconds",
-        "end_seconds",
-        "alert_level",
-        "candidate_type",
-        "qwen",
-        "timing",
-    }
-    assert window["timing"] == {
-        "motion_ms": 10.0,
-        "detector_ms": 20.0,
-        "keyframe_ms": 0.1,
-        "qwen_ms": 4000.0,
-        "total_ms": 4030.1,
-        "queue_wait_ms": 25.0,
-        "wall_clock_ms": 4055.1,
-        "within_budget": True,
-    }
-    assert "detection_summary" not in window
-    assert "bbox" not in json.dumps(window)
+    assert report["windows"][1]["cooldown"]["active_alert_id"] == "episode-1"
 
 
 class FakeVideoClient:
@@ -374,13 +274,57 @@ def test_http_client_uses_video_stem_as_camera_id(tmp_path, monkeypatch):
         return Response({"request_id": "analysis-1"})
 
     def fake_get(url, *, timeout):
-        return Response({"status": "completed", "windows": []})
+        return Response(
+            {
+                "status": "completed",
+                "windows": [
+                    {
+                        "qwen": {
+                            "status": "completed",
+                            "summary": "verified",
+                            "degraded": False,
+                        }
+                    }
+                ],
+            }
+        )
 
     monkeypatch.setattr("scripts.benchmark_pipeline.requests.post", fake_post)
     monkeypatch.setattr("scripts.benchmark_pipeline.requests.get", fake_get)
 
-    analysis_id, payload = HttpAsyncBenchmarkClient("http://api").analyze_video(video)
+    client = HttpAsyncBenchmarkClient("http://api")
+    analysis_id, payload = client.analyze_video(video)
 
     assert posted == {"camera_id": "camera_event"}
     assert analysis_id == "analysis-1"
     assert payload["status"] == "completed"
+    assert client.last_first_result_ms > 0.0
+
+
+def test_manifest_observation_consumes_compact_analysis_windows(monkeypatch):
+    client = HttpAsyncBenchmarkClient("http://api")
+    payload = analysis_payload("high", "high")
+    payload["total_timing"] = {"qwen_ms": 4000.0}
+    payload["windows"][1]["qwen"] = {
+        "status": "suppressed",
+        "summary": "Inherited active alert",
+        "degraded": False,
+        "verified": False,
+        "reason": "active_alert_cooldown",
+    }
+    monkeypatch.setattr(
+        client,
+        "analyze_video",
+        lambda path: ("analysis-1", payload),
+    )
+    case = BenchmarkCase(
+        case_id="event-1",
+        expected_event="abnormal",
+        media_path="event.mp4",
+    )
+
+    observation = client.analyze(case)
+
+    assert observation.predicted_event == "abnormal"
+    assert observation.vlm_calls == 1
+    assert observation.json_valid is True

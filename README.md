@@ -3,7 +3,7 @@
 CameraAI analyzes camera images and videos with a lightweight computer-vision
 router and a local Qwen vision-language model. The core package lives in
 `src/camera_ai/`; FastAPI is an adapter for uploads, asynchronous processing,
-polling, and the demo UI.
+and compact result polling.
 
 ## Current async video pipeline
 
@@ -124,7 +124,6 @@ python -m uvicorn apps.api.main:app --reload
 
 Main endpoints:
 
-- `GET /`: demo UI
 - `GET /health`: runtime health
 - `POST /analyze/image`: synchronous image analysis
 - `POST /analyze/video`: synchronous video analysis
@@ -160,18 +159,12 @@ window looks like:
   "start_seconds": 5.0,
   "end_seconds": 10.0,
   "alert_level": "high",
-  "candidate_type": "vehicle_scene",
   "qwen": {
-    "called": true,
+    "status": "completed",
+    "degraded": false,
     "verified": true,
     "reason": "candidate_requires_verification",
-    "verification_status": "verified",
-    "source": "window_verification",
-    "active_alert_id": "episode-1",
-    "decision": "yes",
-    "event_type": "traffic_accident",
-    "summary": "Xe buýt va chạm với xe ô tô.",
-    "timestamps_seconds": [5.8, 9.8]
+    "summary": "Xe buýt va chạm với xe ô tô."
   },
   "timing": {
     "motion_ms": 10.3,
@@ -187,9 +180,10 @@ window looks like:
 ```
 
 Confirmed alert severity takes precedence over the scene security level when
-the report resolves `alert_level`. Raw bounding boxes, detection summaries,
-candidate evidence and IDs, and verbose routing/decision objects stay out of
-the per-video benchmark JSON.
+the internal pipeline resolves `alert_level`. The public analysis response and
+per-video benchmark JSON omit detections, Qwen input frames, candidate data,
+raw alerts, traces, risks, actions, and internal `event_metadata`. Empty
+cooldown values and false episode transition flags are omitted.
 
 The processing target is `total_ms <= 5000` for every window. The top-level
 `performance_summary` reports Qwen call rate, p95 processing time, and the

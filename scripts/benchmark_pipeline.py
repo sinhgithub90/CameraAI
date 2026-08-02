@@ -31,86 +31,6 @@ SUPPORTED_VIDEO_SUFFIXES = {".mp4", ".avi", ".mov", ".mkv"}
 _ALERT_LEVELS = {"low", "medium", "high"}
 
 
-def summarize_detections(detections: list[dict]) -> dict[str, dict[str, float | int]]:
-    summary: dict[str, dict[str, float | int]] = {}
-    for detection in detections:
-        label = str(detection.get("label", "unknown"))
-        confidence = float(detection.get("confidence", 0.0))
-        item = summary.setdefault(
-            label,
-            {"detection_count": 0, "max_confidence": 0.0},
-        )
-        item["detection_count"] += 1
-        item["max_confidence"] = max(item["max_confidence"], confidence)
-    return {label: summary[label] for label in sorted(summary)}
-
-
-def build_alert_report(
-    video_path: str | Path, analysis_id: str, payload: dict
-) -> dict | None:
-    path = Path(video_path)
-    alerts = []
-    for window in payload.get("windows", []):
-        security = window.get("security", {})
-        level = security.get("alert_level", "low")
-        if level not in {"medium", "high"}:
-            continue
-        alerts.append(
-            {
-                "window_index": window.get("window_index"),
-                "start_seconds": window.get("start_seconds"),
-                "end_seconds": window.get("end_seconds"),
-                "alert_level": level,
-                "summary": window.get("vlm", {}).get("summary", ""),
-                "risks": security.get("risks", []),
-                "recommended_action": security.get("recommended_action", ""),
-                "detection_summary": summarize_detections(
-                    window.get("detections", [])
-                ),
-                "qwen_input": window.get("qwen_input", {}),
-                "timing": window.get("timing", {}),
-            }
-        )
-    if not alerts:
-        return None
-    orange = sum(item["alert_level"] == "medium" for item in alerts)
-    red = sum(item["alert_level"] == "high" for item in alerts)
-    return {
-        "video": path.name,
-        "camera_id": path.stem,
-        "analysis_id": analysis_id,
-        "status": payload.get("status", "completed"),
-        "alert_summary": {
-            "orange": orange,
-            "red": red,
-            "highest_level": "high" if red else "medium",
-        },
-        "alerts": alerts,
-    }
-
-
-def resolve_window_alert_level(window: dict) -> str:
-    event_metadata = window.get("event_metadata", {})
-    alert = event_metadata.get("alert") or {}
-    security = window.get("security", {})
-    level = alert.get("severity") or security.get("alert_level", "low")
-    return level if level in _ALERT_LEVELS else "low"
-
-
-def primary_candidate_type(event_metadata: dict) -> str | None:
-    candidates = event_metadata.get("candidates") or []
-    if not candidates:
-        return None
-    vlm_call = event_metadata.get("vlm_call") or {}
-    decision = event_metadata.get("decision") or {}
-    primary_id = vlm_call.get("candidate_id") or decision.get("candidate_id")
-    if primary_id is not None:
-        for candidate in candidates:
-            if candidate.get("candidate_id") == primary_id:
-                return candidate.get("candidate_type")
-    return candidates[0].get("candidate_type")
-
-
 def build_video_report(
     video_path: str | Path, analysis_id: str, payload: dict
 ) -> dict:
@@ -125,64 +45,53 @@ def build_video_report(
     failed_rechecks = 0
     counts = {"low": 0, "medium": 0, "high": 0}
     for window in payload.get("windows", []):
-        level = resolve_window_alert_level(window)
+        level = window.get("alert_level", "low")
+        if level not in _ALERT_LEVELS:
+            level = "low"
         counts[level] += 1
-        event_metadata = window.get("event_metadata", {})
-        vlm_call = event_metadata.get("vlm_call")
-        if vlm_call is None:
-            vlm_call = {
-                "call_vlm": not window.get("vlm", {}).get("skipped", False),
-                "reason": "legacy_payload",
-            }
-        call_vlm = bool(vlm_call.get("call_vlm"))
+        qwen = window.get("qwen") or {}
+        call_vlm = qwen.get("status") == "completed"
         called_windows += call_vlm
-        reason = vlm_call.get("reason", "legacy_payload")
-        alert_context = event_metadata.get("alert_context") or {}
-        verification_status = alert_context.get("verification_status")
-        recheck = bool(alert_context.get("recheck"))
+        reason = qwen.get("reason")
+        cooldown = window.get("cooldown") or {}
+        recheck = bool(cooldown.get("recheck"))
         cooldown_suppressed += reason == "active_alert_cooldown"
-        episodes_created += bool(alert_context.get("episode_created"))
+        episodes_created += bool(cooldown.get("episode_created"))
         red_rechecks += recheck
-        cooldown_extensions += bool(alert_context.get("episode_extended"))
-        failed_rechecks += recheck and verification_status == "failed"
+        cooldown_extensions += bool(cooldown.get("episode_extended"))
+        failed_rechecks += recheck and bool(qwen.get("degraded"))
         timing = window.get("timing", {})
-        decision = event_metadata.get("decision") or {}
-        qwen_input = window.get("qwen_input", {})
         total_ms = float(timing.get("total_ms", 0.0))
         processing_times.append(total_ms)
-        windows.append(
-            {
-                "window_index": window.get("window_index"),
-                "start_seconds": window.get("start_seconds"),
-                "end_seconds": window.get("end_seconds"),
-                "alert_level": level,
-                "candidate_type": primary_candidate_type(event_metadata),
-                "qwen": {
-                    "called": call_vlm,
-                    "verified": verification_status == "verified",
-                    "reason": reason,
-                    "verification_status": verification_status,
-                    "source": alert_context.get("source"),
-                    "active_alert_id": alert_context.get("active_alert_id"),
-                    "decision": decision.get("decision"),
-                    "event_type": decision.get("event_type"),
-                    "summary": window.get("vlm", {}).get("summary", ""),
-                    "timestamps_seconds": qwen_input.get(
-                        "timestamps_seconds", []
-                    ),
-                },
-                "timing": {
-                    "motion_ms": float(timing.get("motion_ms", 0.0)),
-                    "detector_ms": float(timing.get("detector_ms", 0.0)),
-                    "keyframe_ms": float(timing.get("keyframe_ms", 0.0)),
-                    "qwen_ms": float(timing.get("qwen_ms", 0.0)),
-                    "total_ms": total_ms,
-                    "queue_wait_ms": float(timing.get("queue_wait_ms", 0.0)),
-                    "wall_clock_ms": float(timing.get("wall_clock_ms", 0.0)),
-                    "within_budget": total_ms <= PROCESSING_BUDGET_MS,
-                },
-            }
-        )
+        compact_window = {
+            "window_index": window.get("window_index"),
+            "start_seconds": window.get("start_seconds"),
+            "end_seconds": window.get("end_seconds"),
+            "alert_level": level,
+            "qwen": {
+                key: qwen[key]
+                for key in ("status", "summary", "degraded", "verified", "reason")
+                if key in qwen and qwen[key] is not None
+            },
+            "timing": {
+                "motion_ms": float(timing.get("motion_ms", 0.0)),
+                "detector_ms": float(timing.get("detector_ms", 0.0)),
+                "keyframe_ms": float(timing.get("keyframe_ms", 0.0)),
+                "qwen_ms": float(timing.get("qwen_ms", 0.0)),
+                "total_ms": total_ms,
+                "queue_wait_ms": float(timing.get("queue_wait_ms", 0.0)),
+                "wall_clock_ms": float(timing.get("wall_clock_ms", 0.0)),
+                "within_budget": total_ms <= PROCESSING_BUDGET_MS,
+            },
+        }
+        compact_cooldown = {
+            key: value
+            for key, value in cooldown.items()
+            if value is not None and value is not False
+        }
+        if compact_cooldown:
+            compact_window["cooldown"] = compact_cooldown
+        windows.append(compact_window)
     highest = "high" if counts["high"] else "medium" if counts["medium"] else "low"
     return {
         "video": path.name,
@@ -322,7 +231,7 @@ class HttpAsyncBenchmarkClient:
             poll.raise_for_status()
             payload = poll.json()
             if not self.last_first_result_ms and any(
-                window.get("vlm", {}).get("status") == "completed"
+                window.get("qwen", {}).get("status") == "completed"
                 for window in payload.get("windows", [])
             ):
                 self.last_first_result_ms = (
@@ -343,16 +252,16 @@ class HttpAsyncBenchmarkClient:
         first_result_ms = self.last_first_result_ms
         latency_ms = (time.perf_counter() - started) * 1000
         windows = payload.get("windows", [])
-        levels = [w.get("security", {}).get("alert_level", "low") for w in windows]
-        predicted = "normal" if all(level == "low" for level in levels) else next(
-            (
-                risk
-                for window in windows
-                for risk in window.get("security", {}).get("risks", [])
-            ),
-            "abnormal",
+        levels = [window.get("alert_level", "low") for window in windows]
+        predicted = (
+            "normal" if all(level == "low" for level in levels) else "abnormal"
         )
         timing = StageTiming.model_validate(payload.get("total_timing", {}))
+        called_windows = [
+            window
+            for window in windows
+            if window.get("qwen", {}).get("status") == "completed"
+        ]
         return BenchmarkObservation(
             case_id=case.case_id,
             expected_event=case.expected_event,
@@ -360,12 +269,12 @@ class HttpAsyncBenchmarkClient:
             latency_ms=latency_ms,
             time_to_first_result_ms=first_result_ms,
             queue_wait_ms=timing.queue_wait_ms,
-            vlm_calls=len(windows),
-            json_valid=bool(windows)
+            vlm_calls=len(called_windows),
+            json_valid=bool(called_windows)
             and all(
-                bool(w.get("vlm", {}).get("summary"))
-                and not w.get("vlm", {}).get("degraded", False)
-                for w in windows
+                bool(window.get("qwen", {}).get("summary"))
+                and not window.get("qwen", {}).get("degraded", False)
+                for window in called_windows
             ),
             timing=timing,
         )

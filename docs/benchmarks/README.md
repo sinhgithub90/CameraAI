@@ -115,8 +115,8 @@ real run must demonstrate this recheck.
 
 ### Compact window contract and five-second budget
 
-Each window contains only its range, resolved alert level, primary
-`candidate_type`, a compact `qwen` object, and a detailed `timing` object:
+Each window contains only its range, resolved alert level, a compact `qwen`
+object, optional cooldown state, and a detailed `timing` object:
 
 ```json
 {
@@ -124,18 +124,12 @@ Each window contains only its range, resolved alert level, primary
   "start_seconds": 5.0,
   "end_seconds": 10.0,
   "alert_level": "high",
-  "candidate_type": "vehicle_scene",
   "qwen": {
-    "called": true,
+    "status": "completed",
+    "degraded": false,
     "verified": true,
     "reason": "candidate_requires_verification",
-    "verification_status": "verified",
-    "source": "window_verification",
-    "active_alert_id": "episode-1",
-    "decision": "yes",
-    "event_type": "traffic_accident",
-    "summary": "Xe buýt va chạm với xe ô tô.",
-    "timestamps_seconds": [5.8, 9.8]
+    "summary": "Xe buýt va chạm với xe ô tô."
   },
   "timing": {
     "motion_ms": 10.3,
@@ -169,10 +163,12 @@ The API and Ollama must already be running. Do not treat the five-second target
 as achieved until `processing_p95_ms <= 5000` and `windows_over_budget == 0` on
 the target video set.
 
-Raw detection boxes stay inside the pipeline and API compatibility model. The
-per-video benchmark JSON omits boxes, detection summaries, candidate evidence
-and IDs, raw Qwen validity fields, and verbose routing/decision objects. This
-keeps review output compact while retaining every requested stage measurement.
+Raw detection boxes stay inside the pipeline's internal models. The public
+analysis response and per-video benchmark JSON omit boxes, detection summaries,
+Qwen input frames, candidates, decisions, raw alerts, traces, risks, actions,
+and internal `event_metadata`. Empty cooldown values and false episode
+transition flags are omitted. This keeps review output compact while retaining
+every requested stage measurement.
 
 The processing budget compares `timing.total_ms` with 5000 ms. Queue waiting is
 reported separately, so `wall_clock_ms` can exceed the processing total even
