@@ -63,7 +63,7 @@ def route_observation(observation: VideoWindowObservation) -> list[CandidateEven
         return [
             _candidate(
                 observation,
-                "possible_person_vehicle_interaction",
+                "person_vehicle_scene",
                 Priority.MEDIUM if aggregate.proximity_frame_count else Priority.LOW,
                 base,
             )
@@ -71,13 +71,13 @@ def route_observation(observation: VideoWindowObservation) -> list[CandidateEven
     if aggregate.person_peak_count >= 2 and observation.motion.score >= 0.6:
         return [
             _candidate(
-                observation, "multi_person_high_motion", Priority.MEDIUM, base
+                observation, "multi_person_scene", Priority.MEDIUM, base
             )
         ]
     if aggregate.person_peak_count:
-        return [_candidate(observation, "person_only_activity", Priority.LOW, base)]
+        return [_candidate(observation, "person_scene", Priority.LOW, base)]
     if aggregate.vehicle_peak_count:
-        return [_candidate(observation, "vehicle_only_activity", Priority.LOW, base)]
+        return [_candidate(observation, "vehicle_scene", Priority.LOW, base)]
     if observation.motion.motion:
-        return [_candidate(observation, "unknown_motion", Priority.LOW, base)]
+        return [_candidate(observation, "unexplained_motion", Priority.LOW, base)]
     return []

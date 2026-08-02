@@ -19,7 +19,7 @@ def test_writer_creates_debug_bundle_without_embedding_frame_bytes(tmp_path):
     candidate = CandidateEvent(
         candidate_id="candidate_1",
         window_id=observation.window_id,
-        candidate_type="unknown_motion",
+        candidate_type="unexplained_motion",
     )
 
     directory = WindowArtifactWriter(tmp_path).write(

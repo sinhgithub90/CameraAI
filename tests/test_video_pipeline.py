@@ -7,7 +7,11 @@ import cv2
 
 from camera_ai.schemas import MotionResult, VideoFrameObservation
 from camera_ai.detectors.motion import MotionDetector
-from camera_ai.video_selection import select_keyframes
+from camera_ai.video_selection import (
+    _event_span,
+    _smooth_activity_scores,
+    select_keyframes,
+)
 from camera_ai.vlm.mock import MockAnalyzer
 from camera_ai import SecurityAIPipeline
 from camera_ai.schemas import EventObject, MediaType, SceneAnalysis, AlertLevel, Detection
@@ -71,6 +75,21 @@ def make_observations(
     ]
 
 
+def make_scored_observations(scores: list[float]) -> list[VideoFrameObservation]:
+    return [
+        VideoFrameObservation(
+            frame_index=index,
+            timestamp_seconds=index / 5,
+            motion=MotionResult(
+                motion=score > 0,
+                changed_ratio=score,
+                score=score,
+            ),
+        )
+        for index, score in enumerate(scores)
+    ]
+
+
 def test_keyframe_selector_returns_ordered_unique_keyframes():
     observations = make_observations(
         12, motion_indices={3, 4, 5}, detection_indices={4}
@@ -89,16 +108,96 @@ def test_keyframe_selector_includes_first_and_last_for_calm_video():
     assert indices[-1] == 4
 
 
-def test_two_keyframes_prioritize_temporally_separated_event_frames():
+def test_activity_smoothing_uses_centered_three_sample_mean():
+    assert _smooth_activity_scores([0.0, 3.0, 0.0]) == [1.5, 1.0, 1.5]
+
+
+def test_activity_smoothing_preserves_empty_input():
+    assert _smooth_activity_scores([]) == []
+
+
+def test_event_span_bridges_one_inactive_sample():
+    assert _event_span([1.0, 0.2, 1.0]) == (0, 2)
+
+
+def test_event_span_stops_before_two_inactive_samples():
+    assert _event_span([1.0, 0.2, 0.2, 1.0]) == (0, 0)
+
+
+def test_event_span_uses_earliest_peak_on_tie():
+    assert _event_span([0.2, 1.0, 0.2, 0.2, 1.0]) == (1, 1)
+
+
+def test_two_keyframes_select_before_and_after_strongest_change():
     observations = make_observations(
         25,
-        motion_indices={10, 15},
-        detection_indices={10},
+        motion_indices={15},
+        detection_indices={15},
     )
 
     selected = select_keyframes(observations, max_keyframes=2)
 
-    assert [item.frame_index for item in selected] == [10, 15]
+    assert [item.frame_index for item in selected] == [11, 20]
+
+
+def test_two_keyframes_surround_complete_activity_span():
+    observations = make_scored_observations(
+        [0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0]
+    )
+
+    selected = select_keyframes(observations, max_keyframes=2)
+
+    assert [item.frame_index for item in selected] == [1, 11]
+
+
+def test_two_keyframes_use_ends_when_there_is_no_change():
+    selected = select_keyframes(make_observations(5), max_keyframes=2)
+
+    assert [item.frame_index for item in selected] == [0, 4]
+
+
+def test_two_keyframes_select_after_frame_when_peak_is_first():
+    observations = make_observations(
+        8,
+        motion_indices={0},
+        detection_indices={0},
+    )
+
+    selected = select_keyframes(observations, max_keyframes=2)
+
+    assert [item.frame_index for item in selected] == [0, 4]
+
+
+def test_two_keyframes_select_before_frame_when_peak_is_last():
+    observations = make_observations(
+        21,
+        motion_indices={20},
+        detection_indices={20},
+    )
+
+    selected = select_keyframes(observations, max_keyframes=2)
+
+    assert [item.frame_index for item in selected] == [16, 20]
+
+
+def test_two_keyframes_return_single_observation_once():
+    selected = select_keyframes(make_observations(1), max_keyframes=2)
+
+    assert [item.frame_index for item in selected] == [0]
+
+
+def test_two_keyframes_surround_detection_change_without_motion():
+    observations = make_observations(20, detection_indices={12})
+
+    selected = select_keyframes(observations, max_keyframes=2)
+
+    assert [item.frame_index for item in selected] == [8, 17]
+
+
+def test_two_keyframes_preserve_two_observations():
+    selected = select_keyframes(make_observations(2), max_keyframes=2)
+
+    assert [item.frame_index for item in selected] == [0, 1]
 
 
 def test_vlm_sequence_analysis_is_called_once():

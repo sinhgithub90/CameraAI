@@ -38,7 +38,7 @@ def test_person_and_near_vehicle_routes_to_possible_interaction():
         )
     )
 
-    assert candidates[0].candidate_type == "possible_person_vehicle_interaction"
+    assert candidates[0].candidate_type == "person_vehicle_scene"
     assert candidates[0].evidence == {
         "person_peak_count": 1,
         "vehicle_peak_count": 1,
@@ -51,10 +51,10 @@ def test_person_and_near_vehicle_routes_to_possible_interaction():
     assert candidates[0].requires_verification is True
 
 
-def test_motion_without_detections_routes_to_unknown_motion():
+def test_motion_without_detections_routes_to_unexplained_motion():
     candidates = route_observation(observation())
 
-    assert [candidate.candidate_type for candidate in candidates] == ["unknown_motion"]
+    assert [candidate.candidate_type for candidate in candidates] == ["unexplained_motion"]
 
 
 def test_multiple_people_with_high_motion_is_only_a_hypothesis():
@@ -71,5 +71,21 @@ def test_multiple_people_with_high_motion_is_only_a_hypothesis():
         )
     )
 
-    assert candidates[0].candidate_type == "multi_person_high_motion"
+    assert candidates[0].candidate_type == "multi_person_scene"
     assert all(candidate.candidate_type != "fighting" for candidate in candidates)
+
+
+def test_person_only_routes_to_neutral_scene():
+    candidates = route_observation(
+        observation(aggregate=WindowDetectionAggregate(person_peak_count=1))
+    )
+
+    assert candidates[0].candidate_type == "person_scene"
+
+
+def test_vehicle_only_routes_to_neutral_scene():
+    candidates = route_observation(
+        observation(aggregate=WindowDetectionAggregate(vehicle_peak_count=1))
+    )
+
+    assert candidates[0].candidate_type == "vehicle_scene"

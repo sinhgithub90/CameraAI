@@ -5,6 +5,99 @@ from collections.abc import Sequence
 
 from .schemas import VideoFrameObservation
 
+VEHICLE_LABELS = {"bicycle", "car", "motorcycle", "bus", "truck"}
+ACTIVE_THRESHOLD_RATIO = 0.30
+EVENT_CONTEXT_SECONDS = 0.6
+MAX_INACTIVE_GAP = 1
+
+
+def _smooth_activity_scores(scores: Sequence[float]) -> list[float]:
+    smoothed: list[float] = []
+    for index in range(len(scores)):
+        window = scores[max(0, index - 1) : min(len(scores), index + 2)]
+        smoothed.append(sum(window) / len(window))
+    return smoothed
+
+
+def _expand_active_boundary(
+    scores: Sequence[float],
+    peak_position: int,
+    *,
+    step: int,
+    threshold: float,
+) -> int:
+    boundary = peak_position
+    inactive_run = 0
+    position = peak_position + step
+    while 0 <= position < len(scores):
+        if scores[position] >= threshold:
+            boundary = position
+            inactive_run = 0
+        else:
+            inactive_run += 1
+            if inactive_run > MAX_INACTIVE_GAP:
+                break
+        position += step
+    return boundary
+
+
+def _event_span(scores: Sequence[float]) -> tuple[int, int]:
+    peak_position = max(range(len(scores)), key=lambda index: scores[index])
+    threshold = scores[peak_position] * ACTIVE_THRESHOLD_RATIO
+    return (
+        _expand_active_boundary(
+            scores,
+            peak_position,
+            step=-1,
+            threshold=threshold,
+        ),
+        _expand_active_boundary(
+            scores,
+            peak_position,
+            step=1,
+            threshold=threshold,
+        ),
+    )
+
+
+def _nearest_by_timestamp(
+    observations: Sequence[VideoFrameObservation],
+    target_seconds: float,
+) -> VideoFrameObservation:
+    return min(
+        observations,
+        key=lambda item: (
+            abs(item.timestamp_seconds - target_seconds),
+            item.timestamp_seconds,
+        ),
+    )
+
+
+def _label_count(
+    observation: VideoFrameObservation,
+    labels: set[str],
+) -> int:
+    return sum(item.label in labels for item in observation.detections)
+
+
+def _observation_change_score(
+    previous: VideoFrameObservation | None,
+    current: VideoFrameObservation,
+) -> float:
+    previous_detections = previous.detections if previous is not None else []
+    person_delta = abs(
+        _label_count(current, {"person"})
+        - sum(item.label == "person" for item in previous_detections)
+    )
+    vehicle_delta = abs(
+        _label_count(current, VEHICLE_LABELS)
+        - sum(item.label in VEHICLE_LABELS for item in previous_detections)
+    )
+    previous_labels = {item.label for item in previous_detections}
+    current_labels = {item.label for item in current.detections}
+    label_changed = float(previous_labels != current_labels)
+    return current.motion.score + person_delta + vehicle_delta + label_changed
+
 
 def score_observations(
     observations: Sequence[VideoFrameObservation],
@@ -39,42 +132,39 @@ def select_keyframes(
         return list(observations)
 
     if max_keyframes == 2:
-        ranked = [item for _, item in score_observations(observations)]
-        event_ranked = [
-            item for item in ranked if item.motion.motion or item.detections
-        ]
-        if event_ranked:
-            primary = event_ranked[0]
-            separated_events = [
-                item
-                for item in event_ranked[1:]
-                if abs(item.timestamp_seconds - primary.timestamp_seconds) >= 1.0
-            ]
-            separated_frames = [
-                item
-                for item in ranked
-                if item.frame_index != primary.frame_index
-                and abs(item.timestamp_seconds - primary.timestamp_seconds) >= 1.0
-            ]
-            if separated_events:
-                secondary = separated_events[0]
-            elif separated_frames:
-                secondary = separated_frames[0]
-            else:
-                secondary = max(
-                    (
-                        item
-                        for item in observations
-                        if item.frame_index != primary.frame_index
-                    ),
-                    key=lambda item: abs(
-                        item.timestamp_seconds - primary.timestamp_seconds
-                    ),
-                )
-            return sorted(
-                [primary, secondary],
-                key=lambda item: item.frame_index,
+        change_scores = [
+            _observation_change_score(
+                observations[position - 1] if position else None,
+                observation,
             )
+            for position, observation in enumerate(observations)
+        ]
+        if max(change_scores) == 0:
+            return [observations[0], observations[-1]]
+
+        smoothed_scores = _smooth_activity_scores(change_scores)
+        event_start_position, event_end_position = _event_span(smoothed_scores)
+        event_start = observations[event_start_position]
+        event_end = observations[event_end_position]
+        before_candidates = observations[:event_start_position]
+        after_candidates = observations[event_end_position + 1 :]
+        before_frame = (
+            _nearest_by_timestamp(
+                before_candidates,
+                event_start.timestamp_seconds - EVENT_CONTEXT_SECONDS,
+            )
+            if before_candidates
+            else observations[0]
+        )
+        after_frame = (
+            _nearest_by_timestamp(
+                after_candidates,
+                event_end.timestamp_seconds + EVENT_CONTEXT_SECONDS,
+            )
+            if after_candidates
+            else observations[-1]
+        )
+        return [before_frame, after_frame]
 
     selected: dict[int, VideoFrameObservation] = {}
 

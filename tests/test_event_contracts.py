@@ -10,6 +10,7 @@ from camera_ai.event_models import (
     Priority,
     Severity,
     alert_event_to_store_alert,
+    alert_from_decision,
     project_alert_to_pipeline_result,
     stable_event_id,
 )
@@ -27,12 +28,12 @@ def test_candidate_is_hypothesis_not_alert():
     candidate = CandidateEvent(
         candidate_id="candidate_001",
         window_id="cam_01_000001",
-        candidate_type="possible_person_vehicle_interaction",
+        candidate_type="person_vehicle_scene",
         priority="medium",
         requires_verification=True,
     )
 
-    assert candidate.candidate_type.startswith("possible_")
+    assert candidate.candidate_type == "person_vehicle_scene"
     assert candidate.priority is Priority.MEDIUM
     assert candidate.requires_verification is True
 
@@ -51,6 +52,41 @@ def test_candidate_type_remains_an_extensible_free_string():
 def test_invalid_model_decision_value_is_rejected():
     with pytest.raises(ValidationError):
         ModelDecision(candidate_id="c1", model="qwen", decision="maybe")
+
+
+@pytest.mark.parametrize(
+    ("event_type", "expected"),
+    [
+        ("no_event", Severity.LOW),
+        ("person_vehicle_interaction", Severity.LOW),
+        ("unknown_event", Severity.LOW),
+        ("person_fall", Severity.MEDIUM),
+        ("camera_tamper", Severity.MEDIUM),
+        ("traffic_accident", Severity.HIGH),
+        ("fighting", Severity.HIGH),
+        ("fire_smoke", Severity.HIGH),
+        ("future_event", Severity.LOW),
+    ],
+)
+def test_alert_severity_comes_from_validated_event_type(event_type, expected):
+    candidate = CandidateEvent(
+        candidate_id="candidate_001",
+        window_id="window_001",
+        candidate_type="person_vehicle_scene",
+        priority=Priority.CRITICAL,
+    )
+    decision = ModelDecision(
+        candidate_id=candidate.candidate_id,
+        model="qwen",
+        decision=DecisionValue.YES,
+        event_type=event_type,
+        raw_output_valid=True,
+    )
+
+    alert = alert_from_decision(candidate, decision, camera_id="cam_01")
+
+    assert alert is not None
+    assert alert.severity is expected
 
 
 @pytest.mark.parametrize(

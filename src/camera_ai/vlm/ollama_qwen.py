@@ -52,23 +52,47 @@ _PROMPT = (
     "- risks: mảng các rủi ro quan sát được; nếu không có, trả []. Không bịa rủi ro.\n"
     "- recommended_action: bắt buộc, hành động ngắn phù hợp mức cảnh báo. "
     "Nếu low và không có rủi ro, dùng chính xác: Tiếp tục giám sát.\n"
-    "Dữ liệu YOLO:\n{detections}"
 )
 
-_CANDIDATE_PROMPT = (
-    "Xác minh nghi vấn camera và trả về đúng JSON bằng tiếng Việt.\n"
-    "- decision: đúng một trong yes | no | uncertain. Không đủ bằng chứng thì "
-    "chọn uncertain.\n"
+TRAFFIC_CANDIDATE_TYPES = frozenset({"vehicle_scene", "person_vehicle_scene"})
+
+_CANDIDATE_PROMPT_BASE = (
+    "Phân tích trực tiếp hình ảnh camera và trả về đúng JSON bằng tiếng Việt.\n"
+    "- decision: đúng một trong yes | no | uncertain.\n"
     "- event_type: chọn đúng một giá trị trong: {event_types}.\n"
     "- no chỉ đi với no_event; uncertain chỉ đi với unknown_event; yes phải "
     "đi với một sự kiện cụ thể.\n"
     "- summary: bắt buộc, 1–2 câu ngắn, mục tiêu không quá 40 từ.\n"
-    "Candidate chỉ là nghi vấn định hướng, không phải đáp án bắt buộc. Không "
-    "kết luận tai nạn chỉ vì người và xe cùng xuất hiện.\n"
-    "Nghi vấn: {candidate_type}.\n"
-    "Bằng chứng router: {candidate_evidence}.\n"
-    "Dữ liệu YOLO:\n{detections}"
 )
+
+_GENERIC_VISUAL_GUIDANCE = (
+    "So sánh các ảnh theo thứ tự thời gian và chỉ phân loại sự kiện quan sát "
+    "được. Chỉ chọn uncertain khi chất lượng ảnh hoặc che khuất không cho phép "
+    "xác định thay đổi."
+)
+
+_TRAFFIC_VISUAL_GUIDANCE = (
+    "So sánh trạng thái TRƯỚC và SAU trong cảnh giao thông. "
+    "Chọn traffic_accident nếu phương tiện từ tách rời chuyển thành tiếp xúc "
+    "hoặc chồng lấn, đổi hướng đột ngột, hoặc dừng ở vị trí tương đối bất thường. "
+    "Không bắt buộc nhìn thấy đúng khoảnh khắc va chạm, hư hỏng hoặc người ngã "
+    "khi chuyển tiếp trước/sau cho thấy va chạm. "
+    "Chỉ chọn person_vehicle_interaction khi có tương tác người–xe nhưng không "
+    "có dấu hiệu va chạm. Chỉ chọn uncertain khi chất lượng ảnh hoặc che khuất "
+    "không cho phép xác định thay đổi."
+)
+
+
+def _candidate_prompt(candidate_type: str) -> str:
+    guidance = (
+        _TRAFFIC_VISUAL_GUIDANCE
+        if candidate_type in TRAFFIC_CANDIDATE_TYPES
+        else _GENERIC_VISUAL_GUIDANCE
+    )
+    return (
+        _CANDIDATE_PROMPT_BASE.format(event_types=", ".join(EVENT_TYPES))
+        + guidance
+    )
 
 _OUTPUT_SCHEMA = {
     "type": "object",
@@ -171,19 +195,11 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
         *,
         candidate=None,
     ) -> VLMAnalysisTrace:
-        det_lines = self._format_detections(detections)
         if candidate is not None:
-            prompt = _CANDIDATE_PROMPT.format(
-                candidate_type=candidate.candidate_type,
-                event_types=", ".join(EVENT_TYPES),
-                candidate_evidence=json.dumps(
-                    candidate.evidence, ensure_ascii=False
-                ),
-                detections=det_lines,
-            )
+            prompt = _candidate_prompt(candidate.candidate_type)
             output_schema = _CANDIDATE_OUTPUT_SCHEMA
         else:
-            prompt = _PROMPT.format(detections=det_lines)
+            prompt = _PROMPT
             output_schema = _OUTPUT_SCHEMA
         prepared_images = self._prepare_images(frames)
         is_composite = self.frame_mode == "composite" and len(frames) == 2
@@ -353,18 +369,6 @@ class OllamaQwenAnalyzer(VLMAnalyzer):
             recommended_action=action,
             degraded=degraded,
         )
-
-    @staticmethod
-    def _format_detections(detections: list[Detection]) -> str:
-        grouped: dict[str, list[Detection]] = {}
-        for detection in detections:
-            grouped.setdefault(detection.label, []).append(detection)
-
-        return "\n".join(
-            f"- {label}: count={len(items)}, "
-            f"max_conf={max(item.confidence for item in items):.2f}"
-            for label, items in grouped.items()
-        ) or "- none"
 
     def _prepare_images(
         self,

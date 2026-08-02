@@ -225,21 +225,28 @@ def test_ollama_logs_server_timing_and_token_counts(monkeypatch, caplog):
     assert "output_ms=1500.0" in caplog.text
 
 
-def test_detection_prompt_summarizes_count_and_max_confidence_per_label():
-    detections = [
-        Detection(label="person", confidence=0.55, bbox=[10, 20, 30, 40]),
-        Detection(label="person", confidence=0.91, bbox=[11, 21, 31, 41]),
-        Detection(label="car", confidence=0.87, bbox=[1, 2, 3, 4]),
-    ]
-
-    text = OllamaQwenAnalyzer._format_detections(detections)
-
-    assert text == (
-        "- person: count=2, max_conf=0.91\n"
-        "- car: count=1, max_conf=0.87"
+def test_non_candidate_prompt_does_not_embed_detection_context(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        "camera_ai.vlm.ollama_qwen.requests.post",
+        lambda url, **kwargs: captured.update(kwargs) or FakeResponse(),
     )
-    assert "bbox" not in text
-    assert OllamaQwenAnalyzer._format_detections([]) == "- none"
+    detection = Detection(
+        label="forklift_secret",
+        confidence=0.87,
+        bbox=[1, 2, 3, 4],
+    )
+
+    OllamaQwenAnalyzer().analyze(
+        np.zeros((64, 64, 3), dtype=np.uint8),
+        [detection],
+    )
+
+    prompt = captured["json"]["messages"][0]["content"]
+    assert "forklift_secret" not in prompt
+    assert "count=" not in prompt
+    assert "max_conf=" not in prompt
+    assert "Dữ liệu YOLO" not in prompt
 
 
 def test_compact_response_derives_observations_from_summary(monkeypatch):

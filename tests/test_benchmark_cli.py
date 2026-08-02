@@ -64,8 +64,19 @@ def analysis_payload(*levels):
                     "recommended_action": "review",
                 },
                 "detections": [],
-                "qwen_input": {"frame_count": 2},
-                "timing": {"total_ms": 100},
+                "qwen_input": {
+                    "frame_count": 2,
+                    "timestamps_seconds": [index * 5 + 0.8, index * 5 + 4.8],
+                },
+                "timing": {
+                    "motion_ms": 10.0,
+                    "detector_ms": 20.0,
+                    "keyframe_ms": 0.1,
+                    "qwen_ms": 4000.0,
+                    "total_ms": 4030.1,
+                    "queue_wait_ms": 25.0,
+                    "wall_clock_ms": 4055.1,
+                },
             }
             for index, level in enumerate(levels)
         ],
@@ -106,20 +117,47 @@ def test_video_report_keeps_all_green_orange_and_red_windows(tmp_path):
     ]
 
 
-def test_video_report_exposes_candidate_decision_and_raw_validity(tmp_path):
-    payload = analysis_payload("medium")
+def test_video_report_uses_confirmed_alert_severity_and_compact_qwen_output(tmp_path):
+    payload = analysis_payload("low")
     payload["windows"][0]["event_metadata"] = {
-        "candidates": [{"candidate_type": "person_only_activity"}],
-        "decision": {"decision": "yes"},
-        "vlm_trace": {"raw_output_valid": True},
+        "candidates": [
+            {
+                "candidate_id": "candidate-1",
+                "candidate_type": "vehicle_scene",
+                "priority": "low",
+                "evidence": {"vehicle_peak_count": 4},
+            }
+        ],
+        "decision": {
+            "candidate_id": "candidate-1",
+            "model": "qwen",
+            "decision": "yes",
+            "event_type": "traffic_accident",
+            "evidence": [],
+            "raw_output_valid": True,
+        },
+        "alert": {"severity": "high", "event_type": "traffic_accident"},
+        "vlm_call": {"call_vlm": True, "candidate_id": "candidate-1"},
     }
 
     report = build_video_report(tmp_path / "event.mp4", "analysis-3", payload)
 
+    assert report["level_summary"] == {
+        "green": 0,
+        "orange": 0,
+        "red": 1,
+        "highest_level": "high",
+    }
     window = report["windows"][0]
-    assert window["candidates"][0]["candidate_type"] == "person_only_activity"
-    assert window["decision"]["decision"] == "yes"
-    assert window["raw_output_valid"] is True
+    assert window["alert_level"] == "high"
+    assert window["candidate_type"] == "vehicle_scene"
+    assert window["qwen"] == {
+        "called": True,
+        "decision": "yes",
+        "event_type": "traffic_accident",
+        "summary": "window 0",
+        "timestamps_seconds": [0.8, 4.8],
+    }
 
 
 def test_video_report_summarizes_vlm_calls_and_processing_budget(tmp_path):
@@ -146,27 +184,47 @@ def test_video_report_summarizes_vlm_calls_and_processing_budget(tmp_path):
         "windows_over_budget": 1,
         "processing_budget_ms": 5000.0,
     }
-    assert report["windows"][0]["within_processing_budget"] is True
-    assert report["windows"][1]["within_processing_budget"] is False
+    assert report["windows"][0]["timing"]["within_budget"] is True
+    assert report["windows"][1]["timing"]["within_budget"] is False
+    assert report["windows"][0]["qwen"] == {
+        "called": False,
+        "decision": None,
+        "event_type": None,
+        "summary": "window 0",
+        "timestamps_seconds": [0.8, 4.8],
+    }
 
 
-def test_video_report_replaces_raw_bboxes_with_detection_summary(tmp_path):
+def test_video_report_omits_detection_summary_and_keeps_detailed_timing(tmp_path):
     payload = analysis_payload("low")
     payload["windows"][0]["detections"] = [
-        {"label": "person", "confidence": 0.7, "bbox": [0, 0, 10, 20]},
-        {"label": "person", "confidence": 0.9, "bbox": [1, 0, 11, 20]},
-        {"label": "car", "confidence": 0.8, "bbox": [20, 0, 40, 20]},
+        {"label": "person", "confidence": 0.9, "bbox": [0, 0, 10, 20]}
     ]
 
     window = build_video_report(
         tmp_path / "objects.mp4", "analysis-5", payload
     )["windows"][0]
 
-    assert "detections" not in window
-    assert window["detection_summary"] == {
-        "car": {"detection_count": 1, "max_confidence": 0.8},
-        "person": {"detection_count": 2, "max_confidence": 0.9},
+    assert set(window) == {
+        "window_index",
+        "start_seconds",
+        "end_seconds",
+        "alert_level",
+        "candidate_type",
+        "qwen",
+        "timing",
     }
+    assert window["timing"] == {
+        "motion_ms": 10.0,
+        "detector_ms": 20.0,
+        "keyframe_ms": 0.1,
+        "qwen_ms": 4000.0,
+        "total_ms": 4030.1,
+        "queue_wait_ms": 25.0,
+        "wall_clock_ms": 4055.1,
+        "within_budget": True,
+    }
+    assert "detection_summary" not in window
     assert "bbox" not in json.dumps(window)
 
 

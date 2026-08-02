@@ -25,7 +25,7 @@ def test_candidate_calls_vlm_for_primary_candidate():
     candidate = CandidateEvent(
         candidate_id="candidate-1",
         window_id="cam_000001",
-        candidate_type="unknown_motion",
+        candidate_type="unexplained_motion",
         priority=Priority.LOW,
     )
 
@@ -42,7 +42,7 @@ def test_no_usable_frames_skips_before_candidate_verification():
     candidate = CandidateEvent(
         candidate_id="candidate-1",
         window_id="cam_000001",
-        candidate_type="person_only_activity",
+        candidate_type="person_scene",
     )
 
     result = decide_vlm_call(
