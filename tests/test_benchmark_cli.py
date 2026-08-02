@@ -198,6 +198,31 @@ def test_video_report_counts_cooldown_suppression_and_rechecks(tmp_path):
     assert report["windows"][1]["cooldown"]["active_alert_id"] == "episode-1"
 
 
+def test_video_report_counts_prequeue_drops_without_synthetic_windows(tmp_path):
+    """Catches compact cooldown drops disappearing from benchmark totals."""
+    payload = analysis_payload("high", "high")
+    payload["cooldown"] = {
+        "active_alert_id": "episode-1",
+        "alert_level": "high",
+        "timebase": "video",
+        "red_started": 5.0,
+        "recheck_at": 65.0,
+        "suppressed_windows": 10,
+        "suppressed_seconds": 50.0,
+    }
+
+    report = build_video_report(tmp_path / "event.mp4", "analysis-a", payload)
+
+    summary = report["performance_summary"]
+    assert len(report["windows"]) == 2
+    assert report["cooldown"] == payload["cooldown"]
+    assert summary["vlm_called_windows"] == 2
+    assert summary["vlm_skipped_windows"] == 10
+    assert summary["vlm_suppressed_by_cooldown"] == 10
+    assert summary["cooldown_suppression_rate"] == 10 / 12
+    assert summary["vlm_call_rate"] == 2 / 12
+
+
 class FakeVideoClient:
     def __init__(self):
         self.paths = []

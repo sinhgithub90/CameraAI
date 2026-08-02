@@ -35,6 +35,14 @@ def build_video_report(
     video_path: str | Path, analysis_id: str, payload: dict
 ) -> dict:
     path = Path(video_path)
+    cooldown_summary = {
+        key: value
+        for key, value in (payload.get("cooldown") or {}).items()
+        if value is not None
+    }
+    dropped_windows = max(
+        0, int(cooldown_summary.get("suppressed_windows", 0) or 0)
+    )
     windows = []
     processing_times = []
     called_windows = 0
@@ -92,8 +100,10 @@ def build_video_report(
         if compact_cooldown:
             compact_window["cooldown"] = compact_cooldown
         windows.append(compact_window)
+    cooldown_suppressed += dropped_windows
+    total_windows = len(windows) + dropped_windows
     highest = "high" if counts["high"] else "medium" if counts["medium"] else "low"
-    return {
+    report = {
         "video": path.name,
         "camera_id": path.stem,
         "analysis_id": analysis_id,
@@ -106,11 +116,11 @@ def build_video_report(
         },
         "performance_summary": {
             "vlm_called_windows": called_windows,
-            "vlm_skipped_windows": len(windows) - called_windows,
-            "vlm_call_rate": called_windows / len(windows) if windows else 0.0,
+            "vlm_skipped_windows": total_windows - called_windows,
+            "vlm_call_rate": called_windows / total_windows if total_windows else 0.0,
             "vlm_suppressed_by_cooldown": cooldown_suppressed,
             "cooldown_suppression_rate": (
-                cooldown_suppressed / len(windows) if windows else 0.0
+                cooldown_suppressed / total_windows if total_windows else 0.0
             ),
             "red_episodes_created": episodes_created,
             "red_rechecks": red_rechecks,
@@ -124,6 +134,9 @@ def build_video_report(
         },
         "windows": windows,
     }
+    if cooldown_summary:
+        report["cooldown"] = cooldown_summary
+    return report
 
 
 def build_failed_report(video_path: str | Path, error: Exception) -> dict:
